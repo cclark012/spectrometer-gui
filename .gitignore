@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments / interpreters
+.venv/
+venv/
+WinPython/
+Tools/
+
+# Secrets / local machine config
+.env
+*.local
+
+# OS noise
+Thumbs.db
+.DS_Store
+
+# VSCode: commit only intentional project config
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
