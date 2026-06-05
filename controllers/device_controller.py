@@ -36,6 +36,7 @@ def boxcar_smooth(y: np.ndarray, width: int) -> np.ndarray:
 
 
 class DeviceController(QObject):
+    acquisition_failed = Signal(str)
     connected = Signal(str)
     connection_failed = Signal(str)
     spectrum_ready = Signal(object)
@@ -494,7 +495,7 @@ class DeviceController(QObject):
             self.spectrum_ready.emit(record)
 
         except Exception:
-            self.error.emit(traceback.format_exc())
+            self.acquisition_failed.emit(traceback.format_exc())
 
     @Slot()
     def query_spectrometer_capabilities(self) -> None:

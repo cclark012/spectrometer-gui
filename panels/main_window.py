@@ -251,6 +251,11 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
 
+        self.controller.acquisition_failed.connect(
+            self._on_acquisition_failed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
         self.scan_panel.calibration_requested.connect(self.start_calibration_scan)
 
         self._load_preferences()
@@ -894,6 +899,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_spectrum_ready(self, record: SpectrumRecord) -> None:
+        self._finish_acquisition_ui()
+
         self.acquiring = False
         self.acquire_action.setEnabled(True)
         self.acquisition_panel.set_acquiring(False)
@@ -949,6 +956,23 @@ class MainWindow(QMainWindow):
         self.acquisition_panel.set_integration_limits_us(
             caps.integration_time_min_us,
             caps.integration_time_max_us,
+        )
+
+    @Slot(str)
+    def _on_acquisition_failed(self, message: str) -> None:
+        self._finish_acquisition_ui()
+
+        # Stop live acquisition on acquisition failure.
+        self.acquisition_panel.set_live_enabled(False)
+
+        self.statusBar().showMessage("Spectrum acquisition failed. Live acquisition stopped.", 15000)
+
+        print(message)
+
+        QMessageBox.warning(
+            self,
+            "Spectrum acquisition failed",
+            message.splitlines()[-1] if message else "Unknown acquisition error.",
         )
 
     @Slot(object)
@@ -2273,6 +2297,11 @@ class MainWindow(QMainWindow):
         self.scan_panel.save_preferences(settings)
 
         settings.sync()
+
+    def _finish_acquisition_ui(self) -> None:
+        self.acquiring = False
+        self.acquire_action.setEnabled(True)
+        self.acquisition_panel.set_acquiring(False)
 
     def closeEvent(self, event) -> None:
         self._save_preferences()
