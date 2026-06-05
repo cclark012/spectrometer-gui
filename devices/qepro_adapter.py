@@ -301,8 +301,6 @@ class QEProSpectrometer:
         integration_us = self._validate_integration_us(int(integration_ms * 1000))
         self.spec.integration_time_micros(integration_us)
 
-        self.spec.integration_time_micros(integration_us)
-
         device_averaging_used = False
 
         if averaging_mode == "device":
