@@ -28,19 +28,23 @@ DEFAULT_WHEELS = [
     {
         "name": "Wheel 1",
         "positions": [
-            {"label": "open", "od": 0.0},
-            {"label": "OD0.5", "od": 0.5},
-            {"label": "OD1", "od": 1.0},
-            {"label": "OD2", "od": 2.0},
+            {"label": "1", "od": 4.0},
+            {"label": "2", "od": 2.0},
+            {"label": "3", "od": 0.6},
+            {"label": "4", "od": 0.4},
+            {"label": "5", "od": 0.2},
+            {"label": "6", "od": 0.0},
         ],
     },
     {
         "name": "Wheel 2",
         "positions": [
-            {"label": "open", "od": 0.0},
-            {"label": "OD0.5", "od": 0.5},
-            {"label": "OD1", "od": 1.0},
-            {"label": "OD2", "od": 2.0},
+            {"label": "1", "od": 4.0},
+            {"label": "2", "od": 3.0},
+            {"label": "3", "od": 1.0},
+            {"label": "4", "od": 0.5},
+            {"label": "5", "od": 0.3},
+            {"label": "6", "od": 0.0},
         ],
     },
 ]
