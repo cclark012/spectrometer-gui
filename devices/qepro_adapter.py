@@ -259,6 +259,33 @@ class QEProSpectrometer:
         method(int(max(1, averages)))
         return True
 
+    def _integration_limits_us(self) -> tuple[int, int]:
+        try:
+            limits = getattr(self.spec, "integration_time_micros_limits", None)
+
+            if callable(limits):
+                min_us, max_us = limits()
+            else:
+                min_us, max_us = limits
+
+            return int(min_us), int(max_us)
+
+        except Exception:
+            return 1, 60_000_000
+
+    def _validate_integration_us(self, integration_us: int) -> int:
+        integration_us = int(integration_us)
+
+        min_us, max_us = self._integration_limits_us()
+
+        if integration_us < min_us or integration_us > max_us:
+            raise ValueError(
+                f"Integration time {integration_us} us is outside spectrometer range "
+                f"[{min_us}, {max_us}] us"
+            )
+
+        return integration_us
+
     def acquire_spectrum(
         self,
         *,
@@ -268,8 +295,11 @@ class QEProSpectrometer:
         correct_nonlinearity: bool,
         averaging_mode: str = "software",
     ) -> tuple[np.ndarray, np.ndarray, float, bool]:
+
         averages = max(1, int(averages))
-        integration_us = max(1, int(integration_ms * 1000))
+
+        integration_us = self._validate_integration_us(int(integration_ms * 1000))
+        self.spec.integration_time_micros(integration_us)
 
         self.spec.integration_time_micros(integration_us)
 

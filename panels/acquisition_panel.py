@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import Signal, QSettings
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -91,8 +93,13 @@ class AcquisitionPanel(QWidget):
         layout.addStretch(1)
 
     def settings(self, *, run_identifier: str = "", notes: str = "") -> AcquisitionSettings:
+        integration_ms = int(self.integration_ms.value())
+        integration_ms = min(
+            max(integration_ms, int(self.integration_ms.minimum())),
+            int(self.integration_ms.maximum()),
+        )
         return AcquisitionSettings(
-            integration_ms=int(self.integration_ms.value()),
+            integration_ms=int(integration_ms),
             averages=int(self.averages.value()),
             boxcar_width=int(self.boxcar_width.value()),
             correct_dark=bool(self.dark_check.isChecked()),
@@ -128,6 +135,26 @@ class AcquisitionPanel(QWidget):
         #     self.field_input,
         # ]:
         #     widget.setEnabled(not acquiring)
+
+    def set_integration_limits_us(self, min_us: int, max_us: int) -> None:
+        min_us = int(min_us or 0)
+        max_us = int(max_us or 0)
+
+        if min_us <= 0 or max_us <= 0 or max_us <= min_us:
+            # Keep conservative defaults if capabilities are unavailable.
+            return
+
+        min_ms = max(1, int(math.ceil(min_us / 1000.0)))
+        max_ms = max(min_ms, int(math.floor(max_us / 1000.0)))
+
+        old_value = int(self.integration_ms.value())
+
+        self.integration_ms.setRange(min_ms, max_ms)
+        self.integration_ms.setValue(min(max(old_value, min_ms), max_ms))
+
+        self.integration_ms.setToolTip(
+            f"Allowed integration range: {min_ms} to {max_ms} ms"
+        )
 
     def load_preferences(self, settings: QSettings) -> None:
         self.live_check.setChecked(

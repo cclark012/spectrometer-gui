@@ -15,6 +15,9 @@ class EmulatedSpectrometer:
         self.wavelengths_nm = np.linspace(250.0, 1050.0, 2048)
         self.t0 = time.perf_counter()
         self.rng = np.random.default_rng()
+        
+        self.integration_time_min_us = 1000
+        self.integration_time_max_us = 60_000_000
 
     def acquire_spectrum(
         self,
@@ -59,6 +62,8 @@ class EmulatedSpectrometer:
         wl = self.wavelengths_nm
         t = time.perf_counter() - self.t0
 
+        integration_us = self._validate_integration_us(int(integration_ms * 1000))
+        integration_ms = integration_us / 1000.0
         exposure_scale = integration_ms / 100.0
         source_scale = 1.0 + 0.002 * math.sin(2.0 * math.pi * t / 45.0)
 
@@ -122,6 +127,17 @@ class EmulatedSpectrometer:
     def set_hardware_averages(self, averages: int) -> bool:
         self.hardware_averages = int(max(1, averages))
         return True
+
+    def _validate_integration_us(self, integration_us: int) -> int:
+        integration_us = int(integration_us)
+
+        if integration_us < self.integration_time_min_us or integration_us > self.integration_time_max_us:
+            raise ValueError(
+                f"Emulated integration time {integration_us} us is outside range "
+                f"[{self.integration_time_min_us}, {self.integration_time_max_us}] us"
+            )
+
+        return integration_us
 
     def close(self) -> None:
         pass
