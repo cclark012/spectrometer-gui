@@ -82,18 +82,34 @@ class CalibrationCurve:
             )
         ) * float(transmission)
 
+    def measured_power_bounds(self) -> tuple[float, float]:
+        measured = np.asarray(self.measured_power_w, dtype=float)
+        measured = measured[np.isfinite(measured)]
+
+        if measured.size == 0:
+            return float("nan"), float("nan")
+
+        return float(np.min(measured)), float(np.max(measured))
+
     def setpoint_for_expected_power(
         self,
         requested_actual_power_w: float,
         *,
         transmission: float = 1.0,
+        allow_extrapolation: bool = False,
     ) -> float:
         t = float(transmission)
 
         if not math.isfinite(t) or t <= 0:
-            raise ValueError(f"Invalid transmission: {transmission!r}")
+            return float("nan")
 
         effective_requested = float(requested_actual_power_w) / t
+
+        if not allow_extrapolation:
+            p_min, p_max = self.measured_power_bounds()
+
+            if effective_requested < p_min or effective_requested > p_max:
+                return float("nan")
 
         return float(
             np.interp(

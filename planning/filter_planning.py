@@ -50,6 +50,7 @@ def setpoint_for_target(
     return calibration.setpoint_for_expected_power(
         float(target_power_w),
         transmission=t,
+        allow_extrapolation=False,
     )
 
 
