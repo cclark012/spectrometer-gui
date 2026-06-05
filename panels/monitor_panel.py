@@ -97,6 +97,31 @@ class MonitorPanel(QWidget):
 
             self.monitor_stack.addWidget(self.monitor_3d_container)
 
+        self.monitor_map_container = QWidget()
+        monitor_map_layout = QVBoxLayout(self.monitor_map_container)
+        monitor_map_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.monitor_map_info_label = QLabel(
+            "Field-power map: x = magnetic field, y = power ch1, color = selected quantity"
+        )
+        self.monitor_map_info_label.setWordWrap(True)
+        monitor_map_layout.addWidget(self.monitor_map_info_label)
+
+        self.monitor_map_plot = pg.PlotWidget()
+        self.monitor_map_plot.setLabel("bottom", "Magnetic field (mT)")
+        self.monitor_map_plot.setLabel("left", "Power ch1 (W)")
+
+        for axis_name in ["bottom", "left"]:
+            axis = self.monitor_map_plot.getAxis(axis_name)
+            if hasattr(axis, "enableAutoSIPrefix"):
+                axis.enableAutoSIPrefix(False)
+
+        self.monitor_map_scatter = pg.ScatterPlotItem()
+        self.monitor_map_plot.addItem(self.monitor_map_scatter)
+
+        monitor_map_layout.addWidget(self.monitor_map_plot, stretch=1)
+        self.monitor_stack.addWidget(self.monitor_map_container)
+
         layout.addWidget(self.monitor_stack)
 
         controls = QWidget()
@@ -107,12 +132,12 @@ class MonitorPanel(QWidget):
 
         self.plot_mode_combo = QComboBox()
         self.plot_mode_combo.addItem("2D monitor", "2d")
+        self.plot_mode_combo.addItem("Field-power map", "map2d")
 
         if HAS_GL_3D:
             self.plot_mode_combo.addItem("3D: field / power / quantity", "3d")
 
         self.plot_mode_combo.currentIndexChanged.connect(self.redraw)
-
         form.addRow("Plot mode", self.plot_mode_combo)
 
         self.track_enable = QCheckBox()
@@ -667,12 +692,80 @@ class MonitorPanel(QWidget):
         self.monitor_plot.setLabel("bottom", label_with_units(x_label, x_units))
         self.monitor_plot.setLabel("left", label_with_units(y_label, y_units))
 
+    def _redraw_2d_map(self) -> None:
+        fields = []
+        powers_w = []
+        quantities = []
+
+        quantity_label = "Signal"
+        quantity_units = ""
+
+        for point in self.monitor_trace:
+            q, quantity_label, quantity_units = self._monitor_y_from_point(point)
+
+            field = float(point.field_mT)
+            power_w = float(point.power_ch1_W)
+
+            if not math.isfinite(field):
+                continue
+            if not math.isfinite(power_w):
+                continue
+            if not math.isfinite(q):
+                continue
+
+            fields.append(field)
+            powers_w.append(power_w)
+            quantities.append(float(q))
+
+        if not fields:
+            self.monitor_map_scatter.setData([])
+            self.monitor_map_info_label.setText(
+                "Field-power map: no finite monitor points"
+            )
+            return
+
+        q_norm = self._normalize_01(quantities)
+
+        spots = []
+
+        for field, power_w, q, zn in zip(fields, powers_w, quantities, q_norm):
+            # Pastel-to-warm color scale.
+            r = int(60 + 180 * zn)
+            g = int(170 - 70 * zn)
+            b = int(255 - 120 * zn)
+
+            spots.append(
+                {
+                    "pos": (field, power_w),
+                    "brush": pg.mkBrush(r, g, b, 210),
+                    "pen": pg.mkPen(40, 40, 40, 100),
+                    "size": 8,
+                    "data": q,
+                }
+            )
+
+        self.monitor_map_scatter.setData(spots)
+
+        q_min, q_max = self._finite_min_max(quantities)
+        field_min, field_max = self._finite_min_max(fields)
+        power_min, power_max = self._finite_min_max(powers_w)
+
+        self.monitor_map_info_label.setText(
+            "Field-power map: "
+            f"x = field [{field_min:.4g} to {field_max:.4g} mT], "
+            f"y = power [{self._format_range_value(power_min, 'W')} to {self._format_range_value(power_max, 'W')}], "
+            f"color = {quantity_label} [{self._format_range_value(q_min, quantity_units)} to {self._format_range_value(q_max, quantity_units)}]"
+        )
+
     def redraw(self) -> None:
         mode = self._plot_mode()
 
         if mode == "3d" and HAS_GL_3D:
-            self.monitor_stack.setCurrentWidget(self.monitor_3d)
+            self.monitor_stack.setCurrentWidget(self.monitor_3d_container)
             self._redraw_3d()
+        elif mode == "map2d":
+            self.monitor_stack.setCurrentWidget(self.monitor_map_container)
+            self._redraw_2d_map()
         else:
             self.monitor_stack.setCurrentWidget(self.monitor_plot)
             self._redraw_2d()
