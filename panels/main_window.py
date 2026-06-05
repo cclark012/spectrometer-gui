@@ -169,7 +169,6 @@ class MainWindow(QMainWindow):
 
         self.power_timer = QTimer(self)
         self.power_timer.timeout.connect(self._poll_power_tick)
-        self._apply_power_monitor_settings()
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Starting device controller...")
@@ -181,8 +180,12 @@ class MainWindow(QMainWindow):
         self.controller_thread = QThread(self)
         self.controller = DeviceController(config)
         self.controller.moveToThread(self.controller_thread)
-        self.controller_thread.start()
-        self.controller_thread.started.connect(self.controller.connect_devices)
+
+
+        self.controller_thread.started.connect(
+            self.controller.connect_devices,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
         self.acquire_requested.connect(self.controller.acquire)
         self.power_poll_requested.connect(self.controller.poll_power)
@@ -226,11 +229,23 @@ class MainWindow(QMainWindow):
         self.controller.connection_failed.connect(self._on_connection_failed)
         self.controller.spectrum_ready.connect(self._on_spectrum_ready)
         self.controller.power_ready.connect(self._on_power_ready)
-        self.controller.power_meter_wavelength_ready.connect(self._on_power_meter_wavelength_ready, Qt.ConnectionType.QueuedConnection)
         self.controller.error.connect(self._on_worker_error)
         self.controller.spectrometer_info_ready.connect(self._on_spectrometer_info)
-        self.controller.status.connect(self._show_status_message, Qt.ConnectionType.QueuedConnection)
-        self.controller.power_read_complete.connect(self._on_power_read_once_complete, Qt.ConnectionType.QueuedConnection)
+        self.controller.power_meter_wavelength_ready.connect(
+            self._on_power_meter_wavelength_ready, 
+            Qt.ConnectionType.QueuedConnection,
+        )
+        
+        self.controller.status.connect(
+            self._show_status_message, 
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+        self.controller.power_read_complete.connect(
+            self._on_power_read_once_complete, 
+            Qt.ConnectionType.QueuedConnection,
+        )
+        
         self.controller.background_ready.connect(
             self._on_background_ready,
             Qt.ConnectionType.QueuedConnection,
@@ -258,9 +273,12 @@ class MainWindow(QMainWindow):
 
         self.scan_panel.calibration_requested.connect(self.start_calibration_scan)
 
+        self.controller_thread.start()
+
         self._load_preferences()
         self._apply_plot_style()
         self._apply_loaded_preferences_to_ui()
+        self._apply_power_monitor_settings()
         self._restore_window_layout()
 
         QTimer.singleShot(0, self._apply_initial_layout)
@@ -397,7 +415,7 @@ class MainWindow(QMainWindow):
         self.controls_dock = dock
 
         dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-        dock.setMinimumWidth(330)
+        # dock.setMinimumWidth(330)
 
         self.acquisition_panel = AcquisitionPanel(self)
         self.acquisition_panel.acquire_requested.connect(self.take_spectrum)
@@ -430,6 +448,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
 
         dock.setWidget(splitter)
+        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
     def _build_power_dock(self) -> None:
         dock = QDockWidget("Power", self)
