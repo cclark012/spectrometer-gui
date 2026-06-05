@@ -1883,10 +1883,14 @@ class MainWindow(QMainWindow):
         if laser is None:
             return
 
-        if not self.scan_panel.points():
-            self.preview_power_scan()
+        try:
+            points = self._make_scan_points_for_laser(laser)
+        except Exception as exc:
+            QMessageBox.critical(self, "Power scan preview failed", str(exc))
+            return
 
         points = self.scan_panel.points()
+        self.scan_panel.set_points(points)
 
         if not points:
             QMessageBox.information(
