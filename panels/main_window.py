@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
     tec_target_requested = Signal(float)
     tec_enabled_requested = Signal(bool)
     spectrometer_temperature_requested = Signal()
+    spectrometer_capabilities_requested = Signal()
 
     def __init__(self, config: DeviceConfig) -> None:
         super().__init__()
@@ -216,6 +217,11 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
 
+        self.spectrometer_capabilities_requested.connect(
+            self.controller.query_spectrometer_capabilities,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
         self.controller.connected.connect(self._on_connected)
         self.controller.connection_failed.connect(self._on_connection_failed)
         self.controller.spectrum_ready.connect(self._on_spectrum_ready)
@@ -237,6 +243,11 @@ class MainWindow(QMainWindow):
 
         self.controller.spectrometer_temperature_ready.connect(
             self._on_spectrometer_temperature_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+        self.controller.spectrometer_capabilities_ready.connect(
+            self._on_spectrometer_capabilities_ready,
             Qt.ConnectionType.QueuedConnection,
         )
 
@@ -935,6 +946,10 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_spectrometer_capabilities_ready(self, caps: SpectrometerCapabilities) -> None:
         self.spectrometer_capabilities = caps
+        self.acquisition_panel.set_integration_limits_us(
+            caps.integration_time_min_us,
+            caps.integration_time_max_us,
+        )
 
     @Slot(object)
     def _on_monitor_cleared(self) -> None:
@@ -1242,21 +1257,21 @@ class MainWindow(QMainWindow):
         caps = getattr(self, "spectrometer_capabilities", None)
 
         if caps is None:
+            self.spectrometer_capabilities_requested.emit()
+
             QMessageBox.information(
                 self,
-                "No spectrometer details",
-                "No spectrometer capabilities have been reported yet.",
+                "Spectrometer details requested",
+                "Spectrometer capabilities have been requested. Try opening this dialog again in a moment.",
             )
             return
 
         dialog = SpectrometerDetailsDialog(caps, self)
-
         dialog.tec_target_requested.connect(self.tec_target_requested.emit)
         dialog.tec_enabled_requested.connect(self.tec_enabled_requested.emit)
         dialog.temperature_refresh_requested.connect(
             self.spectrometer_temperature_requested.emit
         )
-
         dialog.exec()
 
     def start_full_power_log(self) -> None:

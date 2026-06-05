@@ -7,7 +7,7 @@ import numpy as np
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from core.records import PowerSnapshot, SpectrumRecord, SpectrometerInfo, BackgroundSpectrum
+from core.records import PowerSnapshot, SpectrumRecord, SpectrometerInfo, BackgroundSpectrum, SpectrometerCapabilities
 from core.settings import DeviceConfig, AcquisitionSettings, PowerMonitorSettings
 from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
@@ -289,9 +289,17 @@ class DeviceController(QObject):
 
         try:
             caps = self.spec.capabilities()
-            self.spectrometer_capabilities_ready.emit(caps)
-        except Exception:
-            pass
+        except Exception as exc:
+            caps = SpectrometerCapabilities(
+                model=str(type(self.spec).__name__),
+                serial_number=str(getattr(self.spec, "serial_number", "")),
+                pixels=len(getattr(self.spec, "wavelengths_nm", [])),
+                max_intensity=float(getattr(self.spec, "max_intensity", float("nan"))),
+                features=["capability_probe_failed"],
+                feature_methods={"error": [repr(exc)]},
+            )
+
+        self.spectrometer_capabilities_ready.emit(caps)
 
     @Slot(object)
     def set_power_monitor_settings(self, settings: PowerMonitorSettings) -> None:
@@ -485,6 +493,13 @@ class DeviceController(QObject):
 
             self.spectrum_ready.emit(record)
 
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+    @Slot()
+    def query_spectrometer_capabilities(self) -> None:
+        try:
+            self._emit_spectrometer_info()
         except Exception:
             self.error.emit(traceback.format_exc())
 

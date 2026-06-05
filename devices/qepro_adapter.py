@@ -16,6 +16,17 @@ class QEProSpectrometer:
         self.serial_number = str(getattr(self.spec, "serial_number", ""))
         self.max_intensity = float(getattr(self.spec, "max_intensity", 65535.0))
 
+    def _read_attr_or_method(self, obj, name: str, default=None):
+        value = getattr(obj, name, default)
+
+        if callable(value):
+            try:
+                return value()
+            except Exception:
+                return default
+
+        return value
+
     def _feature_objects(self) -> list[object]:
         out = []
 
@@ -95,32 +106,60 @@ class QEProSpectrometer:
         return None
 
     def capabilities(self) -> SpectrometerCapabilities:
-        feature_methods = self._feature_method_report()
-
-        feature_names = [
-            name for name, methods in feature_methods.items()
-            if methods
-        ]
+        feature_methods = {}
 
         try:
-            min_us, max_us = self.spec.integration_time_micros_limits
+            features = self.spec.features
+            for name, feature_list in features.items():
+                methods = []
+                for feature_obj in feature_list or []:
+                    for attr in dir(feature_obj):
+                        if attr.startswith("_"):
+                            continue
+                        value = getattr(feature_obj, attr, None)
+                        if callable(value):
+                            methods.append(attr)
+                feature_methods[str(name)] = sorted(set(methods))
+        except Exception as exc:
+            feature_methods["feature_probe_error"] = [repr(exc)]
+
+        feature_names = sorted(feature_methods.keys())
+
+        min_us = 0
+        max_us = 0
+
+        try:
+            limits = getattr(self.spec, "integration_time_micros_limits", None)
+
+            if callable(limits):
+                min_us, max_us = limits()
+            elif limits is not None:
+                min_us, max_us = limits
+
         except Exception:
             min_us, max_us = 0, 0
 
-        tec_supported = self._tec_get_temperature_method() is not None
-        device_averaging_supported = self._set_hardware_average_method() is not None
+        model = self._read_attr_or_method(self.spec, "model", self.name)
+        serial = self._read_attr_or_method(self.spec, "serial_number", self.serial_number)
+        pixels = self._read_attr_or_method(self.spec, "pixels", len(self.wavelengths_nm))
+        max_intensity = self._read_attr_or_method(self.spec, "max_intensity", self.max_intensity)
+
+        try:
+            max_intensity = float(max_intensity)
+        except Exception:
+            max_intensity = float("nan")
 
         return SpectrometerCapabilities(
-            model=self.name,
-            serial_number=self.serial_number,
-            pixels=int(getattr(self.spec, "pixels", len(self.wavelengths_nm))),
-            max_intensity=float(self.max_intensity),
-            integration_time_min_us=int(min_us),
-            integration_time_max_us=int(max_us),
-            features=sorted(feature_names),
+            model=str(model),
+            serial_number=str(serial),
+            pixels=int(pixels) if pixels is not None else len(self.wavelengths_nm),
+            max_intensity=max_intensity,
+            integration_time_min_us=int(min_us or 0),
+            integration_time_max_us=int(max_us or 0),
+            features=feature_names,
             feature_methods=feature_methods,
-            tec_supported=bool(tec_supported),
-            device_averaging_supported=bool(device_averaging_supported),
+            tec_supported=bool(self._tec_get_temperature_method() is not None),
+            device_averaging_supported=bool(self._set_hardware_average_method() is not None),
         )
 
     # ---------- TEC probing ----------
