@@ -30,6 +30,7 @@ from planning.power_scan import make_requested_powers_w, make_power_scan_points
 _POWER_FACTORS = {
     "W": 1.0,
     "mW": 1e-3,
+    "μW": 1e-6,
     "uW": 1e-6,
     "nW": 1e-9,
 }
@@ -47,7 +48,7 @@ def format_power(power_w: float) -> str:
     if ap >= 1e-3:
         return f"{p * 1e3:.5g} mW"
     if ap >= 1e-6:
-        return f"{p * 1e6:.5g} uW"
+        return f"{p * 1e6:.5g} μW"
     if ap >= 1e-9:
         return f"{p * 1e9:.5g} nW"
 
