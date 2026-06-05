@@ -70,6 +70,10 @@ class PowerPanel(QWidget):
         self.power_plot.setLabel("bottom", "Time (s)")
         self.power_plot.setLabel("left", "Power ch1 (W)")
         self.power_curve = self.power_plot.plot()
+        for axis_name in ["bottom", "left"]:
+            axis = self.power_plot.getAxis(axis_name)
+            if hasattr(axis, "enableAutoSIPrefix"):
+                axis.enableAutoSIPrefix(False)
         layout.addWidget(self.power_plot)
 
         self.clear_button = QPushButton("Clear Power Trace")
@@ -249,6 +253,9 @@ class PowerPanel(QWidget):
 
             if hasattr(axis, "enableAutoSIPrefix"):
                 axis.enableAutoSIPrefix(False)
+
+        self.power_plot.setLabel("bottom", "Time (s)")
+        self.power_plot.setLabel("left", "Power ch1 (W)")
 
         if settings.power_auto_range:
             self.power_plot.enableAutoRange()
