@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+*.pyc
 
 # Local environments / interpreters
 .venv/
@@ -31,3 +32,4 @@ Thumbs.db
 # Data
 data/
 *.csv
+config/lab_defaults.local.json
