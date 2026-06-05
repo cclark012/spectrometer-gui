@@ -12,7 +12,6 @@ from core.settings import DeviceConfig, AcquisitionSettings, PowerMonitorSetting
 from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
-from devices.newport_2936r_dotnet import Newport2936R
 from devices.qepro_adapter import QEProSpectrometer
 from validation.power_validation import power_snapshot_valid
 
@@ -107,6 +106,8 @@ class DeviceController(QObject):
                 self.pm = EmulatedPowerMeter()
                 messages.append("Power meter: emulator")
             else:
+                from devices.newport_2936r_dotnet import Newport2936R
+
                 if self.config.newport_dll is None:
                     raise RuntimeError("Real Newport mode requires newport_dll.")
 
