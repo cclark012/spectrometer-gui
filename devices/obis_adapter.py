@@ -275,7 +275,7 @@ class ObisBox:
 
         return bool(nominal_power)
 
-    def discover_channels(self, max_channels: int = 6) -> list[LaserChannelInfo]:
+    def discover_channels(self, max_channels: int = 5) -> list[LaserChannelInfo]:
         channels: list[LaserChannelInfo] = []
 
         for ch in range(max_channels):
@@ -335,6 +335,11 @@ class ObisBox:
             timeout_s=0.30,
         )
 
+        try:
+            cdrh_delay_enabled = self.get_cdrh_delay(ch)
+        except Exception:
+            cdrh_delay_enabled = None
+
         return LaserChannelInfo(
             port=self.port,
             box_id=self.box_id,
@@ -347,6 +352,7 @@ class ObisBox:
             setpoint_w=_first_float(setpoint_text),
             output_power_w=_first_float(output_power_text),
             enabled=_state_from_text(enabled_text),
+            cdrh_delay_enabled=cdrh_delay_enabled,
         )
 
     def set_power_w(self, channel: int, power_w: float) -> None:
@@ -503,6 +509,7 @@ class EmulatedObisBox:
             setpoint_w=float(state.setpoint_w),
             output_power_w=float(output_power_w),
             enabled=state.enabled,
+            cdrh_delay_enabled=state.cdrh_delay_enabled,
         )
 
     def set_power_w(self, channel: int, power_w: float) -> None:
