@@ -23,11 +23,14 @@ goto:sub_%ERRORLEVEL%
 :sub_1
 echo Starting the GUI with emulation...
 %target_file% %~dp0gui.py --emulate --laser-mode emulated
-goto:eof
+goto :end
 
 :sub_2
 echo Starting the GUI with real instruments...
 %target_file% %~dp0gui.py --real --obis-ports COM3 COM5
-goto:eof
+goto :end
+
+:end
+pause
 
 :: echo %target_file%
