@@ -27,3 +27,7 @@ Thumbs.db
 !.vscode/launch.json
 !.vscode/tasks.json
 !.vscode/settings.json
+
+# Data
+data/
+*.csv
