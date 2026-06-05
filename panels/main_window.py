@@ -1776,7 +1776,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Power scan preview failed",
-                str(exc),
+                (
+                    "Could not generate a scan plan.\n\n"
+                    f"{exc}\n\n"
+                    "Common causes:\n"
+                    "- requested powers outside laser/calibration/filter range\n"
+                    "- calibration curve does not cover requested powers\n"
+                    "- no feasible ND filter state"
+                ),
             )
 
     def _ensure_filter_state_for_point(self, point: PowerScanPoint) -> bool:
