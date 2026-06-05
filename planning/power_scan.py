@@ -193,6 +193,11 @@ def make_power_scan_points(
                     requested,
                     transmission=t,
                 )
+                if not math.isfinite(setpoint):
+                    raise ValueError(
+                        f"Requested point {i} requires a setpoint outside the calibration range: "
+                        f"requested={requested:.6e} W, basis={basis}"
+                    )
                 expected_actual = calibration.expected_power(setpoint, transmission=t)
 
         else:
@@ -214,6 +219,12 @@ def make_power_scan_points(
                     f"Requested point {i} requires setpoint {unclipped_setpoint:.6e} W, "
                     f"outside laser range [{laser_min:.6e}, {laser_max:.6e}] W"
                 )
+
+        if not math.isfinite(expected_actual):
+            raise ValueError(
+                f"Expected actual power is non-finite for point {i}: "
+                f"requested={requested:.6e} W, setpoint={setpoint:.6e} W"
+            )
 
         points.append(
             PowerScanPoint(
