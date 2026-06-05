@@ -466,6 +466,7 @@ class MainWindow(QMainWindow):
         self.power_panel.details_requested.connect(self.show_power_details_dialog)
         self.power_panel.auto_wavelength_changed.connect(self._on_auto_power_meter_wavelength_changed)
         self.power_panel.mode_changed.connect(self._on_power_monitor_mode_changed)
+        self.power_panel.wavelength_set_requested.connect(self.power_meter_wavelength_requested.emit)
 
         dock.setWidget(self.power_panel)
 
