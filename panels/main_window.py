@@ -1482,7 +1482,7 @@ class MainWindow(QMainWindow):
             QMetaObject.invokeMethod(
                 self.laser_controller,
                 "shutdown",
-                Qt.ConnectionType.QueuedConnection,
+                Qt.ConnectionType.BlockingQueuedConnection,
             )
         except Exception:
             pass
@@ -2340,12 +2340,11 @@ class MainWindow(QMainWindow):
 
         self.stop_full_power_log()
 
-        # Existing QEPro/Newport worker shutdown.
         try:
             QMetaObject.invokeMethod(
                 self.controller,
                 "shutdown",
-                Qt.ConnectionType.QueuedConnection,
+                Qt.ConnectionType.BlockingQueuedConnection,
             )
         except Exception:
             self.shutdown_requested.emit()
