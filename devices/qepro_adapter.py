@@ -252,6 +252,7 @@ class QEProSpectrometer:
 
     def set_hardware_averages(self, averages: int) -> bool:
         method = self._set_hardware_average_method()
+        print("QEPro hardware average method:", method)
 
         if method is None:
             return False
