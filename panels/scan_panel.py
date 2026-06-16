@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from core.laser_models import PowerScanPoint
 from core.preferences import get_str
-from planning.power_scan import make_requested_powers_w, make_power_scan_points
+from planning.power_scan import make_requested_powers_w, make_power_scan_plan
 
 
 _POWER_FACTORS = {
@@ -269,7 +269,7 @@ class ScanPanel(QWidget):
             custom_values_w=self.custom_powers_w() if spacing == "custom" else None,
         )
 
-        points = make_power_scan_points(
+        plan = make_power_scan_plan(
             requested_powers_w=requested,
             basis=self.scan_basis(),
             laser_min_setpoint_w=float(laser_min_setpoint_w),
@@ -280,7 +280,7 @@ class ScanPanel(QWidget):
             allow_clipping=True,
         )
 
-        return points
+        return plan.points
 
     def set_points(self, points: list[PowerScanPoint]) -> None:
         self._points = list(points)

@@ -153,6 +153,134 @@ def make_requested_powers_w(
     raise ValueError(f"Unknown spacing mode: {spacing!r}")
 
 
+@dataclass(frozen=True, slots=True)
+class ScanPlan:
+    points: list[PowerScanPoint]
+    warnings: list[str]
+
+
+def make_power_scan_plan(
+    *,
+    requested_powers_w: list[float],
+    basis: PowerBasis,
+    laser_min_setpoint_w: float,
+    laser_max_setpoint_w: float,
+    calibration: CalibrationCurve | None = None,
+    transmission: float = 1.0,
+    filter_state: str = "none",
+    allow_clipping: bool = True,
+) -> ScanPlan:
+    points: list[PowerScanPoint] = []
+    warnings: list[str] = []
+
+    laser_min = float(laser_min_setpoint_w)
+    laser_max = float(laser_max_setpoint_w)
+    t = float(transmission)
+
+    if not math.isfinite(laser_min) or not math.isfinite(laser_max):
+        raise ValueError("Laser setpoint limits are not finite.")
+
+    if laser_min < 0 or laser_max <= laser_min:
+        raise ValueError(
+            f"Invalid laser setpoint range: [{laser_min:.6e}, {laser_max:.6e}] W"
+        )
+
+    if not math.isfinite(t) or t <= 0:
+        raise ValueError(f"Invalid transmission: {transmission!r}")
+
+    for i, requested_raw in enumerate(requested_powers_w):
+        requested = float(requested_raw)
+
+        if not math.isfinite(requested):
+            raise ValueError(f"Requested power at point {i} is non-finite.")
+
+        if requested < 0:
+            raise ValueError(f"Requested power at point {i} is negative: {requested:.6e} W")
+
+        if basis == "setpoint":
+            setpoint = requested
+
+            if calibration is None:
+                expected_actual = setpoint * t
+            else:
+                expected_actual = calibration.expected_power(setpoint, transmission=t)
+
+        elif basis == "expected_actual":
+            if requested <= 0:
+                raise ValueError(
+                    f"Expected-actual scan point {i} must be positive: {requested:.6e} W"
+                )
+
+            if calibration is None:
+                setpoint = requested / t
+                expected_actual = setpoint * t
+            else:
+                setpoint = calibration.setpoint_for_expected_power(
+                    requested,
+                    transmission=t,
+                    allow_extrapolation=False,
+                )
+
+                if not math.isfinite(setpoint):
+                    raise ValueError(
+                        f"Point {i} is outside the calibration range after filter correction: "
+                        f"requested={requested:.6e} W, transmission={t:.6e}, "
+                        f"filter_state={filter_state!r}"
+                    )
+
+                expected_actual = calibration.expected_power(setpoint, transmission=t)
+
+        else:
+            raise ValueError(f"Unknown scan basis: {basis!r}")
+
+        if not math.isfinite(setpoint):
+            raise ValueError(
+                f"Point {i} generated a non-finite setpoint: requested={requested:.6e} W"
+            )
+
+        unclipped_setpoint = float(setpoint)
+
+        if setpoint < laser_min or setpoint > laser_max:
+            if not allow_clipping:
+                raise ValueError(
+                    f"Point {i} requires setpoint {setpoint:.6e} W, outside laser range "
+                    f"[{laser_min:.6e}, {laser_max:.6e}] W"
+                )
+
+            clipped = min(max(setpoint, laser_min), laser_max)
+
+            warnings.append(
+                f"Point {i + 1}: setpoint clipped from {setpoint:.6e} W "
+                f"to {clipped:.6e} W."
+            )
+
+            setpoint = clipped
+
+            if calibration is None:
+                expected_actual = setpoint * t
+            else:
+                expected_actual = calibration.expected_power(setpoint, transmission=t)
+
+        if not math.isfinite(expected_actual):
+            raise ValueError(
+                f"Point {i} generated a non-finite expected actual power: "
+                f"requested={requested:.6e} W, setpoint={setpoint:.6e} W"
+            )
+
+        points.append(
+            PowerScanPoint(
+                index=i,
+                requested_power_w=float(requested),
+                requested_basis=basis,
+                setpoint_w=float(setpoint),
+                expected_actual_power_w=float(expected_actual),
+                filter_state=str(filter_state),
+            )
+        )
+
+    return ScanPlan(points=points, warnings=warnings)
+
+
 def make_power_scan_points(
     *,
     requested_powers_w: list[float],
@@ -164,77 +292,15 @@ def make_power_scan_points(
     filter_state: str = "none",
     allow_clipping: bool = True,
 ) -> list[PowerScanPoint]:
-    points: list[PowerScanPoint] = []
 
-    laser_min = float(laser_min_setpoint_w)
-    laser_max = float(laser_max_setpoint_w)
-    t = float(transmission)
-
-    if not math.isfinite(t) or t <= 0:
-        raise ValueError(f"Invalid transmission: {transmission!r}")
-
-    for i, requested in enumerate(requested_powers_w):
-        requested = float(requested)
-
-        if basis == "setpoint":
-            setpoint = requested
-
-            if calibration is None:
-                expected_actual = setpoint * t
-            else:
-                expected_actual = calibration.expected_power(setpoint, transmission=t)
-
-        elif basis == "expected_actual":
-            if calibration is None:
-                setpoint = requested / t
-                expected_actual = setpoint * t
-            else:
-                setpoint = calibration.setpoint_for_expected_power(
-                    requested,
-                    transmission=t,
-                )
-                if not math.isfinite(setpoint):
-                    raise ValueError(
-                        f"Requested point {i} requires a setpoint outside the calibration range: "
-                        f"requested={requested:.6e} W, basis={basis}"
-                    )
-                expected_actual = calibration.expected_power(setpoint, transmission=t)
-
-        else:
-            raise ValueError(f"Unknown basis: {basis!r}")
-
-        unclipped_setpoint = setpoint
-
-        if allow_clipping:
-            setpoint = min(max(setpoint, laser_min), laser_max)
-
-            if calibration is None:
-                expected_actual = setpoint * t
-            else:
-                expected_actual = calibration.expected_power(setpoint, transmission=t)
-
-        else:
-            if setpoint < laser_min or setpoint > laser_max:
-                raise ValueError(
-                    f"Requested point {i} requires setpoint {unclipped_setpoint:.6e} W, "
-                    f"outside laser range [{laser_min:.6e}, {laser_max:.6e}] W"
-                )
-
-        if not math.isfinite(expected_actual):
-            raise ValueError(
-                f"Expected actual power is non-finite for point {i}: "
-                f"requested={requested:.6e} W, setpoint={setpoint:.6e} W"
-            )
-
-        points.append(
-            PowerScanPoint(
-                index=i,
-                requested_power_w=requested,
-                requested_basis=basis,
-                setpoint_w=float(setpoint),
-                expected_actual_power_w=float(expected_actual),
-                filter_state=filter_state,
-            )
-        )
-
-    return points
+    plan = make_power_scan_plan(
+        requested_powers_w=requested_powers_w,
+        basis=basis,
+        laser_min_setpoint_w=laser_min_setpoint_w,
+        laser_max_setpoint_w=laser_max_setpoint_w,
+        calibration=calibration,
+        transmission=transmission,
+        filter_state=filter_state,
+        allow_clipping=allow_clipping,
+    )
+    return plan.points
