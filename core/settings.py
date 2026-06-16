@@ -113,6 +113,13 @@ class PowerMonitorSettings:
     invalid_power_retries: int = 3
     invalid_power_retry_delay_s: float = 0.10
 
+    validate_status_words: bool = True
+    required_power_channels: tuple[int, ...] = (0,)
+    require_detector_present: bool = True
+    reject_range_changing: bool = True
+    reject_detector_saturated: bool = True
+    reject_overrange: bool = True
+
 
 @dataclass
 class SignalWarningSettings:
