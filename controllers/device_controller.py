@@ -63,7 +63,14 @@ class DeviceController(QObject):
         self.connected_ok = False
         self.background_spectrum = None
 
+        self._background_grid_cache_key = None
+        self._background_counts_per_s_on_grid = None
+        self._last_invalid_power_status_s = 0.0
+        self._capabilities = None
+        self._info = None
+
         self.power_monitor_settings = PowerMonitorSettings()
+
 
     @Slot()
     def connect_devices(self) -> None:
@@ -144,6 +151,7 @@ class DeviceController(QObject):
             self.connection_failed.emit(
                 "No spectrometer or power meter connected.\n\n" + "\n".join(errors)
             )
+
 
     @Slot(object)
     def capture_background(self, settings: AcquisitionSettings) -> None:
@@ -240,6 +248,42 @@ class DeviceController(QObject):
         except Exception:
             self.error.emit(traceback.format_exc())
 
+
+    def _prepare_background_for_grid(self, wavelengths_nm: np.ndarray) -> np.ndarray:
+        bg = self.background_spectrum
+
+        if bg is None:
+            raise RuntimeError("No background spectrum")
+
+        current = np.asarray(wavelengths_nm, dtype=float)
+
+        cache_key = (
+            current.shape,
+            float(current[0]) if current.size else float("nan"),
+            float(current[-1]) if current.size else float("nan"),
+        )
+
+        old_key = getattr(self, "_background_grid_cache_key", None)
+
+        if old_key == cache_key:
+            cached = getattr(self, "_background_counts_per_s_on_grid", None)
+            if cached is not None:
+                return cached
+
+        bg_wl = np.asarray(bg.wavelengths_nm, dtype=float)
+        bg_cps = np.asarray(bg.counts_per_s, dtype=float)
+
+        if current.shape == bg_wl.shape and np.allclose(current, bg_wl, rtol=0.0, atol=1e-9):
+            out = bg_cps
+        else:
+            out = np.interp(current, bg_wl, bg_cps)
+
+        self._background_grid_cache_key = cache_key
+        self._background_counts_per_s_on_grid = out
+
+        return out
+
+
     def _apply_background(
         self,
         *,
@@ -250,29 +294,18 @@ class DeviceController(QObject):
         if self.background_spectrum is None:
             return intensities_counts, False, "", 0
 
-        bg = self.background_spectrum
-
-        # current_wl = np.asarray(wavelengths_nm, dtype=float)
-        current_y = np.asarray(intensities_counts, dtype=float)
-
+        bg_cps = self._prepare_background_for_grid(wavelengths_nm)
         integration_s = max(float(integration_ms) * 1.0e-3, 1.0e-12)
-        corrected = current_y - bg.counts_per_s * integration_s
 
-        # bg_cps = np.interp(
-        #     current_wl,
-        #     np.asarray(bg.wavelengths_nm, dtype=float),
-        #     np.asarray(bg.counts_per_s, dtype=float),
-        # )
-
-
-        # corrected = current_y - bg_cps * integration_s
+        corrected = np.asarray(intensities_counts, dtype=float) - bg_cps * integration_s
 
         return (
             corrected,
             True,
-            bg.timestamp_utc,
-            int(bg.integration_ms),
+            self.background_spectrum.timestamp_utc,
+            int(self.background_spectrum.integration_ms),
         )
+
 
     def _emit_spectrometer_info(self) -> None:
         if self.spec is None:
@@ -285,6 +318,7 @@ class DeviceController(QObject):
                 max_intensity=float(getattr(self.spec, "max_intensity", float("nan"))),
                 emulated=type(self.spec).__name__.lower().startswith("emulated"),
             )
+            self._info = info
             self.spectrometer_info_ready.emit(info)
         except Exception:
             pass
@@ -301,7 +335,9 @@ class DeviceController(QObject):
                 feature_methods={"error": [repr(exc)]},
             )
 
+        self._capabilities = caps
         self.spectrometer_capabilities_ready.emit(caps)
+
 
     @Slot(object)
     def set_power_monitor_settings(self, settings: PowerMonitorSettings) -> None:
@@ -335,16 +371,21 @@ class DeviceController(QObject):
 
         values = last_snapshot.powers_w if last_snapshot is not None else []
 
-        message = (
-            f"Invalid Newport power reading after {attempts} attempt(s): "
-            f"{last_reason}; values={values}"
-        )
+        now = time.monotonic()
+        if now - self._last_invalid_power_status_s > 2.0:
+            message = (
+                f"Invalid Newport power reading after {attempts} attempt(s): "
+                f"{last_reason}; values={values}"
+            )
+    
+            if required:
+                raise RuntimeError(message)
+    
+            self.status.emit("Ignored invalid Newport power reading: " + last_reason)
+            self._last_invalid_power_status_s = now
 
-        if required:
-            raise RuntimeError(message)
-
-        self.status.emit("Ignored invalid Newport power reading: " + last_reason)
         return None
+
 
     @Slot()
     def poll_power(self) -> None:
@@ -368,6 +409,7 @@ class DeviceController(QObject):
         except Exception:
             self.error.emit(traceback.format_exc())
 
+
     @Slot(str)
     def read_power_once(self, tag: str) -> None:
         try:
@@ -376,6 +418,7 @@ class DeviceController(QObject):
 
         except Exception:
             self.error.emit(traceback.format_exc())
+
 
     @Slot(int)
     def set_power_meter_wavelength_nm(self, wavelength_nm: int) -> None:
@@ -396,6 +439,7 @@ class DeviceController(QObject):
 
         except Exception:
             self.error.emit(traceback.format_exc())
+
 
     @Slot(object)
     def acquire(self, settings: AcquisitionSettings) -> None:
@@ -498,12 +542,18 @@ class DeviceController(QObject):
         except Exception:
             self.acquisition_failed.emit(traceback.format_exc())
 
+
     @Slot()
     def query_spectrometer_capabilities(self) -> None:
         try:
-            self._emit_spectrometer_info()
+            if self._info is None or self._capabilities is None:
+                self._emit_spectrometer_info()
+            else:
+                self.spectrometer_info_ready.emit(self._info)
+                self.spectrometer_capabilities_ready.emit(self._capabilities)
         except Exception:
             self.error.emit(traceback.format_exc())
+
 
     @Slot()
     def shutdown(self) -> None:
