@@ -17,7 +17,7 @@ except Exception:
     gl = None
     HAS_GL_3D = False
 
-from PySide6.QtCore import Signal, QSettings
+from PySide6.QtCore import Signal, QSettings, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -210,6 +210,13 @@ class MonitorPanel(QWidget):
         controls_layout.addLayout(button_layout)
 
         layout.addWidget(controls)
+        
+        self._plot_old = False
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.setInterval(200)
+        self._redraw_timer.timeout.connect(self._redraw_if_old)
+        self._redraw_timer.start()
+
 
     def tracking_enabled(self) -> bool:
         return bool(self.track_enable.isChecked())
@@ -756,6 +763,12 @@ class MonitorPanel(QWidget):
             f"y = power [{self._format_range_value(power_min, 'W')} to {self._format_range_value(power_max, 'W')}], "
             f"color = {quantity_label} [{self._format_range_value(q_min, quantity_units)} to {self._format_range_value(q_max, quantity_units)}]"
         )
+
+    def _redraw_if_old(self) -> None:
+        if not self._plot_old:
+            return
+        self._plot_old = False
+        self.redraw()
 
     def redraw(self) -> None:
         mode = self._plot_mode()

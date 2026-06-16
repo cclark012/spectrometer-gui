@@ -8,7 +8,7 @@ from collections import deque
 import numpy as np
 import pyqtgraph as pg
 
-from PySide6.QtCore import Signal, Qt, QSettings
+from PySide6.QtCore import Signal, Qt, QSettings, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -109,6 +109,13 @@ class PowerPanel(QWidget):
         wavelength_row.addWidget(self.set_pm_wavelength_button)
 
         layout.addLayout(wavelength_row)
+        
+        self._plot_old = False
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.setInterval(200)
+        self._redraw_timer.timeout.connect(self._redraw_if_old)
+        self._redraw_timer.start()
+
 
     def set_max_points(self, max_points: int) -> None:
         max_points = int(max_points)
@@ -131,6 +138,12 @@ class PowerPanel(QWidget):
 
     def append_point(self, point: PowerTracePoint) -> None:
         self.power_trace.append(point)
+        self._plot_old = True
+
+    def _redraw_if_old(self) -> None:
+        if not self._plot_old:
+            return
+        self._plot_old = False
         self.redraw()
 
     def clear(self) -> None:
