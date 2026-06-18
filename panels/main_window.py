@@ -6,9 +6,10 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-import numpy as np
 
-from PySide6.QtCore import QSettings, QThread, QTimer, Qt, Signal, Slot, QMetaObject
+import numpy as np
+import pyqtgraph as pg
+from PySide6.QtCore import QMetaObject, QSettings, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog,
@@ -25,41 +26,43 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import pyqtgraph as pg
-
-from controllers.laser_controller import LaserController
-from dialogs.power_details_dialog import PowerDetailsDialog
-from dialogs.spectrometer_details_dialog import SpectrometerDetailsDialog
-from panels.laser_panel import LaserPanel
-from panels.power_panel import PowerPanel
-from panels.acquisition_panel import AcquisitionPanel
-from panels.monitor_panel import MonitorPanel
-from panels.scan_panel import ScanPanel
-from panels.filter_wheels_panel import FilterWheelPanel
-from dialogs.settings_dialog import AppSettingsDialog
 from controllers.device_controller import DeviceController
-from io_utils.power_logging import FullPowerLogger
-from io_utils.file_naming import build_power_trace_path, build_spectrum_path
-from io_utils.spectrum_io import save_spectrum_record, load_spectrum_csv
-from io_utils.calibration_io import save_calibration_csv, load_calibration_csv
-from planning.power_scan import CalibrationCurve, ScanPlan
-from planning.filter_planning import (
-    enumerate_filter_states,
-    plan_min_filter_changes
-)
-from core.units import format_power_w
-from core.time_utils import utc_now_iso
+from controllers.laser_controller import LaserController
 from core.laser_models import LaserChannelInfo, PowerScanPoint
-from core.settings import (
-    AcquisitionSettings, 
-    DeviceConfig, 
-    FileNameSettings, 
-    PlotStyleSettings,
-    PowerMonitorSettings, 
-    SignalWarningSettings, 
-)
-from core.records import BackgroundSpectrum, PowerSnapshot, PowerTracePoint, SpectrometerInfo, SpectrumRecord, SpectrometerCapabilities
 from core.preferences import get_bool, get_float, get_int, get_path, get_str
+from core.records import (
+    BackgroundSpectrum,
+    PowerSnapshot,
+    PowerTracePoint,
+    SpectrometerCapabilities,
+    SpectrometerInfo,
+    SpectrumRecord,
+)
+from core.settings import (
+    AcquisitionSettings,
+    DeviceConfig,
+    FileNameSettings,
+    PlotStyleSettings,
+    PowerMonitorSettings,
+    SignalWarningSettings,
+)
+from core.time_utils import utc_now_iso
+from core.units import format_power_w
+from dialogs.power_details_dialog import PowerDetailsDialog
+from dialogs.settings_dialog import AppSettingsDialog
+from dialogs.spectrometer_details_dialog import SpectrometerDetailsDialog
+from io_utils.calibration_io import load_calibration_csv, save_calibration_csv
+from io_utils.file_naming import build_power_trace_path, build_spectrum_path
+from io_utils.power_logging import FullPowerLogger
+from io_utils.spectrum_io import load_spectrum_csv, save_spectrum_record
+from panels.acquisition_panel import AcquisitionPanel
+from panels.filter_wheels_panel import FilterWheelPanel
+from panels.laser_panel import LaserPanel
+from panels.monitor_panel import MonitorPanel
+from panels.power_panel import PowerPanel
+from panels.scan_panel import ScanPanel
+from planning.filter_planning import enumerate_filter_states, plan_min_filter_changes
+from planning.power_scan import CalibrationCurve, ScanPlan
 
 ESTIMATED_MONITOR_POINT_BYTES = 768
 
@@ -190,11 +193,26 @@ class MainWindow(QMainWindow):
         self.acquire_requested.connect(self.controller.acquire)
         self.power_poll_requested.connect(self.controller.poll_power)
         self.shutdown_requested.connect(self.controller.shutdown)
-        self.power_settings_changed.connect(self.controller.set_power_monitor_settings, Qt.ConnectionType.QueuedConnection)
-        self.power_meter_wavelength_requested.connect(self.controller.set_power_meter_wavelength_nm, Qt.ConnectionType.QueuedConnection)
-        self.laser_set_power_requested.connect(self.laser_controller.set_power_w, Qt.ConnectionType.QueuedConnection)
-        self.laser_set_enabled_requested.connect(self.laser_controller.set_enabled, Qt.ConnectionType.QueuedConnection)
-        self.power_read_once_requested.connect(self.controller.read_power_once, Qt.ConnectionType.QueuedConnection)
+        self.power_settings_changed.connect(
+            self.controller.set_power_monitor_settings, 
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.power_meter_wavelength_requested.connect(
+            self.controller.set_power_meter_wavelength_nm, 
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.laser_set_power_requested.connect(
+            self.laser_controller.set_power_w, 
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.laser_set_enabled_requested.connect(
+            self.laser_controller.set_enabled, 
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.power_read_once_requested.connect(
+            self.controller.read_power_once, 
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.background_capture_requested.connect(
             self.controller.capture_background,
             Qt.ConnectionType.QueuedConnection,
@@ -985,7 +1003,10 @@ class MainWindow(QMainWindow):
         # Stop live acquisition on acquisition failure.
         self.acquisition_panel.set_live_enabled(False)
 
-        self.statusBar().showMessage("Spectrum acquisition failed. Live acquisition stopped.", 15000)
+        self.statusBar().showMessage(
+            "Spectrum acquisition failed. Live acquisition stopped.", 
+            15000
+        )
 
         print(message)
 
@@ -1062,7 +1083,11 @@ class MainWindow(QMainWindow):
         if self.calibration_active:
             laser = self.calibration_laser
 
-            if laser is not None and str(port) == str(laser.port) and int(channel) == int(laser.channel):
+            if (
+                laser is not None 
+                and str(port) == str(laser.port) 
+                and int(channel) == int(laser.channel)
+            ):
                 if enabled:
                     self._maybe_update_power_meter_wavelength_for_laser(laser)
                     self._start_next_calibration_point()
@@ -1306,7 +1331,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Spectrometer details requested",
-                "Spectrometer capabilities have been requested. Try opening this dialog again in a moment.",
+                "Spectrometer capabilities have been requested."
+                "Try opening this dialog again in a moment.",
             )
             return
 

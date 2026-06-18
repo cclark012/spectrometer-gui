@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import re
 
-
 _INVALID_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._+\-]+")
 
 

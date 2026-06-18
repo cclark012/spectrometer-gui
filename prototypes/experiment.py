@@ -1,4 +1,4 @@
-from qe_pro import QEProSpectrometer
+from qe_pro import QEProSpectrometer # noqa
 from newport_2936r import SerialTransport, Newport2936R
 
 with QEProSpectrometer() as spec:

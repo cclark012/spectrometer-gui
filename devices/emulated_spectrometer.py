@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 import time
+
 import numpy as np
 
 from core.records import SpectrometerCapabilities
+
 
 class EmulatedSpectrometer:
     def __init__(self) -> None:
@@ -131,7 +133,10 @@ class EmulatedSpectrometer:
     def _validate_integration_us(self, integration_us: int) -> int:
         integration_us = int(integration_us)
 
-        if integration_us < self.integration_time_min_us or integration_us > self.integration_time_max_us:
+        if (
+            integration_us < self.integration_time_min_us 
+            or integration_us > self.integration_time_max_us
+        ):
             raise ValueError(
                 f"Emulated integration time {integration_us} us is outside range "
                 f"[{self.integration_time_min_us}, {self.integration_time_max_us}] us"

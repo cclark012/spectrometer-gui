@@ -82,7 +82,11 @@ class QEProSpectrometer:
 
         return None
 
-    def _find_fuzzy_method(self, required_terms: list[str], excluded_terms: list[str] | None = None):
+    def _find_fuzzy_method(
+            self, 
+            required_terms: list[str], 
+            excluded_terms: list[str] | None = None
+        ):
         excluded_terms = excluded_terms or []
 
         for obj in self._feature_objects():

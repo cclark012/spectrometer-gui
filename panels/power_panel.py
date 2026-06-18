@@ -7,11 +7,10 @@ from collections import deque
 
 import numpy as np
 import pyqtgraph as pg
-
-from PySide6.QtCore import Signal, Qt, QSettings, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -20,9 +19,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.preferences import get_bool, get_int, get_str
 from core.records import PowerSnapshot, PowerTracePoint
 from core.units import format_power_w
-from core.preferences import get_bool, get_int, get_str
 
 
 class PowerPanel(QWidget):

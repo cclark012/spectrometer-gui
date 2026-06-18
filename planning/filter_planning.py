@@ -5,7 +5,11 @@ import math
 
 import numpy as np
 
-from core.filter_models import FilterState, FilterWheel, FilterPlanStep # pyright: ignore[reportMissingImports]
+from core.filter_models import (  # pyright: ignore[reportMissingImports]
+    FilterPlanStep,
+    FilterState,
+    FilterWheel,
+)
 from planning.power_scan import CalibrationCurve
 
 
@@ -18,7 +22,7 @@ def enumerate_filter_states(wheels: list[FilterWheel]) -> list[FilterState]:
 
         positions = tuple(
             (wheel.name, position.label)
-            for wheel, position in zip(wheels, combo)
+            for wheel, position in zip(wheels, combo) # noqa
         )
 
         states.append(
@@ -151,7 +155,7 @@ def plan_min_filter_changes(
         expected_table[0, j] = expected
 
     for i in range(1, n):
-        feasible_indices = {j: (setpoint, expected) for j, setpoint, expected in feasible_by_point[i]}
+        feasible_indices = {j: (setpoint, expected) for j, setpoint, expected in feasible_by_point[i]} # noqa
 
         for j, (setpoint, expected) in feasible_indices.items():
             best_cost = inf

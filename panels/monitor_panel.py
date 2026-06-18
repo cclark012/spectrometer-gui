@@ -17,7 +17,7 @@ except Exception:
     gl = None
     HAS_GL_3D = False
 
-from PySide6.QtCore import Signal, QSettings, QTimer
+from PySide6.QtCore import QSettings, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,17 +25,16 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
-    QLabel, # noqa
+    QLabel,  # noqa
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from core.time_utils import utc_now_iso
-from core.records import MonitorTracePoint, SpectrumRecord
 from core.preferences import get_bool, get_float, get_str
-
+from core.records import MonitorTracePoint, SpectrumRecord
+from core.time_utils import utc_now_iso
 
 ESTIMATED_MONITOR_POINT_BYTES = 768
 
@@ -338,9 +337,9 @@ class MonitorPanel(QWidget):
         # Update the human-readable overlay label.
         self.monitor_3d_info_label.setText(
             "3D monitor: "
-            f"x = magnetic field [{self._format_range_value(field_min, 'mT')} to {self._format_range_value(field_max, 'mT')}], "
-            f"y = power ch1 [{self._format_range_value(power_min, 'W')} to {self._format_range_value(power_max, 'W')}], "
-            f"z = {quantity_label} [{self._format_range_value(q_min, quantity_units)} to {self._format_range_value(q_max, quantity_units)}]"
+            f"x = magnetic field [{self._format_range_value(field_min, 'mT')} to {self._format_range_value(field_max, 'mT')}], " # noqa
+            f"y = power ch1 [{self._format_range_value(power_min, 'W')} to {self._format_range_value(power_max, 'W')}], " # noqa
+            f"z = {quantity_label} [{self._format_range_value(q_min, quantity_units)} to {self._format_range_value(q_max, quantity_units)}]" # noqa
         )
 
     def _clear_3d_items(self, items: list) -> None:
@@ -433,13 +432,13 @@ class MonitorPanel(QWidget):
 
         # Static axis-end labels. Dynamic numeric labels are updated in _update_3d_labels().
         self.monitor_3d_label_items.append(
-            self._make_3d_text(pos=(1.08, -0.04, 0.0), text="Field", color=(255, 150, 150, 255), size=11)
+            self._make_3d_text(pos=(1.08, -0.04, 0.0), text="Field", color=(255, 150, 150, 255), size=11) # noqa
         )
         self.monitor_3d_label_items.append(
-            self._make_3d_text(pos=(-0.08, 1.08, 0.0), text="Power", color=(150, 255, 150, 255), size=11)
+            self._make_3d_text(pos=(-0.08, 1.08, 0.0), text="Power", color=(150, 255, 150, 255), size=11) # noqa
         )
         self.monitor_3d_label_items.append(
-            self._make_3d_text(pos=(-0.08, -0.05, 1.08), text="Signal", color=(150, 190, 255, 255), size=11)
+            self._make_3d_text(pos=(-0.08, -0.05, 1.08), text="Signal", color=(150, 190, 255, 255), size=11) # noqa
         )
 
     def _make_monitor_trace_point(self, record: SpectrumRecord) -> MonitorTracePoint:
@@ -735,7 +734,7 @@ class MonitorPanel(QWidget):
 
         spots = []
 
-        for field, power_w, q, zn in zip(fields, powers_w, quantities, q_norm):
+        for field, power_w, q, zn in zip(fields, powers_w, quantities, q_norm): # noqa
             # Pastel-to-warm color scale.
             r = int(60 + 180 * zn)
             g = int(170 - 70 * zn)
@@ -760,8 +759,8 @@ class MonitorPanel(QWidget):
         self.monitor_map_info_label.setText(
             "Field-power map: "
             f"x = field [{field_min:.4g} to {field_max:.4g} mT], "
-            f"y = power [{self._format_range_value(power_min, 'W')} to {self._format_range_value(power_max, 'W')}], "
-            f"color = {quantity_label} [{self._format_range_value(q_min, quantity_units)} to {self._format_range_value(q_max, quantity_units)}]"
+            f"y = power [{self._format_range_value(power_min, 'W')} to {self._format_range_value(power_max, 'W')}], " # noqa
+            f"color = {quantity_label} [{self._format_range_value(q_min, quantity_units)} to {self._format_range_value(q_max, quantity_units)}]" # noqa
         )
 
     def _redraw_if_old(self) -> None:

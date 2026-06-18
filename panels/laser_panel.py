@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, Signal, Slot, QSettings
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtCore import QSettings, Qt, Signal, Slot
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
 
 from core.laser_models import LaserChannelInfo, LaserEmissionState
 from core.preferences import get_bool, get_str
-
 
 _POWER_FACTORS = {
     "W": 1.0,
@@ -312,7 +311,7 @@ class LaserPanel(QWidget):
                 f"IDN: {laser.idn}\n"
                 f"Wavelength: {_fmt_wavelength_nm(laser.wavelength_nm)}\n"
                 f"Setpoint: {_fmt_power_w(laser.setpoint_w)}\n"
-                f"Range: {_fmt_power_w(laser.min_setpoint_w)} to {_fmt_power_w(laser.max_setpoint_w)}"
+                f"Range: {_fmt_power_w(laser.min_setpoint_w)} to {_fmt_power_w(laser.max_setpoint_w)}" # noqa
             )
             item.setToolTip(tooltip)
 

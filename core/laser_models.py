@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 
@@ -19,7 +19,7 @@ class LaserCalibrationPoint:
     filter_state: str = "none"
 
 
-class LaserEmissionState(str, Enum):
+class LaserEmissionState(StrEnum):
     UNKNOWN = "unknown"
     ON = "on"
     OFF = "off"

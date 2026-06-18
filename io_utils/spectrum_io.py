@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import csv
+from pathlib import Path
+
 import numpy as np
 
 from core.records import SpectrumRecord
@@ -51,7 +52,7 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
         writer.writerow(["wavelength_nm", "intensity_counts"])
 
 
-        for wl, intensity in zip(record.wavelengths_nm, record.intensities_counts):
+        for wl, intensity in zip(record.wavelengths_nm, record.intensities_counts): # noqa
             writer.writerow([f"{float(wl):.12e}", f"{float(intensity):.12e}"])
 
 

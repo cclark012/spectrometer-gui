@@ -15,8 +15,8 @@ except RuntimeError:
     # Runtime may already be loaded in an interactive session.
     pass
 
-from System import Array, Object, Int32, Single, Double # pyright: ignore[reportMissingImports]
-from System.Reflection import Assembly # pyright: ignore[reportMissingImports]
+from System import Array, Double, Int32, Object, Single  # pyright: ignore[reportMissingImports]
+from System.Reflection import Assembly  # pyright: ignore[reportMissingImports]
 
 
 class NewportError(RuntimeError):
@@ -118,7 +118,8 @@ class Newport2936R:
 
         if target_ctor is None:
             raise NewportError(
-                "Could not find constructor PowerMeterCommands(Boolean logging, ref String deviceKey)"
+                "Could not find constructor "
+                "PowerMeterCommands(Boolean logging, ref String deviceKey)"
             )
 
         args = Array[Object]([self.logging, ""])
@@ -129,7 +130,8 @@ class Newport2936R:
         if not self.device_key:
             raise NewportError(
                 "Newport DLL returned an empty device key. "
-                "Close Newport applications, check USB connection, and verify the Newport app can see the meter."
+                "Close Newport applications, check USB connection, "
+                "and verify the Newport app can see the meter."
             )
 
     def _method_signature(self, method) -> str:
@@ -433,7 +435,7 @@ class Newport2936R:
         self.obj = None
         self.assembly = None
 
-    def __enter__(self) -> "Newport2936R":
+    def __enter__(self) -> Newport2936R:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

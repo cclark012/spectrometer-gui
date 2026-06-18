@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 from newport_2936r import (
     Newport2936R,
@@ -65,10 +65,10 @@ def cmd_power(args: argparse.Namespace) -> int:
         if outfile:
             outfile.parent.mkdir(parents=True, exist_ok=True)
             if not outfile.exists():
-                outfile.write_text("timestamp_utc,channel,value,units_code,units_name\n", encoding="utf-8")
+                outfile.write_text("timestamp_utc,channel,value,units_code,units_name\n", encoding="utf-8") # noqa
         for _ in range(args.repeat):
             reading = meter.read_power(channel=args.channel)
-            print(f"{reading.timestamp_utc}  ch={reading.channel}  {reading.value:.8e} {reading.units_name}")
+            print(f"{reading.timestamp_utc}  ch={reading.channel}  {reading.value:.8e} {reading.units_name}") # noqa
             if outfile:
                 with outfile.open("a", encoding="utf-8") as handle:
                     handle.write(
@@ -88,7 +88,7 @@ def cmd_spectrum(args: argparse.Namespace) -> int:
             averages=args.averages,
         )
         csv_path = QEProSpectrometer.save_csv(args.outfile, spectrum)
-        meta_path = QEProSpectrometer.save_metadata_json(Path(args.outfile).with_suffix(".json"), spectrum)
+        meta_path = QEProSpectrometer.save_metadata_json(Path(args.outfile).with_suffix(".json"), spectrum) # noqa
         print(f"Saved spectrum to {csv_path}")
         print(f"Saved metadata to {meta_path}")
     return 0
@@ -122,7 +122,7 @@ def cmd_both(args: argparse.Namespace) -> int:
             "power_after": _power_as_dict(power_after),
             "power_mean": 0.5 * (power_before.value + power_after.value),
         }
-        metadata_json = QEProSpectrometer.save_metadata_json(prefix.with_suffix(".json"), spectrum, metadata)
+        metadata_json = QEProSpectrometer.save_metadata_json(prefix.with_suffix(".json"), spectrum, metadata) # noqa
         print(f"Saved spectrum to {spectrum_csv}")
         print(f"Saved metadata to {metadata_json}")
     return 0
@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("list-ports", help="List serial ports and VISA resources")
     p.set_defaults(func=cmd_list_ports)
 
-    p = sub.add_parser("list-spectrometers", help="List Ocean Optics spectrometers visible to seabreeze")
+    p = sub.add_parser("list-spectrometers", help="List Ocean Optics spectrometers visible to seabreeze") # noqa
     p.add_argument("--backend", choices=["cseabreeze", "pyseabreeze"], default=None)
     p.set_defaults(func=cmd_list_spectrometers)
 
@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_power_meter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--serial-port", default=None, help="Example: COM5 or /dev/ttyUSB0")
     parser.add_argument("--visa-resource", default=None, help="Example: ASRL5::INSTR")
-    parser.add_argument("--write-termination", default="\r", help="VISA only; use '' for Newport USB if needed")
+    parser.add_argument("--write-termination", default="\r", help="VISA only; use '' for Newport USB if needed") # noqa
     parser.add_argument("--read-termination", default="\n", help="VISA only")
     parser.add_argument("--timeout-s", type=float, default=1.0)
     parser.add_argument("--channel", type=int, default=1, choices=[1, 2])

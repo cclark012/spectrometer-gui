@@ -8,6 +8,7 @@ from pathlib import Path
 from core.records import PowerTracePoint
 from core.time_utils import utc_now_iso
 
+
 class FullPowerLogger:
     def __init__(self, path: Path):
         self.path = Path(path)

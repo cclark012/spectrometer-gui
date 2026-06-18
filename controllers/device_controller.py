@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-import traceback
 import time
+import traceback
 
 import numpy as np
-
 from PySide6.QtCore import QObject, Signal, Slot
 
-from core.records import PowerSnapshot, SpectrumRecord, SpectrometerInfo, BackgroundSpectrum, SpectrometerCapabilities
-from core.settings import DeviceConfig, AcquisitionSettings, PowerMonitorSettings
+from core.records import (
+    BackgroundSpectrum,
+    PowerSnapshot,
+    SpectrometerCapabilities,
+    SpectrometerInfo,
+    SpectrumRecord,
+)
+from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSettings
 from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
@@ -105,7 +110,9 @@ class DeviceController(QObject):
                     messages.append("Spectrometer: emulator fallback")
                     self._emit_spectrometer_info()
                 except Exception:
-                    errors.append("Spectrometer emulator fallback failed:\n" + traceback.format_exc())
+                    errors.append(
+                        "Spectrometer emulator fallback failed:\n" + traceback.format_exc()
+                    )
 
         # Power meter path.
         try:
@@ -137,7 +144,9 @@ class DeviceController(QObject):
                     self.power_available = True
                     messages.append("Power meter: emulator fallback")
                 except Exception:
-                    errors.append("Power meter emulator fallback failed:\n" + traceback.format_exc())
+                    errors.append(
+                        "Power meter emulator fallback failed:\n" + traceback.format_exc()
+                    )
 
         self.connected_ok = self.spec_available or self.power_available
 

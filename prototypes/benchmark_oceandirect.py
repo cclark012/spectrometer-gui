@@ -1,13 +1,14 @@
 # benchmark_oceandirect_qepro.py
 
 import time
+
 import numpy as np
-from oceandirect.OceanDirectAPI import OceanDirectAPI, OceanDirectError
+from oceandirect.OceanDirectAPI import OceanDirectAPI  # pyright: ignore[reportMissingImports]
 
 
 def main():
     od = OceanDirectAPI()
-    device_count = od.find_usb_devices()
+    device_count = od.find_usb_devices() # noqa
     ids = od.get_device_ids()
 
     if not ids:

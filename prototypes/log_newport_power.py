@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import csv
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from devices.newport_2936r_dotnet import Newport2936R
-
 
 DLL_PATH = Path(
     r"C:\Program Files\Newport\Newport Power Meter Application\Samples\PowerMeterCommands.dll"
@@ -16,7 +15,7 @@ DLL_PATH = Path(
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 def main() -> int:

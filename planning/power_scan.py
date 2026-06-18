@@ -10,7 +10,6 @@ import numpy as np
 
 from core.laser_models import PowerScanPoint
 
-
 SpacingMode = Literal["linear", "logarithmic", "custom"]
 PowerBasis = Literal["setpoint", "expected_actual"]
 

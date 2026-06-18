@@ -7,13 +7,11 @@ import re
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import serial
 from serial.tools import list_ports
 
-import numpy as np
-
 from core.laser_models import LaserChannelInfo, LaserEmissionState
-
 
 _FLOAT_RE = re.compile(
     r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?"

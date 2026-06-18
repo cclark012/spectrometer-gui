@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox, # noqa
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,13 +24,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.records import SpectrometerInfo
 from core.settings import (
     FileNameSettings,
+    PlotStyleSettings,
     PowerMonitorSettings,
     SignalWarningSettings,
-    PlotStyleSettings
 )
-from core.records import SpectrometerInfo
 
 
 class AppSettingsDialog(QDialog):

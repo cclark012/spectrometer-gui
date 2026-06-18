@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from core.settings import FileNameSettings
 from core.records import SpectrumRecord
+from core.settings import FileNameSettings
 from core.units import field_token, power_token, sanitize_component
 
 
@@ -14,7 +14,7 @@ def parse_timestamp(timestamp_utc: str) -> datetime:
     try:
         return datetime.fromisoformat(timestamp_utc.replace("Z", "+00:00"))
     except Exception:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
 
 def next_available_path(directory: Path, stem: str, extension: str, width: int = 4) -> Path:
@@ -38,7 +38,7 @@ def build_spectrum_path(
     directory = Path(settings.save_directory)
     directory.mkdir(parents=True, exist_ok=True)
 
-    extension = settings.extension if settings.extension.startswith(".") else "." + settings.extension
+    extension = settings.extension if settings.extension.startswith(".") else "." + settings.extension # noqa
 
     dt = parse_timestamp(record.timestamp_utc)
 
@@ -81,9 +81,9 @@ def build_power_trace_path(
     directory = Path(settings.save_directory)
     directory.mkdir(parents=True, exist_ok=True)
 
-    extension = settings.extension if settings.extension.startswith(".") else "." + settings.extension
+    extension = settings.extension if settings.extension.startswith(".") else "." + settings.extension # noqa
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     parts = [sanitize_component(settings.base_name), "power_trace"]
 

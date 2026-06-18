@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from planning.power_scan import CalibrationCurve
 from core.time_utils import utc_now_iso
+from planning.power_scan import CalibrationCurve
 
 
 def save_calibration_csv(
@@ -65,7 +65,7 @@ def save_calibration_csv(
                     ]
                 )
         else:
-            for setpoint, measured in zip(calibration.setpoint_w, calibration.measured_power_w):
+            for setpoint, measured in zip(calibration.setpoint_w, calibration.measured_power_w): # noqa
                 writer.writerow(
                     [
                         f"{float(setpoint):.12e}",
@@ -125,7 +125,7 @@ def load_calibration_csv(path: Path) -> tuple[CalibrationCurve, list[dict]]:
                 {
                     "setpoint_w": setpoint,
                     "measured_power_mean_w": measured_power,
-                    "measured_power_std_w": float(values.get("measured_power_std_W", "nan") or "nan"),
+                    "measured_power_std_w": float(values.get("measured_power_std_W", "nan") or "nan"), # noqa
                     "n_reads": int(float(values.get("n_reads", "0") or "0")),
                     "timestamp_utc": values.get("timestamp_utc", ""),
                     "port": values.get("port", ""),

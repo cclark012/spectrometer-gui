@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Signal, QSettings # noqa
+from PySide6.QtCore import QSettings, Signal  # noqa
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,8 +24,7 @@ from PySide6.QtWidgets import (
 
 from core.laser_models import PowerScanPoint
 from core.preferences import get_str
-from planning.power_scan import make_requested_powers_w, make_power_scan_plan, ScanPlan
-
+from planning.power_scan import ScanPlan, make_power_scan_plan, make_requested_powers_w
 
 _POWER_FACTORS = {
     "W": 1.0,

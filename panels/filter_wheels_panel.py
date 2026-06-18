@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
 from core.filter_models import FilterPosition, FilterWheel
 from planning.filter_planning import enumerate_filter_states
 
-
 DEFAULT_WHEELS = [
     {
         "name": "Wheel 1",
@@ -230,7 +229,7 @@ class FilterWheelPanel(QWidget):
 
         for row, pos in enumerate(positions):
             self.position_table.setItem(row, 0, QTableWidgetItem(str(pos.get("label", ""))))
-            self.position_table.setItem(row, 1, QTableWidgetItem(f"{float(pos.get('od', 0.0)):.6g}"))
+            self.position_table.setItem(row, 1, QTableWidgetItem(f"{float(pos.get('od', 0.0)):.6g}")) # noqa
 
         self.position_table.blockSignals(False)
         self.position_table.resizeColumnsToContents()
@@ -330,7 +329,9 @@ class FilterWheelPanel(QWidget):
         positions = list(wheel.get("positions", []))
 
         if len(positions) <= 1:
-            QMessageBox.information(self, "Cannot remove position", "At least one position is required.")
+            QMessageBox.information(
+                self, "Cannot remove position", "At least one position is required."
+            )
             return
 
         if row < len(positions):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Signal, QSettings
+from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,8 +15,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.settings import AcquisitionSettings
 from core.preferences import get_bool, get_int, get_str
+from core.settings import AcquisitionSettings
+
 
 class AcquisitionPanel(QWidget):
     acquire_requested = Signal()
