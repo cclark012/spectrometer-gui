@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -39,7 +39,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Magneto-PL acquisition GUI")
 
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--emulate", action="store_true", help="Use spectrometer and power-meter emulators")
+    mode.add_argument("--emulate", action="store_true", help="Use spectrometer and power-meter emulators") # noqa
     mode.add_argument("--real", action="store_true", help="Use real QE-PRO and Newport 2936-R")
 
     parser.add_argument(
@@ -61,7 +61,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--power-channel",
-        type=None,
+        type=int,
         default=1,
         help="Newport active channel for CmdGetPower; all-channel reads are still logged",
     )
