@@ -111,6 +111,7 @@ class DeviceController(QObject):
         try:
             if self.config.emulate:
                 self.pm = EmulatedPowerMeter()
+                self.power_monitor_settings.validate_status_words = False
                 messages.append("Power meter: emulator")
             else:
                 from devices.newport_2936r_dotnet import Newport2936R
