@@ -53,13 +53,16 @@ class SpectrometerDetailsDialog(QDialog):
         self.refresh_temp_button.setEnabled(bool(capabilities.tec_supported))
         self.refresh_temp_button.clicked.connect(self.temperature_refresh_requested.emit)
 
-        form.addRow("TEC supported", str(bool(capabilities.tec_supported)))
+        # form.addRow("TEC supported", str(bool(capabilities.tec_supported)))
         form.addRow("TEC enabled", self.tec_enabled_check)
         form.addRow("TEC target", self.tec_target_spin)
         form.addRow("", self.set_tec_button)
         form.addRow("", self.refresh_temp_button)
 
-        form.addRow("Device averaging supported", str(bool(capabilities.device_averaging_supported)))
+        # form.addRow(
+            # "Device averaging supported", 
+            # str(bool(capabilities.device_averaging_supported))
+        # )
 
         layout.addLayout(form)
 
@@ -71,7 +74,10 @@ class SpectrometerDetailsDialog(QDialog):
             f"Serial: {capabilities.serial_number}",
             f"Pixels: {capabilities.pixels}",
             f"Max intensity: {capabilities.max_intensity}",
-            f"Integration limits: {capabilities.integration_time_min_us} - {capabilities.integration_time_max_us} us",
+            (
+                f"Integration limits: {capabilities.integration_time_min_us} "
+                f"- {capabilities.integration_time_max_us} us"
+            ),
             "",
             "Features:",
         ]
