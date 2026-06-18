@@ -27,9 +27,12 @@ class EmulatedPowerMeter:
         ch1 = base * drift * noise
         ch2 = 0.095 * ch1 * (1.0 + self.rng.normal(0.0, 0.001))
 
+        VALID_CH1_STATUS = 0x118
+        VALID_CH2_STATUS = 0x108
+
         return PowerSnapshot(
             powers_w=[float(ch1), float(ch2)],
-            pm_status=[0, 0],
+            pm_status=[VALID_CH1_STATUS, VALID_CH2_STATUS],
             command_status=0,
         )
 
