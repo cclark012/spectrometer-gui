@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from core.laser_models import PowerScanPoint
 from core.preferences import get_str
-from planning.power_scan import make_requested_powers_w, make_power_scan_plan
+from planning.power_scan import make_requested_powers_w, make_power_scan_plan, ScanPlan
 
 
 _POWER_FACTORS = {
@@ -204,6 +204,9 @@ class ScanPanel(QWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(False)
         layout.addWidget(self.table, stretch=1)
+        
+        self.warning_label = QLabel("")
+        layout.addWidget(self.warning_label)
 
     def _on_spacing_changed(self) -> None:
         spacing = str(self.spacing_combo.currentData())
@@ -250,14 +253,14 @@ class ScanPanel(QWidget):
 
         return values
 
-    def make_points_for_laser(
+    def make_plan_for_laser(
         self,
         *,
         laser_min_setpoint_w: float,
         laser_max_setpoint_w: float,
         calibration=None,
         transmission: float = 1.0,
-    ) -> list[PowerScanPoint]:
+    ) -> ScanPlan:
         factor = self.power_factor()
         spacing = self.spacing()
 
@@ -269,7 +272,7 @@ class ScanPanel(QWidget):
             custom_values_w=self.custom_powers_w() if spacing == "custom" else None,
         )
 
-        plan = make_power_scan_plan(
+        return make_power_scan_plan(
             requested_powers_w=requested,
             basis=self.scan_basis(),
             laser_min_setpoint_w=float(laser_min_setpoint_w),
@@ -280,10 +283,27 @@ class ScanPanel(QWidget):
             allow_clipping=True,
         )
 
+    def make_points_for_laser(
+        self,
+        *,
+        laser_min_setpoint_w: float,
+        laser_max_setpoint_w: float,
+        calibration=None,
+        transmission: float = 1.0,
+    ) -> ScanPlan:
+
+        plan = self.make_plan_for_laser(
+            laser_min_setpoint_w=float(laser_min_setpoint_w),
+            laser_max_setpoint_w=float(laser_max_setpoint_w),
+            calibration=calibration,
+            transmission=float(transmission),
+        )
+
         return plan.points
 
-    def set_points(self, points: list[PowerScanPoint]) -> None:
+    def set_points(self, points: list[PowerScanPoint], warnings: list[str]) -> None:
         self._points = list(points)
+        self._warnings = list(warnings or [])
 
         self.table.setRowCount(len(self._points))
 
@@ -300,6 +320,16 @@ class ScanPanel(QWidget):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
         self.table.resizeColumnsToContents()
+
+        if self._warnings:
+            self.warning_label.setText(f"{len(self._warnings)} warning(s).")
+            self.warning_label.setToolTip("\n".join(self._warnings))
+        else:
+            self.warning_label.setText("")
+            self.warning_label.setToolTip("")
+
+    def warnings(self) -> list[str]:
+        return list(getattr(self, "_warnings", []))
 
     def points(self) -> list[PowerScanPoint]:
         return list(self._points)

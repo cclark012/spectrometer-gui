@@ -238,7 +238,7 @@ def make_power_scan_plan(
                 f"Point {i} generated a non-finite setpoint: requested={requested:.6e} W"
             )
 
-        unclipped_setpoint = float(setpoint)
+        original_setpoint = float(setpoint)
 
         if setpoint < laser_min or setpoint > laser_max:
             if not allow_clipping:
@@ -250,7 +250,7 @@ def make_power_scan_plan(
             clipped = min(max(setpoint, laser_min), laser_max)
 
             warnings.append(
-                f"Point {i + 1}: setpoint clipped from {setpoint:.6e} W "
+                f"Point {i + 1}: setpoint clipped from {original_setpoint:.6e} W "
                 f"to {clipped:.6e} W."
             )
 

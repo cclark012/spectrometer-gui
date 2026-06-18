@@ -42,7 +42,7 @@ from io_utils.power_logging import FullPowerLogger
 from io_utils.file_naming import build_power_trace_path, build_spectrum_path
 from io_utils.spectrum_io import save_spectrum_record, load_spectrum_csv
 from io_utils.calibration_io import save_calibration_csv, load_calibration_csv
-from planning.power_scan import CalibrationCurve
+from planning.power_scan import CalibrationCurve, ScanPlan
 from planning.filter_planning import (
     enumerate_filter_states,
     plan_min_filter_changes
@@ -1671,7 +1671,7 @@ class MainWindow(QMainWindow):
         self.scan_panel.set_running(False)
         self.statusBar().showMessage(message, 15000)
 
-    def _make_scan_points_for_laser(self, laser) -> list[PowerScanPoint]:
+    def _make_scan_points_for_laser(self, laser) -> ScanPlan:
         calibration = None
 
         if self.scan_panel.scan_basis() == "expected_actual":
@@ -1683,7 +1683,7 @@ class MainWindow(QMainWindow):
             # If you want to force calibration later, add a checkbox.
 
         if not self.filter_wheel_panel.planner_enabled():
-            return self.scan_panel.make_points_for_laser(
+            return self.scan_panel.make_plan_for_laser(
                 laser_min_setpoint_w=float(laser.min_setpoint_w),
                 laser_max_setpoint_w=float(laser.max_setpoint_w),
                 calibration=calibration,
@@ -1779,32 +1779,17 @@ class MainWindow(QMainWindow):
 
     def preview_power_scan(self) -> None:
         laser = self._selected_scan_laser_or_warn()
-
         if laser is None:
             return
 
         try:
-            points = self._make_scan_points_for_laser(laser)
-            self.scan_panel.set_points(points)
-            
-            self.statusBar().showMessage(
-                f"Prepared {len(points)} scan point(s) for {laser.wavelength_nm} nm laser.",
-                10000,
-            )
-        
+            plan = self._make_scan_plan_for_laser(laser)
         except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Power scan preview failed",
-                (
-                    "Could not generate a scan plan.\n\n"
-                    f"{exc}\n\n"
-                    "Common causes:\n"
-                    "- requested powers outside laser/calibration/filter range\n"
-                    "- calibration curve does not cover requested powers\n"
-                    "- no feasible ND filter state"
-                ),
-            )
+            QMessageBox.critical(self, "Power scan preview failed", str(exc))
+            return
+
+        self.scan_panel.set_points(plan.points, plan.warnings)
+        self._show_scan_warnings(plan.warnings, allow_continue=False)
 
     def _ensure_filter_state_for_point(self, point: PowerScanPoint) -> bool:
         state = str(point.filter_state or "none")
@@ -1874,30 +1859,50 @@ class MainWindow(QMainWindow):
             float(point.setpoint_w),
         )
 
+    def _show_scan_warnings(self, warnings: list[str], *, allow_continue: bool) -> bool:
+        if not warnings:
+            return True
+
+        text = "\n".join(warnings[:25])
+        if len(warnings) > 25:
+            text += f"\n\n... {len(warnings) - 25} more warning(s)."
+
+        if not allow_continue:
+            QMessageBox.warning(self, "Scan plan warnings", text)
+            return True
+
+        result = QMessageBox.warning(
+            self,
+            "Scan plan warnings",
+            text + "\n\nContinue with this scan plan?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        return result == QMessageBox.StandardButton.Yes
+
     def start_power_scan(self) -> None:
         if self.power_scan_active:
             return
 
         laser = self._selected_scan_laser_or_warn()
-
         if laser is None:
             return
 
         try:
-            points = self._make_scan_points_for_laser(laser)
+            plan = self._make_scan_plan_for_laser(laser)
         except Exception as exc:
             QMessageBox.critical(self, "Power scan preview failed", str(exc))
             return
 
-        points = self.scan_panel.points()
-        self.scan_panel.set_points(points)
+        self.scan_panel.set_points(plan.points, plan.warnings)
+
+        if not self._show_scan_warnings(plan.warnings, allow_continue=True):
+            return
+
+        points = plan.points
 
         if not points:
-            QMessageBox.information(
-                self,
-                "No scan points",
-                "Preview or define at least one scan point first.",
-            )
+            QMessageBox.information(self, "No scan points", "No scan points were generated.")
             return
 
         self.power_scan_active = True
