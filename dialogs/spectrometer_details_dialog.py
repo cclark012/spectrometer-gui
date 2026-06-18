@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QLabel,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -53,16 +54,16 @@ class SpectrometerDetailsDialog(QDialog):
         self.refresh_temp_button.setEnabled(bool(capabilities.tec_supported))
         self.refresh_temp_button.clicked.connect(self.temperature_refresh_requested.emit)
 
-        # form.addRow("TEC supported", str(bool(capabilities.tec_supported)))
+        form.addRow("TEC supported", QLabel("Yes" if capabilities.tec_supported else "No"))
         form.addRow("TEC enabled", self.tec_enabled_check)
         form.addRow("TEC target", self.tec_target_spin)
         form.addRow("", self.set_tec_button)
         form.addRow("", self.refresh_temp_button)
 
-        # form.addRow(
-            # "Device averaging supported", 
-            # str(bool(capabilities.device_averaging_supported))
-        # )
+        form.addRow(
+            "Device averaging supported", 
+            QLabel("Yes" if capabilities.device_averaging_supported else "No"),
+        )
 
         layout.addLayout(form)
 
