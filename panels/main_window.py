@@ -1697,7 +1697,7 @@ class MainWindow(QMainWindow):
         self.scan_panel.set_running(False)
         self.statusBar().showMessage(message, 15000)
 
-    def _make_scan_points_for_laser(self, laser) -> ScanPlan:
+    def _make_scan_points_for_laser(self, laser: LaserChannelInfo) -> ScanPlan:
         calibration = None
 
         if self.scan_panel.scan_basis() == "expected_actual":
@@ -1740,20 +1740,35 @@ class MainWindow(QMainWindow):
         )
 
         points: list[PowerScanPoint] = []
+        warnings: list[str] = []
+        for i, step in enumerate(plan_steps):
+            original_setpoint = float(step.required_setpoint_w)
+            setpoint = original_setpoint
+            if setpoint < laser.min_setpoint_w or setpoint > laser.max_setpoint_w:
+                clipped = min(max(setpoint, laser.min_setpoint_w), laser.max_setpoint_w)
+                
+                warnings.append(
+                    f"Point {i + 1}: setpoint clipped from {original_setpoint:.6e} W "
+                    f"to {clipped:.6e} W."
+                )
+                setpoint = clipped
 
-        for step in plan_steps:
             points.append(
                 PowerScanPoint(
                     index=int(step.index),
                     requested_power_w=float(step.target_power_w),
                     requested_basis="expected_actual",
-                    setpoint_w=float(step.required_setpoint_w),
+                    setpoint_w=setpoint,
                     expected_actual_power_w=float(step.expected_actual_power_w),
                     filter_state=step.filter_state.label,
                 )
             )
+        plan = ScanPlan(
+            points=points,
+            warnings=warnings
+        )
 
-        return points
+        return plan
 
     def save_current_calibration(self) -> None:
         if self.current_laser_calibration is None:
@@ -1809,7 +1824,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            plan = self._make_scan_plan_for_laser(laser)
+            plan = self._make_scan_points_for_laser(laser)
         except Exception as exc:
             QMessageBox.critical(self, "Power scan preview failed", str(exc))
             return
@@ -1915,7 +1930,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            plan = self._make_scan_plan_for_laser(laser)
+            plan = self._make_scan_points_for_laser(laser)
         except Exception as exc:
             QMessageBox.critical(self, "Power scan preview failed", str(exc))
             return
