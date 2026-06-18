@@ -162,77 +162,58 @@ class QEProSpectrometer:
             device_averaging_supported=bool(self._set_hardware_average_method() is not None),
         )
 
-    # ---------- TEC probing ----------
+    def _feature(self, name: str):
+        accessor = getattr(self.spec, "f", None)
 
-    def _tec_get_temperature_method(self):
-        return (
-            self._find_first_method(
-                [
-                    "get_temperature_degrees_celsius",
-                    "read_temperature_degrees_celsius",
-                    "get_temperature_celsius",
-                    "read_temperature_celsius",
-                    "get_temperature",
-                    "read_temperature",
-                    "get_tec_temperature",
-                    "get_tec_temperature_degrees_celsius",
-                ]
-            )
-            or self._find_fuzzy_method(["temperature"], excluded_terms=["set"])
-        )
+        if accessor is not None:
+            feature = getattr(accessor, name, None)
+            if feature is not None:
+                return feature
 
-    def _tec_set_target_method(self):
-        return (
-            self._find_first_method(
-                [
-                    "set_temperature_setpoint_degrees_celsius",
-                    "set_temperature_setpoint_celsius",
-                    "set_temperature_setpoint",
-                    "set_tec_temperature_degrees_celsius",
-                    "set_tec_temperature",
-                    "set_temperature",
-                ]
-            )
-            or self._find_fuzzy_method(["set", "temperature"])
-        )
+        features = getattr(self.spec, "features", {})
+        feature_list = features.get(name, [])
 
-    def _tec_enable_method(self):
-        return (
-            self._find_first_method(
-                [
-                    "set_tec_enable",
-                    "set_tec_enabled",
-                    "set_thermo_electric_enable",
-                    "set_thermo_electric_enabled",
-                    "set_enable",
-                ]
-            )
-            or self._find_fuzzy_method(["enable"], excluded_terms=["get"])
-        )
+        if feature_list:
+            return feature_list[0]
+
+        return None
+
+    def _thermo(self):
+        return self._feature("thermo_electric")
 
     def get_ccd_temperature_c(self) -> float:
-        method = self._tec_get_temperature_method()
+        thermo = self._thermo()
 
-        if method is None:
-            raise RuntimeError("No QEPro TEC/CCD temperature read method was found.")
+        if thermo is None:
+            raise RuntimeError("No thermo_electric feature is available.")
 
-        return float(method())
+        return float(thermo.read_temperature_degrees_celsius())
 
     def set_tec_target_c(self, temperature_c: float) -> None:
-        method = self._tec_set_target_method()
+        thermo = self._thermo()
 
-        if method is None:
-            raise RuntimeError("No QEPro TEC target-temperature set method was found.")
+        if thermo is None:
+            raise RuntimeError("No thermo_electric feature is available.")
 
-        method(float(temperature_c))
+        thermo.set_temperature_setpoint_degrees_celsius(float(temperature_c))
 
     def set_tec_enabled(self, enabled: bool) -> None:
-        method = self._tec_enable_method()
+        thermo = self._thermo()
 
-        if method is None:
-            raise RuntimeError("No QEPro TEC enable/disable method was found.")
+        if thermo is None:
+            raise RuntimeError("No thermo_electric feature is available.")
 
-        method(bool(enabled))
+        # Some backends accept strings, some accept bools. Try the observed string form first.
+        state = "on" if enabled else "off"
+
+        try:
+            thermo.enable_tec(state)
+            return
+        except TypeError:
+            pass
+
+        thermo.enable_tec(bool(enabled))
+
 
     # ---------- hardware averaging probing ----------
 
