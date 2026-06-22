@@ -154,6 +154,8 @@ class MainWindow(QMainWindow):
         self.acquiring: bool = False
         self.current_record: SpectrumRecord | None = None
 
+        self.spectrum_manual_range_enabled = not self.plot_style_settings.spectrum_auto_range
+
         self.monitor_memory_warning_mb = 50.0
         self.monitor_memory_warning_issued = False
 
@@ -184,6 +186,13 @@ class MainWindow(QMainWindow):
         self.controller = DeviceController(config)
         self.controller.moveToThread(self.controller_thread)
 
+        self._pending_spectrum_record: SpectrumRecord | None = None
+        self._spectrum_plot_old = False
+
+        self.spectrum_redraw_timer = QTimer(self)
+        self.spectrum_redraw_timer.setInterval(200)
+        self.spectrum_redraw_timer.timeout.connect(self._redraw_spectrum_if_old)
+        self.spectrum_redraw_timer.start()
 
         self.controller_thread.started.connect(
             self.controller.connect_devices,
@@ -351,7 +360,18 @@ class MainWindow(QMainWindow):
         menu_file.addAction(quit_action)
 
         self.menuBar().addMenu("&Edit")
-        self.menuBar().addMenu("&View")
+        
+        menu_view = self.menuBar().addMenu("&View")
+        
+        self.spectrum_auto_range_action = QAction("Spectrum Auto Range", self)
+        self.spectrum_auto_range_action.setCheckable(True)
+        self.spectrum_auto_range_action.setChecked(self.plot_style_settings.spectrum_auto_range)
+        self.spectrum_auto_range_action.toggled.connect(self._on_spectrum_auto_range_toggled)
+        menu_view.addAction(self.spectrum_auto_range_action)
+
+        self.spectrum_set_range_action = QAction("Set Spectrum Axis Limits...", self)
+        # self.spectrum_set_range_action.triggered.connect(self.show_spectrum_axis_dialog)
+        menu_view.addAction(self.spectrum_set_range_action)
         
         menu_tool = self.menuBar().addMenu("&Tools")
         
@@ -565,6 +585,25 @@ class MainWindow(QMainWindow):
 
         self.monitor_panel.apply_plot_style(s)
         self.power_panel.apply_plot_style(s)
+
+    def _on_spectrum_auto_range_toggled(self, enabled: bool) -> None:
+        self.plot_style_settings.spectrum_auto_range = bool(enabled)
+        self.spectrum_manual_range_enabled = not enabled
+
+        if enabled:
+            self.spectrum_plot.enableAutoRange()
+            self.spectrum_plot.autoRange()
+        else:
+            self._apply_spectrum_manual_range()
+
+    def _apply_spectrum_manual_range(self) -> None:
+        s = self.plot_style_settings
+
+        if s.spectrum_x_max > s.spectrum_x_min:
+            self.spectrum_plot.setXRange(s.spectrum_x_min, s.spectrum_x_max, padding=0.0)
+
+        if s.spectrum_y_max > s.spectrum_y_min:
+            self.spectrum_plot.setYRange(s.spectrum_y_min, s.spectrum_y_max, padding=0.0)
 
     def _curve_style(self, *, color: str, width: float, show_line: bool, show_symbols: bool):
         pen = pg.mkPen(color, width=width) if show_line and width > 0 else None
@@ -945,10 +984,8 @@ class MainWindow(QMainWindow):
 
         self.current_record = record
 
-        self.spectrum_curve.setData(
-            record.wavelengths_nm,
-            record.intensities_counts,
-        )
+        self._pending_spectrum_record = record
+        self._spectrum_plot_old = True
 
         self.power_panel.set_current_power(record.p_after)
 
@@ -1215,6 +1252,27 @@ class MainWindow(QMainWindow):
             f"CCD temperature: {float(temperature_c):.2f} °C",
             10000,
         )
+
+    def _redraw_spectrum_if_old(self) -> None:
+        if not self._spectrum_plot_old:
+            return
+
+        record = self._pending_spectrum_record
+        if record is None:
+            return
+
+        self._spectrum_plot_old = False
+
+        self.spectrum_curve.setData(
+            record.wavelengths_nm,
+            record.intensities_counts,
+        )
+
+        if self.plot_style_settings.spectrum_auto_range:
+            self.spectrum_plot.enableAutoRange()
+        else:
+            self.spectrum_plot.disableAutoRange()
+            self._apply_spectrum_manual_range()
 
     def capture_background(self) -> None:
         settings = self._settings()
