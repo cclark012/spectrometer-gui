@@ -247,16 +247,16 @@ class LaserPanel(QWidget):
 
     @Slot(object)
     def set_lasers(self, lasers: object) -> None:
-        print("LaserPanel.set_lasers received", len(list(lasers)), "lasers")
-        for laser in lasers:
-            print(
-                "  ",
-                laser.port,
-                laser.channel,
-                laser.wavelength_nm,
-                laser.setpoint_w,
-                laser.box_id,
-            )
+        # print("LaserPanel.set_lasers received", len(list(lasers)), "lasers")
+        # for laser in lasers:
+        #     print(
+        #         "  ",
+        #         laser.port,
+        #         laser.channel,
+        #         laser.wavelength_nm,
+        #         laser.setpoint_w,
+        #         laser.box_id,
+        #     )
 
         self._lasers = sorted(list(lasers), key=_sort_wavelength_key)
         self._laser_by_key = {
