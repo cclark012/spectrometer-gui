@@ -107,7 +107,6 @@ class LaserController(QObject):
                 f"Set {port} ch{channel} to {float(power_w):.6e} W."
             )
 
-            self.lasers_ready.emit(self._collect_lasers())
             self.power_set_complete.emit(str(port), int(channel), float(power_w))
 
         except Exception:
@@ -122,7 +121,6 @@ class LaserController(QObject):
             state = "enabled" if enabled else "disabled"
             self.status.emit(f"{port} ch{channel} {state}.")
 
-            self.lasers_ready.emit(self._collect_lasers())
             self.enabled_set_complete.emit(str(port), int(channel), bool(enabled))
 
         except Exception:
