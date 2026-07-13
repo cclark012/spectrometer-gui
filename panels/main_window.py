@@ -1605,7 +1605,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            points = self.scan_panel.make_points_for_laser(
+            points = self.scan_panel.make_plan_for_laser(
                 laser_min_setpoint_w=float(laser.min_setpoint_w),
                 laser_max_setpoint_w=float(laser.max_setpoint_w),
             )
@@ -1616,10 +1616,10 @@ class MainWindow(QMainWindow):
         if not points:
             return
 
-        self.scan_panel.set_points(points)
+        self.scan_panel.set_points(points.points, points.warnings)
 
         self.calibration_active = True
-        self.calibration_points = points
+        self.calibration_points = points.points
         self.calibration_laser = laser
         self.calibration_index = 0
         self.calibration_read_index = 0
