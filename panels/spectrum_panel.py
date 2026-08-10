@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from core.records import SpectrumRecord
 from core.settings import PlotStyleSettings

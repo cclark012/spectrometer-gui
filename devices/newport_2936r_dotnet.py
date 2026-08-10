@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+
 from pythonnet import load
 
 from core.records import PowerSnapshot

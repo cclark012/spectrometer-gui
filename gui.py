@@ -14,7 +14,6 @@ from core.configuration import (
 from panels.main_window import MainWindow
 
 
-
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Magneto-PL acquisition GUI")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core.laser_models import LaserChannelInfo
