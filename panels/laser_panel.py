@@ -84,6 +84,66 @@ def _enabled_bool(state: LaserEmissionState) -> bool:
     return state == LaserEmissionState.ON
 
 
+def gaussian(x, amp, mu, s):
+    return (amp) * math.exp(-(x - mu) ** 2 / (2 * s ** 2))
+
+
+def wl_color(wl: float) -> tuple[int, int, int]:
+    # Bruton-style piecewise approximation
+    if 380 <= wl <= 440:
+        r = -(wl - 440) / (440 - 380)
+        g = 0.0
+        b = 1.0
+    elif 440 <= wl <= 490:
+        r = 0.0
+        g = (wl - 440) / (490 - 440)
+        b = 1.0
+    elif 490 <= wl <= 510:
+        r = 0.0
+        g = 1.0
+        b = -(wl - 510) / (510 - 490)
+    elif 510 <= wl <= 580:
+        r = (wl - 510) / (580 - 510)
+        g = 1.0
+        b = 0.0
+    elif 580 <= wl <= 645:
+        r = 1.0
+        g = -(wl - 645) / (645 - 580)
+        b = 0.0
+    elif 645 <= wl <= 780:
+        r = 1.0
+        g = 0.0
+        b = 0.0
+    else:
+        r = 0.0
+        g = 0.0
+        b = 0.0
+
+    # Factor to simulate low sensitivity near ends
+    if 380 <= wl <= 420:
+        factor = 0.3 + 0.7 * (wl - 380) / (420 - 380)
+    elif 420 <= wl <= 700:
+        factor = 1.0
+    elif 700 <= wl <= 780:
+        factor = 0.3 + 0.7 * (780 - wl) / (780 - 700)
+    else:
+        factor = 0.0
+    
+    r *= factor
+    g *= factor
+    b *= factor
+    # Gamma correction
+    for c in [r, g, b]:
+        if c <= 0.0031308:
+            c *= 12.92
+        else:
+            c = 1.055 * c ** (1 / 2.4) - 0.055
+    r *= 255
+    g *= 255
+    b *= 255
+    return int(r), int(g), int(b)
+
+
 def _wavelength_pastel_color(wavelength_nm: float) -> QColor:
     """
     Returns a subtle, low-alpha color associated with the laser wavelength.
@@ -96,7 +156,12 @@ def _wavelength_pastel_color(wavelength_nm: float) -> QColor:
         return QColor(230, 230, 230, 35)
 
     wl = float(wavelength_nm)
-
+    # r = int(gaussian(wl, 255, 575, 38.89))
+    # g = int(gaussian(wl, 255, 545, 31.82))
+    # b = int(gaussian(wl, 255, 445, 24.75))
+    r, g, b = wl_color(wl)
+    return QColor(r, g, b, 55)
+    
     if wl < 420:
         return QColor(185, 160, 255, 55)   # violet
     elif wl < 460:
