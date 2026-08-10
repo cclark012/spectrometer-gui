@@ -47,6 +47,19 @@ class DeviceConfig:
 
 
 @dataclass
+class DisplaySettings:
+    live_acquisition_gap_ms: int = 0
+
+    spectrum_redraw_interval_ms: int = 200
+    monitor_redraw_interval_ms: int = 200
+    power_redraw_interval_ms: int = 200
+
+    performance_enabled: bool = True
+    performance_report_interval_ms: int = 1000
+    event_loop_probe_interval_ms: int = 250
+
+
+@dataclass
 class FileNameSettings:
     save_directory: Path = field(default_factory=lambda: Path("data"))
     base_name: str = "spectrum"

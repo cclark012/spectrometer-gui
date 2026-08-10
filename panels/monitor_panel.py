@@ -46,6 +46,7 @@ class MonitorPanel(QWidget):
     save_requested = Signal()
     cleared = Signal()
     memory_warning_requested = Signal(float, int)
+    redrawn = Signal()
 
     def __init__(
         self,
@@ -212,6 +213,7 @@ class MonitorPanel(QWidget):
             return
         self._plot_dirty = False
         self.redraw()
+        self.redrawn.emit()
 
     def redraw(self) -> None:
         mode = str(self.plot_mode_combo.currentData())

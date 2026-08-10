@@ -24,6 +24,7 @@ from controllers.instrument_runtime import InstrumentRuntime
 from controllers.preferences_controller import PreferencesController
 from controllers.scan_coordinator import ScanCoordinator
 from core.laser_models import LaserChannelInfo
+from core.performance import SlidingRate
 from core.records import (
     BackgroundSpectrum,
     PowerSnapshot,
@@ -106,6 +107,7 @@ class MainWindow(QMainWindow):
         self._build_timers()
         self._build_scan_coordinator()
         self._build_preferences_controller()
+        self._build_performance_label()
 
         self._load_preferences()
         self._apply_loaded_preferences()
@@ -295,6 +297,19 @@ class MainWindow(QMainWindow):
             filter_wheel_panel=self.filter_wheel_panel,
         )
 
+    def _build_performance_label(self) -> None:
+        self.performance_label = QLabel()
+        self.statusBar().addPermanentWidget(self.performance_label)
+
+        self.acquisition_rate = SlidingRate()
+        self.spectrum_draw_rate = SlidingRate()
+        self.monitor_draw_rate = SlidingRate()
+        self.power_draw_rate = SlidingRate()
+
+        self.spectrum_panel.redrawn.connect(self.spectrum_draw_rate.mark)
+        self.monitor_panel.redrawn.connect(self.monitor_draw_rate.mark)
+        self.power_panel.redrawn.connect(self.power_draw_rate.mark)
+
     # ----------------------------------------------------------- worker controllers
 
     def _start_instrument_runtime(self) -> None:
@@ -426,6 +441,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_spectrum_ready(self, record: SpectrumRecord) -> None:
         self._finish_acquisition_ui()
+        self.acquisition_rate.mark()
         self.current_record = record
         self.file_io.set_current_record(record)
         self.spectrum_panel.queue_record(record)

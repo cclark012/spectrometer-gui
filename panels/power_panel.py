@@ -29,6 +29,7 @@ class PowerPanel(QWidget):
     mode_changed = Signal(str)
     wavelength_set_requested = Signal(int)
     auto_wavelength_changed = Signal(bool)
+    redrawn = Signal()
 
     def __init__(self, *, max_points: int = 600, parent=None) -> None:
         super().__init__(parent)
@@ -141,6 +142,7 @@ class PowerPanel(QWidget):
             return
         self._plot_dirty = False
         self.redraw()
+        self.redrawn.emit()
 
     def clear(self) -> None:
         self.power_trace.clear()

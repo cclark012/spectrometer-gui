@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from core.records import SpectrumRecord
@@ -11,6 +11,7 @@ from core.settings import PlotStyleSettings
 
 class SpectrumPanel(QWidget):
     """Throttled spectrum display with persistent auto/manual view limits."""
+    redrawn = Signal()
 
     def __init__(self, *, redraw_interval_ms: int = 200, parent=None) -> None:
         super().__init__(parent)
@@ -64,6 +65,7 @@ class SpectrumPanel(QWidget):
         record = self._pending_record
         self.curve.setData(record.wavelengths_nm, record.intensities_counts)
         self._apply_range()
+        self.redrawn.emit()
 
     def apply_style(self, settings: PlotStyleSettings) -> None:
         self._settings = settings
