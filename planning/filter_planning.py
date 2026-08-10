@@ -22,7 +22,7 @@ def enumerate_filter_states(wheels: list[FilterWheel]) -> list[FilterState]:
 
         positions = tuple(
             (wheel.name, position.label)
-            for wheel, position in zip(wheels, combo)
+            for wheel, position in zip(wheels, combo, strict=True)
         )
 
         states.append(

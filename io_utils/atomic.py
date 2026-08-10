@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
@@ -10,11 +10,11 @@ from typing import TextIO
 
 @contextmanager
 def atomic_text_writer(
-    path: str | Path,
-    *,
-    newline: str | None = "",
-    encoding: str = "utf-8",
-) -> Iterator[TextIO]:
+        path: str | Path,
+        *,
+        newline: str | None = "",
+        encoding: str = "utf-8",
+    ) -> Generator[TextIO]:
     """Write a text file through a same-directory temporary file.
 
     The final path is replaced only after the writer closes successfully. This
