@@ -21,7 +21,6 @@ from core.settings import AcquisitionSettings
 
 class AcquisitionPanel(QWidget):
     acquire_requested = Signal()
-    live_changed = Signal(bool)
     background_requested = Signal()
     background_clear_requested = Signal()
 
@@ -33,7 +32,6 @@ class AcquisitionPanel(QWidget):
 
         self.live_check = QCheckBox()
         self.live_check.setChecked(False)
-        self.live_check.toggled.connect(self.live_changed.emit)
 
         self.integration_ms = QSpinBox()
         self.integration_ms.setRange(1, 600_000)
@@ -48,10 +46,14 @@ class AcquisitionPanel(QWidget):
         self.subtract_background_check.setChecked(False)
 
         self.take_background_button = QPushButton("Take Background")
-        self.take_background_button.clicked.connect(self.background_requested.emit)
+        self.take_background_button.clicked.connect(
+            lambda _checked=False: self.background_requested.emit()
+        )
 
         self.clear_background_button = QPushButton("Clear Background")
-        self.clear_background_button.clicked.connect(self.background_clear_requested.emit)
+        self.clear_background_button.clicked.connect(
+            lambda _checked=False: self.background_clear_requested.emit()
+        )
 
         self.averages = QSpinBox()
         self.averages.setRange(1, 1000)
@@ -88,7 +90,9 @@ class AcquisitionPanel(QWidget):
         layout.addLayout(form)
 
         self.acquire_button = QPushButton("Take Spectrum")
-        self.acquire_button.clicked.connect(self.acquire_requested.emit)
+        self.acquire_button.clicked.connect(
+            lambda _checked=False: self.acquire_requested.emit()
+        )
         layout.addWidget(self.acquire_button)
 
         layout.addStretch(1)
@@ -119,23 +123,9 @@ class AcquisitionPanel(QWidget):
         self.live_check.setChecked(bool(enabled))
 
     def set_acquiring(self, acquiring: bool) -> None:
-        acquiring = bool(acquiring)
-
-        self.acquire_button.setEnabled(not acquiring)
-
-        # Usually leave the spinboxes enabled so the user can prepare the next
-        # acquisition while the current one runs. Disable them here only if you
-        # want fully locked acquisition state.
-        #
-        # for widget in [
-        #     self.integration_ms,
-        #     self.averages,
-        #     self.boxcar_width,
-        #     self.dark_check,
-        #     self.nonlinearity_check,
-        #     self.field_input,
-        # ]:
-        #     widget.setEnabled(not acquiring)
+        enabled = not bool(acquiring)
+        self.acquire_button.setEnabled(enabled)
+        self.take_background_button.setEnabled(enabled)
 
     def set_integration_limits_us(self, min_us: int, max_us: int) -> None:
         min_us = int(min_us or 0)

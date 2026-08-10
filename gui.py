@@ -1,56 +1,42 @@
-# spectroscopy_gui.py
-
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from core.settings import DeviceConfig
+from core.configuration import (
+    ConfigurationError,
+    build_device_config,
+    load_json_defaults,
+)
 from panels.main_window import MainWindow
 
-
-def load_json_defaults(path: str | None) -> dict:
-    if not path:
-        return {}
-
-    p = Path(path)
-
-    if not p.exists():
-        return {}
-
-    with p.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def value_from_args_or_config(args, config: dict, key: str, fallback):
-    value = getattr(args, key, None)
-
-    if value is not None:
-        return value
-
-    return config.get(key, fallback)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Magneto-PL acquisition GUI")
 
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--emulate", action="store_true", help="Use spectrometer and power-meter emulators") # noqa
+    mode.add_argument(
+        "--emulate",
+        action="store_true",
+        help="Use spectrometer and power-meter emulators",
+    )
     mode.add_argument("--real", action="store_true", help="Use real QE-PRO and Newport 2936-R")
 
     parser.add_argument(
         "--config",
-        default="config/lab_defaults.json"
+        default=str(Path(__file__).resolve().parent / "config" / "lab_defaults.json"),
+        help="Path to a JSON file containing lab defaults.",
     )
 
     parser.add_argument(
         "--fallback-emulator",
-        action="store_true",
-        help="Fall back to emulators if real-device connection fails",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Fall back to emulators if real-device connection fails.",
     )
 
     parser.add_argument(
@@ -62,7 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--power-channel",
         type=int,
-        default=1,
+        default=None,
         help="Newport active channel for CmdGetPower; all-channel reads are still logged",
     )
 
@@ -88,53 +74,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    config_json = load_json_defaults(args.config)
-    
-    newport_dll = value_from_args_or_config(
-        args,
-        config_json,
-        "newport_dll",
-        r"C:\Program Files\Newport\Newport Power Meter Application\Samples\PowerMeterCommands.dll",
-    )
+    try:
+        config_json = load_json_defaults(args.config)
+        config = build_device_config(args, config_json)
+    except ConfigurationError as exc:
+        parser.error(str(exc))
 
-    power_channel = int(
-        value_from_args_or_config(args, config_json, "power_channel", 1)
-    )
-    
-    laser_mode = str(
-        value_from_args_or_config(args, config_json, "laser_mode", "auto")
-    )
-    
-    obis_ports = value_from_args_or_config(args, config_json, "obis_ports", None)
-    
-    fallback_emulator = bool(
-        value_from_args_or_config(args, config_json, "fallback_emulator", False)
-    )
-
-    emulate_main_devices = True
-
-    if args.real:
-        emulate_main_devices = False
-    elif args.emulate:
-        emulate_main_devices = True
-
-    dll_path = Path(newport_dll) if newport_dll else None
-
-    config = DeviceConfig(
-        emulate=emulate_main_devices,
-        fallback_emulator=bool(fallback_emulator),
-        newport_dll=dll_path,
-        power_channel=int(power_channel),
-
-        emulate_lasers=(laser_mode == "emulated"),
-        laser_fallback_emulator=(laser_mode == "auto"),
-        obis_ports=obis_ports,
-    )
-
-    app = QApplication(sys.argv)
+    app = QApplication([sys.argv[0], *argv])
     QApplication.setOrganizationName("YourLab")
     QApplication.setApplicationName("MagnetoPLAcquisition")
     QApplication.setApplicationVersion("0.1")
@@ -144,5 +94,9 @@ def main(argv: list[str]) -> int:
     return app.exec()
 
 
+def cli() -> None:
+    raise SystemExit(main())
+
+
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    cli()

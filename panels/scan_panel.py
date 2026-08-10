@@ -1,10 +1,6 @@
-# panels/scan_panel.py
-
 from __future__ import annotations
 
-import math
-
-from PySide6.QtCore import QSettings, Signal  # noqa
+from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,35 +19,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.laser_models import PowerScanPoint
-from core.preferences import get_str
+from core.preferences import get_bool, get_float, get_int, get_str
+from core.units import format_power_w
 from planning.power_scan import ScanPlan, make_power_scan_plan, make_requested_powers_w
-
-_POWER_FACTORS = {
-    "W": 1.0,
-    "mW": 1e-3,
-    "μW": 1e-6,
-    "uW": 1e-6,
-    "nW": 1e-9,
-}
-
-
-def format_power(power_w: float) -> str:
-    if not math.isfinite(float(power_w)):
-        return "--"
-
-    p = float(power_w)
-    ap = abs(p)
-
-    if ap >= 1.0:
-        return f"{p:.5g} W"
-    if ap >= 1e-3:
-        return f"{p * 1e3:.5g} mW"
-    if ap >= 1e-6:
-        return f"{p * 1e6:.5g} μW"
-    if ap >= 1e-9:
-        return f"{p * 1e9:.5g} nW"
-
-    return f"{p:.4e} W"
 
 
 class ScanPanel(QWidget):
@@ -64,11 +34,25 @@ class ScanPanel(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-
-        self._points: list[PowerScanPoint] = []
-
         layout = QVBoxLayout(self)
+        layout.addLayout(self._build_form())
 
+        self.custom_values = QTextEdit()
+        self.custom_values.setPlaceholderText(
+            "Custom powers, one per line, using selected units.\nExample:\n1\n2\n5\n10"
+        )
+        self.custom_values.setFixedHeight(90)
+        self.custom_values.setVisible(False)
+        layout.addWidget(self.custom_values)
+        layout.addLayout(self._build_buttons())
+
+        self.table = self._build_table()
+        layout.addWidget(self.table, stretch=1)
+        self.warning_label = QLabel("")
+        self.warning_label.setWordWrap(True)
+        layout.addWidget(self.warning_label)
+
+    def _build_form(self) -> QFormLayout:
         form = QFormLayout()
 
         self.basis_combo = QComboBox()
@@ -85,21 +69,14 @@ class ScanPanel(QWidget):
         self.calibration_reads.setRange(1, 1000)
         self.calibration_reads.setValue(3)
 
-        self.start_power = QDoubleSpinBox()
-        self.start_power.setRange(0.0, 1.0e9)
-        self.start_power.setDecimals(3)
-        self.start_power.setValue(1.0)
-        self.start_power.setMaximumWidth(100)
-
-        self.stop_power = QDoubleSpinBox()
-        self.stop_power.setRange(0.0, 1.0e9)
-        self.stop_power.setDecimals(3)
-        self.stop_power.setValue(10.0)
-        self.stop_power.setMaximumWidth(100)
-
+        self.start_power = self._make_power_spin(1.0)
+        self.stop_power = self._make_power_spin(10.0)
         self.power_units = QComboBox()
+        self.power_units.addItem("W", 1.0)
+        self.power_units.addItem("mW", 1e-3)
+        self.power_units.addItem("μW", 1e-6)
+        self.power_units.addItem("nW", 1e-9)
         self.power_units.setMaximumWidth(72)
-        self.power_units.addItems(["W", "mW", "μW", "nW"])
 
         power_row = QHBoxLayout()
         power_row.addWidget(self.start_power)
@@ -126,10 +103,7 @@ class ScanPanel(QWidget):
 
         self.enable_before_scan = QCheckBox()
         self.enable_before_scan.setChecked(True)
-
         self.disable_after_scan = QCheckBox()
-        self.disable_after_scan.setChecked(False)
-
         self.autosave_scan_spectra = QCheckBox()
         self.autosave_scan_spectra.setChecked(True)
 
@@ -143,79 +117,78 @@ class ScanPanel(QWidget):
         form.addRow("Enable before scan", self.enable_before_scan)
         form.addRow("Disable after scan", self.disable_after_scan)
         form.addRow("Autosave spectra", self.autosave_scan_spectra)
+        return form
 
-        layout.addLayout(form)
+    @staticmethod
+    def _make_power_spin(value: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 1.0e9)
+        spin.setDecimals(3)
+        spin.setValue(float(value))
+        spin.setMaximumWidth(100)
+        return spin
 
-        self.custom_values = QTextEdit()
-        self.custom_values.setPlaceholderText(
-            "Custom powers, one per line, using selected units.\n"
-            "Example:\n1\n2\n5\n10"
-        )
-        self.custom_values.setFixedHeight(90)
-        layout.addWidget(self.custom_values)
-        self.custom_values.setVisible(False)
-
+    def _build_buttons(self) -> QHBoxLayout:
         buttons = QHBoxLayout()
-
         self.preview_button = QPushButton("Preview")
-        self.preview_button.clicked.connect(self.preview_requested.emit)
-
-        self.run_button = QPushButton("Run")
-        self.run_button.clicked.connect(self.run_requested.emit)
-
-        self.abort_button = QPushButton("Abort")
-        self.abort_button.clicked.connect(self.abort_requested.emit)
-        self.abort_button.setEnabled(False)
-        
-        self.calibration_button = QPushButton("Run Calibration")
-        self.calibration_button.clicked.connect(self.calibration_requested.emit)
-
-        self.save_calibration_button = QPushButton("Save")
-        self.save_calibration_button.clicked.connect(self.save_calibration_requested.emit)
-
-        self.load_calibration_button = QPushButton("Load")
-        self.load_calibration_button.clicked.connect(self.load_calibration_requested.emit)
-
-
-        buttons.addWidget(self.preview_button)
-        buttons.addWidget(self.run_button)
-        buttons.addWidget(self.abort_button)
-        buttons.addWidget(self.calibration_button)
-        buttons.addWidget(self.load_calibration_button)
-        buttons.addWidget(self.save_calibration_button)
-
-        layout.addLayout(buttons)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(22)
-        self.table.setHorizontalHeaderLabels(
-            [
-                "Index",
-                "Requested",
-                "Setpoint",
-                "Expected actual",
-                "Filter",
-            ]
+        self.preview_button.clicked.connect(
+            lambda _checked=False: self.preview_requested.emit()
         )
-        header = self.table.horizontalHeader()
+        self.run_button = QPushButton("Run")
+        self.run_button.clicked.connect(
+            lambda _checked=False: self.run_requested.emit()
+        )
+        self.abort_button = QPushButton("Abort")
+        self.abort_button.clicked.connect(
+            lambda _checked=False: self.abort_requested.emit()
+        )
+        self.abort_button.setEnabled(False)
+        self.calibration_button = QPushButton("Run Calibration")
+        self.calibration_button.clicked.connect(
+            lambda _checked=False: self.calibration_requested.emit()
+        )
+        self.load_calibration_button = QPushButton("Load")
+        self.load_calibration_button.clicked.connect(
+            lambda _checked=False: self.load_calibration_requested.emit()
+        )
+        self.save_calibration_button = QPushButton("Save")
+        self.save_calibration_button.clicked.connect(
+            lambda _checked=False: self.save_calibration_requested.emit()
+        )
+
+        for button in (
+            self.preview_button,
+            self.run_button,
+            self.abort_button,
+            self.calibration_button,
+            self.load_calibration_button,
+            self.save_calibration_button,
+        ):
+            buttons.addWidget(button)
+        return buttons
+
+    @staticmethod
+    def _build_table() -> QTableWidget:
+        table = QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(
+            ["Index", "Requested", "Setpoint", "Expected actual", "Filter"]
+        )
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(22)
+        header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(False)
-        layout.addWidget(self.table, stretch=1)
-        
-        self.warning_label = QLabel("")
-        layout.addWidget(self.warning_label)
+        return table
 
     def _on_spacing_changed(self) -> None:
-        spacing = str(self.spacing_combo.currentData())
-        self.custom_values.setVisible(spacing == "custom")
+        self.custom_values.setVisible(self.spacing() == "custom")
 
     def calibration_reads_per_point(self) -> int:
         return int(self.calibration_reads.value())
 
     def power_factor(self) -> float:
-        return _POWER_FACTORS[str(self.power_units.currentText())]
+        return float(self.power_units.currentData())
 
     def scan_basis(self) -> str:
         return str(self.basis_combo.currentData())
@@ -238,18 +211,29 @@ class ScanPanel(QWidget):
     def should_autosave_scan_spectra(self) -> bool:
         return bool(self.autosave_scan_spectra.isChecked())
 
+    def requested_powers_w(self) -> list[float]:
+        spacing = self.spacing()
+        return make_requested_powers_w(
+            start_w=float(self.start_power.value()) * self.power_factor(),
+            stop_w=float(self.stop_power.value()) * self.power_factor(),
+            n_points=int(self.n_points.value()),
+            spacing=spacing,
+            custom_values_w=self.custom_powers_w() if spacing == "custom" else None,
+        )
+
     def custom_powers_w(self) -> list[float]:
         factor = self.power_factor()
-        values = []
-
-        for line in self.custom_values.toPlainText().splitlines():
+        values: list[float] = []
+        for line_number, line in enumerate(self.custom_values.toPlainText().splitlines(), 1):
             text = line.strip()
-
             if not text:
                 continue
-
-            values.append(float(text) * factor)
-
+            try:
+                values.append(float(text) * factor)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid custom power on line {line_number}: {text!r}"
+                ) from exc
         return values
 
     def make_plan_for_laser(
@@ -259,93 +243,159 @@ class ScanPanel(QWidget):
         laser_max_setpoint_w: float,
         calibration=None,
         transmission: float = 1.0,
+        filter_state: str = "none",
+        allow_clipping: bool = True,
     ) -> ScanPlan:
-        factor = self.power_factor()
-        spacing = self.spacing()
-
-        requested = make_requested_powers_w(
-            start_w=float(self.start_power.value()) * factor,
-            stop_w=float(self.stop_power.value()) * factor,
-            n_points=int(self.n_points.value()),
-            spacing=spacing,
-            custom_values_w=self.custom_powers_w() if spacing == "custom" else None,
-        )
-
         return make_power_scan_plan(
-            requested_powers_w=requested,
+            requested_powers_w=self.requested_powers_w(),
             basis=self.scan_basis(),
             laser_min_setpoint_w=float(laser_min_setpoint_w),
             laser_max_setpoint_w=float(laser_max_setpoint_w),
             calibration=calibration,
             transmission=float(transmission),
-            filter_state="none",
-            allow_clipping=True,
+            filter_state=str(filter_state),
+            allow_clipping=bool(allow_clipping),
         )
 
-    def make_points_for_laser(
+    def make_calibration_plan_for_laser(
         self,
         *,
         laser_min_setpoint_w: float,
         laser_max_setpoint_w: float,
-        calibration=None,
-        transmission: float = 1.0,
     ) -> ScanPlan:
+        """Create a calibration plan that always sweeps laser setpoints."""
 
-        plan = self.make_plan_for_laser(
+        return make_power_scan_plan(
+            requested_powers_w=self.requested_powers_w(),
+            basis="setpoint",
             laser_min_setpoint_w=float(laser_min_setpoint_w),
             laser_max_setpoint_w=float(laser_max_setpoint_w),
-            calibration=calibration,
-            transmission=float(transmission),
+            calibration=None,
+            transmission=1.0,
+            filter_state="none",
+            allow_clipping=True,
         )
 
-        return plan.points
+    def set_points(
+        self,
+        points: list[PowerScanPoint],
+        warnings: list[str] | None = None,
+    ) -> None:
+        point_list = list(points)
+        warning_list = list(warnings or [])
+        self.table.setRowCount(len(point_list))
 
-    def set_points(self, points: list[PowerScanPoint], warnings: list[str]) -> None:
-        self._points = list(points)
-        self._warnings = list(warnings or [])
-
-        self.table.setRowCount(len(self._points))
-
-        for row, point in enumerate(self._points):
-            values = [
-                str(point.index + 1),
-                format_power(point.requested_power_w),
-                format_power(point.setpoint_w),
-                format_power(point.expected_actual_power_w),
-                str(point.filter_state),
-            ]
-
-            for col, value in enumerate(values):
-                self.table.setItem(row, col, QTableWidgetItem(value))
+        for row, point in enumerate(point_list):
+            for column, value in enumerate(
+                [
+                    str(point.index + 1),
+                    format_power_w(point.requested_power_w, 5),
+                    format_power_w(point.setpoint_w, 5),
+                    format_power_w(point.expected_actual_power_w, 5),
+                    str(point.filter_state),
+                ]
+            ):
+                self.table.setItem(row, column, QTableWidgetItem(value))
 
         self.table.resizeColumnsToContents()
-
-        if self._warnings:
-            self.warning_label.setText(f"{len(self._warnings)} warning(s).")
-            self.warning_label.setToolTip("\n".join(self._warnings))
+        if warning_list:
+            self.warning_label.setText(f"{len(warning_list)} warning(s).")
+            self.warning_label.setToolTip("\n".join(warning_list))
         else:
-            self.warning_label.setText("")
+            self.warning_label.clear()
             self.warning_label.setToolTip("")
-
-    def warnings(self) -> list[str]:
-        return list(getattr(self, "_warnings", []))
-
-    def points(self) -> list[PowerScanPoint]:
-        return list(self._points)
 
     def set_running(self, running: bool) -> None:
         running = bool(running)
-
         self.run_button.setEnabled(not running)
         self.preview_button.setEnabled(not running)
+        self.calibration_button.setEnabled(not running)
+        self.load_calibration_button.setEnabled(not running)
+        self.save_calibration_button.setEnabled(not running)
         self.abort_button.setEnabled(running)
-    
-    def load_preferences(self, settings: QSettings) -> None:
-        units = get_str(settings, "scan/power_units", self.power_units.currentText())
-        index = self.power_units.findText(units)
+        for widget in (
+            self.basis_combo,
+            self.spacing_combo,
+            self.calibration_reads,
+            self.start_power,
+            self.stop_power,
+            self.power_units,
+            self.n_points,
+            self.repeats_per_point,
+            self.settling_time_s,
+            self.enable_before_scan,
+            self.disable_after_scan,
+            self.autosave_scan_spectra,
+            self.custom_values,
+        ):
+            widget.setEnabled(not running)
 
+    @staticmethod
+    def _set_combo_data(combo: QComboBox, value: str) -> None:
+        index = combo.findData(str(value))
         if index >= 0:
-            self.power_units.setCurrentIndex(index)
+            combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _set_combo_text(combo: QComboBox, value: str) -> None:
+        index = combo.findText(str(value))
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def load_preferences(self, settings: QSettings) -> None:
+        self._set_combo_data(
+            self.basis_combo,
+            get_str(settings, "scan/basis", self.scan_basis()),
+        )
+        self._set_combo_data(
+            self.spacing_combo,
+            get_str(settings, "scan/spacing", self.spacing()),
+        )
+        self._set_combo_text(
+            self.power_units,
+            get_str(settings, "scan/power_units", self.power_units.currentText()),
+        )
+        self.start_power.setValue(
+            get_float(settings, "scan/start_power", self.start_power.value())
+        )
+        self.stop_power.setValue(
+            get_float(settings, "scan/stop_power", self.stop_power.value())
+        )
+        self.n_points.setValue(get_int(settings, "scan/n_points", self.n_points.value()))
+        self.repeats_per_point.setValue(
+            get_int(settings, "scan/repeats_per_point", self.repeats_per_point.value())
+        )
+        self.calibration_reads.setValue(
+            get_int(settings, "scan/calibration_reads", self.calibration_reads.value())
+        )
+        self.settling_time_s.setValue(
+            get_float(settings, "scan/settling_time_s", self.settling_time_s.value())
+        )
+        self.enable_before_scan.setChecked(
+            get_bool(settings, "scan/enable_before", self.enable_before_scan.isChecked())
+        )
+        self.disable_after_scan.setChecked(
+            get_bool(settings, "scan/disable_after", self.disable_after_scan.isChecked())
+        )
+        self.autosave_scan_spectra.setChecked(
+            get_bool(settings, "scan/autosave", self.autosave_scan_spectra.isChecked())
+        )
+        self.custom_values.setPlainText(
+            get_str(settings, "scan/custom_values", self.custom_values.toPlainText())
+        )
+        self._on_spacing_changed()
 
     def save_preferences(self, settings: QSettings) -> None:
+        settings.setValue("scan/basis", self.scan_basis())
+        settings.setValue("scan/spacing", self.spacing())
         settings.setValue("scan/power_units", self.power_units.currentText())
+        settings.setValue("scan/start_power", self.start_power.value())
+        settings.setValue("scan/stop_power", self.stop_power.value())
+        settings.setValue("scan/n_points", self.n_points.value())
+        settings.setValue("scan/repeats_per_point", self.repeats_per_point.value())
+        settings.setValue("scan/calibration_reads", self.calibration_reads.value())
+        settings.setValue("scan/settling_time_s", self.settling_time_s.value())
+        settings.setValue("scan/enable_before", self.enable_before_scan.isChecked())
+        settings.setValue("scan/disable_after", self.disable_after_scan.isChecked())
+        settings.setValue("scan/autosave", self.autosave_scan_spectra.isChecked())
+        settings.setValue("scan/custom_values", self.custom_values.toPlainText())

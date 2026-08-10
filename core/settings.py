@@ -99,16 +99,19 @@ class PlotStyleSettings:
 
 @dataclass
 class PowerMonitorSettings:
-    mode: str = "live" # "live" or "spectra_only"
+    mode: str = "live"  # "live" or "spectra_only"
 
-    polling_enabled: bool = True
+    @property
+    def live_polling_enabled(self) -> bool:
+        return self.mode == "live"
+
     append_spectrum_power: bool = True
 
     max_points: int = 600
     interval_ms: int = 1000
 
     validation_enabled: bool = True
-    max_valid_power_w: float = 0.200  # 100 mW
+    max_valid_power_w: float = 0.200  # 200 mW
     reject_negative_power: bool = False
     invalid_power_retries: int = 3
     invalid_power_retry_delay_s: float = 0.10

@@ -3,14 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+from numpy.typing import NDArray
+
+FloatArray = NDArray[np.float64]
 
 
-@dataclass
+@dataclass(slots=True)
 class BackgroundSpectrum:
     timestamp_utc: str
-    wavelengths_nm: np.ndarray
-    counts_per_s: np.ndarray
-
+    wavelengths_nm: FloatArray
+    counts_per_s: FloatArray
     integration_ms: int
     averages: int
     correct_dark: bool
@@ -18,50 +20,57 @@ class BackgroundSpectrum:
     averaging_mode: str = "software"
 
 
+@dataclass(frozen=True, slots=True)
+class SpectralAcquisition:
+    """Raw result returned by a spectrometer adapter."""
+
+    wavelengths_nm: FloatArray
+    intensities_counts: FloatArray
+    signal_max_counts: float
+    device_averaging_used: bool = False
+
+
 @dataclass(slots=True)
 class MonitorTracePoint:
     timestamp_utc: str
     elapsed_s: float
-
     field_mT: float
-
     power_ch1_W: float
     power_ch2_W: float
-
     intensity_target_counts: float
     intensity_target_nm: float
-
     integrated_range_counts_nm: float
     integration_start_nm: float
     integration_stop_nm: float
-
     total_integrated_counts_nm: float
-
     peak_intensity_counts: float
     peak_wavelength_nm: float
-
     signal_max_counts: float
     signal_mean_counts: float
 
 
-@dataclass
+@dataclass(slots=True)
 class PowerSnapshot:
     powers_w: list[float]
     pm_status: list[int]
     command_status: int = 0
 
+    @classmethod
+    def missing(cls) -> "PowerSnapshot":
+        return cls(powers_w=[], pm_status=[], command_status=-1)
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, slots=True)
 class PowerTracePoint:
     timestamp_utc: str
     elapsed_s: float
-    source: str  # "poll" or "spectrum"
+    source: str  # "poll" or "spectrum_mean"
     powers_w: list[float]
     pm_status: list[int]
     command_status: int
 
 
-@dataclass
+@dataclass(slots=True)
 class SpectrometerCapabilities:
     model: str = ""
     serial_number: str = ""
@@ -74,7 +83,8 @@ class SpectrometerCapabilities:
     tec_supported: bool = False
     device_averaging_supported: bool = False
 
-@dataclass
+
+@dataclass(slots=True)
 class SpectrometerInfo:
     name: str = "unknown"
     serial_number: str = ""
@@ -82,12 +92,12 @@ class SpectrometerInfo:
     emulated: bool = False
 
 
-@dataclass
+@dataclass(slots=True)
 class SpectrumRecord:
     timestamp_utc: str
     timestamp_s: float
-    wavelengths_nm: np.ndarray
-    intensities_counts: np.ndarray
+    wavelengths_nm: FloatArray
+    intensities_counts: FloatArray
     p_before: PowerSnapshot
     p_after: PowerSnapshot
     integration_ms: int
@@ -124,6 +134,8 @@ class SpectrumRecord:
     background_integration_ms: int = 0
 
     def mean_power_w(self, channel_index: int = 0) -> float:
+        if channel_index < 0:
+            return float("nan")
         if len(self.p_before.powers_w) <= channel_index:
             return float("nan")
         if len(self.p_after.powers_w) <= channel_index:
@@ -134,12 +146,47 @@ class SpectrumRecord:
             + float(self.p_after.powers_w[channel_index])
         )
 
+    def mean_power_snapshot(self) -> PowerSnapshot:
+        """Combine before/after readings for display and logging."""
+
+        count = min(len(self.p_before.powers_w), len(self.p_after.powers_w))
+        powers = [
+            0.5 * (float(self.p_before.powers_w[index]) + float(self.p_after.powers_w[index]))
+            for index in range(count)
+        ]
+        status_count = min(len(self.p_before.pm_status), len(self.p_after.pm_status))
+
+        # Bits 0-3 are transient/error flags. Preserve those flags from either
+        # reading, but keep the units/range fields from the later status word;
+        # bitwise-ORing the complete words can manufacture an invalid range code.
+        flag_mask = 0x0F
+        statuses = []
+        for index in range(status_count):
+            before = int(self.p_before.pm_status[index])
+            after = int(self.p_after.pm_status[index])
+            statuses.append((after & ~flag_mask) | ((before | after) & flag_mask))
+        return PowerSnapshot(
+            powers_w=powers,
+            pm_status=statuses,
+            command_status=(
+                int(self.p_before.command_status) | int(self.p_after.command_status)
+            ),
+        )
 
     def integration_time_s(self) -> float:
-        return max(float(self.integration_ms) * 1.0e-3, 1.0e-12)
+        value = float(self.integration_ms) * 1.0e-3
+        return value if np.isfinite(value) and value > 0.0 else float("nan")
 
-
-    def intensities_counts_per_s(self) -> np.ndarray:
-        # Your acquisition currently averages frames, not sums them.
-        # Therefore divide by one frame's integration time, not by averages.
-        return self.intensities_counts / self.integration_time_s()
+    def intensities_counts_per_s(self) -> FloatArray:
+        # Frames are averaged rather than summed, so only one integration
+        # interval belongs in the denominator. Loaded legacy spectra may not
+        # contain an integration time; report NaN rather than an enormous,
+        # misleading value in that case.
+        integration_s = self.integration_time_s()
+        if not np.isfinite(integration_s):
+            return np.full_like(
+                np.asarray(self.intensities_counts, dtype=float),
+                np.nan,
+                dtype=float,
+            )
+        return np.asarray(self.intensities_counts, dtype=float) / integration_s
