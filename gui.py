@@ -12,6 +12,7 @@ from core.configuration import (
     load_json_defaults,
 )
 from panels.main_window import MainWindow
+from ui.theme import apply_visual_studio_dark
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -84,6 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     app = QApplication([sys.argv[0], *argv])
+    
+    apply_visual_studio_dark(app)
+    
     QApplication.setOrganizationName("YourLab")
     QApplication.setApplicationName("MagnetoPLAcquisition")
     QApplication.setApplicationVersion("0.1")
