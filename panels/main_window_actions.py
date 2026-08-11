@@ -117,6 +117,13 @@ def build_main_window_actions(window: QMainWindow) -> MainWindowActions:
     )
 
     view_menu = window.menuBar().addMenu("&View")
+    view_menu.addAction(
+        _action(
+            window,
+            "Display Settings...",
+            window.show_display_settings_dialog,
+        )
+    )
     spectrum_auto_range_action = _action(
         window,
         "Spectrum Auto Range",
@@ -152,6 +159,21 @@ def build_main_window_actions(window: QMainWindow) -> MainWindowActions:
     tools_menu = window.menuBar().addMenu("&Tools")
     tools_menu.addAction(
         _action(window, "Application Settings...", window.open_settings_dialog)
+    )
+    tools_menu.addAction(
+        _action(
+            window,
+            "Performance Monitor Settings...",
+            window.show_performance_settings_dialog,
+        )
+    )
+
+    tools_menu.addAction(
+        _action(
+            window,
+            "SNR Settings...",
+            window.show_snr_settings_dialog,
+        )
     )
     tools_menu.addAction(
         _action(
