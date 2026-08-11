@@ -16,7 +16,7 @@ from core.records import (
     SpectrometerInfo,
     SpectrumRecord,
 )
-from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSettings
+from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSettings, SNRSettings
 from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
@@ -24,6 +24,7 @@ from devices.protocols import PowerMeterAdapter, SpectrometerAdapter
 from devices.qepro_adapter import QEProSpectrometer
 from processing.background import BackgroundCorrector
 from processing.smoothing import boxcar_smooth
+from processing.snr import estimate_snr
 from validation.power_validation import power_snapshot_valid
 
 
@@ -58,6 +59,9 @@ class DeviceController(QObject):
         self._last_invalid_power_status_s = 0.0
         self._capabilities: SpectrometerCapabilities | None = None
         self._info: SpectrometerInfo | None = None
+
+        self.snr_settings = SNRSettings()
+        self._snr_acquisition_counter = 0
 
     @Slot()
     def connect_devices(self) -> None:
@@ -143,6 +147,10 @@ class DeviceController(QObject):
                 error += "\nPower meter emulator fallback failed:\n" + traceback.format_exc()
 
         return None, "", error
+
+    @Slot(object)
+    def set_snr_settings(self, settings: SNRSettings) -> None:
+        self.snr_settings = replace(settings)
 
     @Slot(object)
     def capture_background(self, settings: AcquisitionSettings) -> None:
@@ -364,6 +372,36 @@ class DeviceController(QObject):
                     integration_ms=int(settings.integration_ms),
                 )
 
+            self._snr_acquisition_counter += 1
+            snr_metrics = None
+            snr_settings = self.snr_settings
+            if (
+                snr_settings.enabled
+                and self._snr_acquisition_counter
+                % max(1, int(snr_settings.update_every_n_spectra))
+                == 0
+            ):
+                noise_intervals = [
+                    (snr_settings.noise1_start_nm, snr_settings.noise1_stop_nm)
+                ]
+                if snr_settings.use_noise2:
+                    noise_intervals.append(
+                        (snr_settings.noise2_start_nm, snr_settings.noise2_stop_nm)
+                    )
+                snr_metrics = estimate_snr(
+                    acquisition.wavelengths_nm,
+                    intensities,
+                    signal_start_nm=snr_settings.signal_start_nm,
+                    signal_stop_nm=snr_settings.signal_stop_nm,
+                    noise_intervals_nm=noise_intervals,
+                    baseline_order=snr_settings.baseline_order,
+                    minimum_noise_pixels=snr_settings.minimum_noise_pixels,
+                    peak_percentile=snr_settings.peak_percentile,
+                    full_scale_counts=float(
+                        getattr(self.spec, "max_intensity", float("nan"))
+                    ),
+                )
+
             if settings.boxcar_width > 1:
                 intensities = boxcar_smooth(intensities, settings.boxcar_width)
 
@@ -386,6 +424,7 @@ class DeviceController(QObject):
                 correct_dark=bool(settings.correct_dark),
                 correct_nonlinearity=bool(settings.correct_nonlinearity),
                 field_value=float(settings.field_value),
+                snr=snr_metrics,
                 run_identifier=str(settings.run_identifier),
                 notes=str(settings.notes),
                 signal_max_counts=float(acquisition.signal_max_counts),
