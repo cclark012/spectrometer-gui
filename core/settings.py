@@ -152,7 +152,7 @@ class SignalWarningSettings:
 
 @dataclass
 class SNRSettings:
-    enabled: bool = True
+    enabled: bool = False
     signal_start_nm: float = 400.0
     signal_stop_nm: float = 750.0
     noise1_start_nm: float = 900.0
