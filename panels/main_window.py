@@ -45,8 +45,11 @@ from core.settings import (
 )
 from core.time_utils import utc_now_iso
 from core.units import format_power_w
+from dialogs.display_settings_dialog import DisplaySettingsDialog
+from dialogs.performance_settings_dialog import PerformanceSettingsDialog
 from dialogs.power_details_dialog import PowerDetailsDialog
 from dialogs.settings_dialog import AppSettingsDialog
+from dialogs.snr_settings_dialog import SNRSettingsDialog
 from dialogs.spectrometer_details_dialog import SpectrometerDetailsDialog
 from dialogs.spectrum_axis_dialog import SpectrumAxisDialog
 from panels.acquisition_panel import AcquisitionPanel
@@ -788,6 +791,37 @@ class MainWindow(QMainWindow):
         self.performance_label.setVisible(self.display_settings.performance_enabled)
         self.performance_label.setText(snapshot.format_status())
 
+    def _apply_display_settings(self) -> None:
+        self.spectrum_panel.set_redraw_interval_ms(
+            self.display_settings
+            .spectrum_redraw_interval_ms
+        )
+
+        self.monitor_panel.set_redraw_interval_ms(
+            self.display_settings
+            .monitor_redraw_interval_ms
+        )
+
+        self.power_panel.set_redraw_interval_ms(
+            self.display_settings
+            .power_redraw_interval_ms
+        )
+
+        self.performance_monitor.configure(
+            enabled=self.display_settings
+            .performance_enabled,
+            rate_window_s=self.display_settings
+            .performance_rate_window_s,
+            report_interval_ms=self.display_settings
+            .performance_report_interval_ms,
+            probe_interval_ms=self.display_settings
+            .event_loop_probe_interval_ms,
+        )
+
+        self.performance_label.setVisible(
+            self.display_settings.performance_enabled
+        )
+
     # ------------------------------------------------------------- plot/view tools
 
     def _apply_display_settings(self) -> None:
@@ -893,6 +927,8 @@ class MainWindow(QMainWindow):
             self.power_monitor_settings,
             self.signal_warning_settings,
             self.plot_style_settings,
+            self.display_settings,
+            self.snr_settings,
         )
         self._apply_power_monitor_settings()
         self._apply_plot_style()
@@ -900,8 +936,90 @@ class MainWindow(QMainWindow):
         self._save_preferences()
         self.statusBar().showMessage("Settings updated.", 5000)
 
+    def show_display_settings_dialog(self) -> None:
+        old_theme = self.display_settings.theme_name
+
+        dialog = DisplaySettingsDialog(
+            self.display_settings,
+            self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.display_settings = dialog.settings()
+        self._apply_display_settings()
+
+        self.preferences.update_dataclasses(
+            self.file_name_settings,
+            self.power_monitor_settings,
+            self.signal_warning_settings,
+            self.plot_style_settings,
+            self.display_settings,
+            self.snr_settings,
+        )
+
+        self._save_preferences()
+
+        if self.display_settings.theme_name != old_theme:
+            QMessageBox.information(
+                self,
+                "Theme changed",
+                "The new theme will be applied the next time "
+                "the GUI is started.",
+            )
+
+    def show_performance_settings_dialog(self) -> None:
+        dialog = PerformanceSettingsDialog(
+            self.display_settings,
+            self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.display_settings = dialog.settings()
+        self._apply_display_settings()
+
+        self.preferences.update_dataclasses(
+            self.file_name_settings,
+            self.power_monitor_settings,
+            self.signal_warning_settings,
+            self.plot_style_settings,
+            self.display_settings,
+            self.snr_settings,
+        )
+
+        self._save_preferences()
+
     def show_power_details_dialog(self) -> None:
         PowerDetailsDialog(self.power_panel.points(), self).exec()
+
+    def show_snr_settings_dialog(self) -> None:
+        dialog = SNRSettingsDialog(
+            self.snr_settings,
+            self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.snr_settings = dialog.settings()
+
+        self.runtime.set_snr_settings(
+            replace(self.snr_settings)
+        )
+
+        self.preferences.update_dataclasses(
+            self.file_name_settings,
+            self.power_monitor_settings,
+            self.signal_warning_settings,
+            self.plot_style_settings,
+            self.display_settings,
+            self.snr_settings,
+        )
+
+        self._save_preferences()
 
     def show_spectrometer_details_dialog(self) -> None:
         if self.spectrometer_capabilities is None:
