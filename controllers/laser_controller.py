@@ -127,13 +127,28 @@ class LaserController(QObject):
 
     @Slot()
     def disable_all(self) -> None:
-        try:
-            for box in self.boxes.values():
+        errors: list[str] = []
+
+        for port, box in self.boxes.items():
+            try:
                 box.disable_all()
-            self.status.emit("Disable-all command sent to all connected OBIS boxes.")
-            self.lasers_ready.emit(self._collect_lasers())
-        except Exception:
-            self.error.emit(traceback.format_exc())
+            except Exception as exc:
+                errors.append(f"{port}: {exc}")
+
+        # Refresh the table even if one box reported an error.
+        self.lasers_ready.emit(self._collect_lasers())
+
+        if errors:
+            message = (
+                "Disable All completed with one or more errors:\n"
+                + "\n".join(errors)
+            )
+            self.error.emit(message)
+            return
+
+        self.status.emit(
+            "Disable-all command sent to all connected OBIS boxes."
+        )
 
     @Slot()
     def shutdown(self) -> None:
