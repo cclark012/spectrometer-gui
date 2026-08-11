@@ -136,12 +136,9 @@ class FieldPowerMapView(QWidget):
                 "size": 8,
                 "data": quantity,
             }
-            for field, power, quantity, normalized in zip(
-                fields,
-                powers,
-                quantities,
-                colors,
-            )
+            for field, power, quantity, normalized in zip( # noqa
+                fields, powers, quantities, colors,
+            ) 
         ]
         self.scatter.setData(spots)
 
