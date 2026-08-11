@@ -57,11 +57,15 @@ class ThemeManager:
         app.setPalette(palette)
 
         stylesheet_path = self.theme_dir / "visual_studio_dark.qss"
-        app.setStyleSheet(
-            stylesheet_path.read_text(encoding="utf-8")
-            if stylesheet_path.exists()
-            else ""
-        )
+        stylesheet = stylesheet_path.read_text(encoding="utf-8")
+        # checkmark_path = (self.theme_dir / "checkmark.svg").resolve()
+        # stylesheet = stylesheet.replace("__CHECKMARK_URL__", checkmark_path.as_uri())
+        app.setStyleSheet(stylesheet)
+        # app.setStyleSheet(
+            # stylesheet_path.read_text(encoding="utf-8")
+            # if stylesheet_path.exists()
+            # else ""
+        # )
         pg.setConfigOptions(
             background="#1E1E1E",
             foreground="#D4D4D4",
