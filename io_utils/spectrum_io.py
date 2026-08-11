@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from core.records import PowerSnapshot, SpectrumRecord
+from core.snr_records import SNRMetrics
 from io_utils.atomic import atomic_text_writer
 
 
@@ -68,6 +69,18 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
         writer.writerow(["# background_subtracted", int(record.background_subtracted)])
         writer.writerow(["# background_timestamp_utc", record.background_timestamp_utc])
         writer.writerow(["# background_integration_ms", record.background_integration_ms])
+
+        if record.snr is not None:
+            writer.writerow(["# snr_valid", int(record.snr.valid)])
+            writer.writerow(["# snr_message", record.snr.message])
+            writer.writerow(["# snr_peak", f"{record.snr.peak_snr:.12e}"])
+            writer.writerow(["# snr_integrated", f"{record.snr.integrated_snr:.12e}"])
+            writer.writerow(
+                ["# snr_noise_sigma_counts", f"{record.snr.noise_sigma_counts:.12e}"]
+            )
+            writer.writerow(
+                ["# snr_peak_fraction", f"{record.snr.peak_fraction_of_full_scale:.12e}"]
+            )
 
         writer.writerow(
             [
@@ -234,6 +247,18 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         pm_status=_int_list(metadata, "p_after_status"),
         command_status=_int_value(metadata, "p_after_command_status", -1),
     )
+    snr_metrics = None
+    valid = _first(metadata, "snr_valid", False)
+    if valid:
+        snr_metrics = SNRMetrics(
+            valid=valid,
+            message=_first(metadata, "snr_message"),
+            peak_snr=_float_value(metadata, "snr_peak"),
+            integrated_snr=_float_value(metadata, "snr_integrated"),
+            noise_sigma_counts=_float_value(metadata, "snr_noise_sigma_counts"),
+            peak_fraction_of_full_scale=_float_value(metadata, "snr_peak_fraction"),
+            # TODO - Finish this 
+        )
 
     return SpectrumRecord(
         timestamp_utc=_first(metadata, "timestamp_utc"),
@@ -250,6 +275,7 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         correct_dark=_bool_value(metadata, "correct_dark"),
         correct_nonlinearity=_bool_value(metadata, "correct_nonlinearity"),
         field_value=_float_value(metadata, "field_value_mT", 0.0),
+        snr=snr_metrics,
         signal_max_counts=signal_max,
         spectrometer_max_intensity=_float_value(
             metadata,
