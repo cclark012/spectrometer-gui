@@ -24,7 +24,7 @@ from controllers.instrument_runtime import InstrumentRuntime
 from controllers.preferences_controller import PreferencesController
 from controllers.scan_coordinator import ScanCoordinator
 from core.laser_models import LaserChannelInfo
-from core.performance import SlidingRate
+from core.performance import PerformanceMonitor, PerformanceSnapshot
 from core.records import (
     BackgroundSpectrum,
     PowerSnapshot,
@@ -36,10 +36,12 @@ from core.records import (
 from core.settings import (
     AcquisitionSettings,
     DeviceConfig,
+    DisplaySettings,
     FileNameSettings,
     PlotStyleSettings,
     PowerMonitorSettings,
     SignalWarningSettings,
+    SNRSettings,
 )
 from core.time_utils import utc_now_iso
 from core.units import format_power_w
@@ -77,6 +79,7 @@ class MainWindow(QMainWindow):
     tec_enabled_requested = Signal(bool)
     spectrometer_temperature_requested = Signal()
     spectrometer_capabilities_requested = Signal()
+    snr_settings_changed = Signal(object)
 
     def __init__(self, config: DeviceConfig) -> None:
         super().__init__()
@@ -88,6 +91,8 @@ class MainWindow(QMainWindow):
         self.power_monitor_settings = PowerMonitorSettings()
         self.signal_warning_settings = SignalWarningSettings()
         self.plot_style_settings = PlotStyleSettings()
+        self.display_settings = DisplaySettings()
+        self.snr_settings = SNRSettings()
         self.spectrometer_info = SpectrometerInfo()
         self.spectrometer_capabilities: SpectrometerCapabilities | None = None
 
@@ -107,7 +112,24 @@ class MainWindow(QMainWindow):
         self._build_timers()
         self._build_scan_coordinator()
         self._build_preferences_controller()
-        self._build_performance_label()
+
+        self.performance_monitor = PerformanceMonitor(
+            enabled=self.display_settings.performance_enabled,
+            rate_window_s=self.display_settings.performance_rate_window_s,
+            report_interval_ms=self.display_settings.performance_report_interval_ms,
+            probe_interval_ms=self.display_settings.event_loop_probe_interval_ms,
+            parent=self,
+        )
+        self.spectrum_panel.redrawn.connect(
+            self.performance_monitor.mark_spectrum_redraw
+        )
+        self.monitor_panel.redrawn.connect(
+            self.performance_monitor.mark_monitor_redraw
+        )
+        self.power_panel.redrawn.connect(
+            self.performance_monitor.mark_power_redraw
+        )
+        self.performance_monitor.updated.connect(self._on_performance_updated)
 
         self._load_preferences()
         self._apply_loaded_preferences()
@@ -151,6 +173,7 @@ class MainWindow(QMainWindow):
         self.acquisition_panel.background_clear_requested.connect(
             self.background_clear_requested.emit
         )
+        self.acquisition_panel.live_changed.connect(self._on_live_changed)
 
         self.laser_panel = LaserPanel(self)
         self.scan_panel = ScanPanel(self)
@@ -200,9 +223,13 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self) -> None:
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Starting device controller...")
+
         self.autosave_label = QLabel()
         self.statusBar().addPermanentWidget(self.autosave_label)
         self._update_autosave_indicator()
+
+        self.performance_label = QLabel()
+        self.statusBar().addPermanentWidget(self.performance_label)
 
     def _build_file_io_controller(self) -> None:
         self.file_io = FileIOController(
@@ -235,10 +262,9 @@ class MainWindow(QMainWindow):
         self.power_label = actions.power_label
 
     def _build_timers(self) -> None:
-        self.live_timer = QTimer(self)
-        self.live_timer.setInterval(250)
-        self.live_timer.timeout.connect(self._live_tick)
-        self.live_timer.start()
+        self.live_next_timer = QTimer(self)
+        self.live_next_timer.setSingleShot(True)
+        self.live_next_timer.timeout.connect(self._start_live_acquisition_if_ready)
 
         self.power_timer = QTimer(self)
         self.power_timer.timeout.connect(self._poll_power_tick)
@@ -289,6 +315,8 @@ class MainWindow(QMainWindow):
             power_settings=self.power_monitor_settings,
             warning_settings=self.signal_warning_settings,
             plot_settings=self.plot_style_settings,
+            display_settings=self.display_settings,
+            snr_settings=self.snr_settings,
             acquisition_panel=self.acquisition_panel,
             monitor_panel=self.monitor_panel,
             power_panel=self.power_panel,
@@ -296,19 +324,6 @@ class MainWindow(QMainWindow):
             scan_panel=self.scan_panel,
             filter_wheel_panel=self.filter_wheel_panel,
         )
-
-    def _build_performance_label(self) -> None:
-        self.performance_label = QLabel()
-        self.statusBar().addPermanentWidget(self.performance_label)
-
-        self.acquisition_rate = SlidingRate()
-        self.spectrum_draw_rate = SlidingRate()
-        self.monitor_draw_rate = SlidingRate()
-        self.power_draw_rate = SlidingRate()
-
-        self.spectrum_panel.redrawn.connect(self.spectrum_draw_rate.mark)
-        self.monitor_panel.redrawn.connect(self.monitor_draw_rate.mark)
-        self.power_panel.redrawn.connect(self.power_draw_rate.mark)
 
     # ----------------------------------------------------------- worker controllers
 
@@ -438,10 +453,36 @@ class MainWindow(QMainWindow):
         if self.acquisition_panel.is_live_enabled() and not self.acquiring:
             self.take_spectrum()
 
+    @Slot(bool)
+    def _on_live_changed(self, enabled: bool) -> None:
+        self.live_next_timer.stop()
+        if enabled:
+            self._schedule_next_live_acquisition()
+        self.statusBar().showMessage(
+            f"Live acquisition: {'ON' if enabled else 'OFF'}",
+            5000,
+        )
+
+    def _schedule_next_live_acquisition(self) -> None:
+        if not self.acquisition_panel.is_live_enabled() or self.acquiring:
+            return
+        if self.scan_coordinator.power_scan_active or self.scan_coordinator.calibration_active:
+            return
+        self.live_next_timer.start(max(0, int(self.display_settings.live_acquisition_gap_ms)))
+
+    @Slot()
+    def _start_live_acquisition_if_ready(self) -> None:
+        if not self.acquisition_panel.is_live_enabled() or self.acquiring:
+            return
+        if self.scan_coordinator.power_scan_active or self.scan_coordinator.calibration_active:
+            return
+        self.take_spectrum()
+
     @Slot(object)
     def _on_spectrum_ready(self, record: SpectrumRecord) -> None:
         self._finish_acquisition_ui()
-        self.acquisition_rate.mark()
+        self.performance_monitor.mark_acquisition()
+        self.acquisition_panel.set_snr(record.snr)
         self.current_record = record
         self.file_io.set_current_record(record)
         self.spectrum_panel.queue_record(record)
@@ -466,12 +507,14 @@ class MainWindow(QMainWindow):
             10_000,
         )
         self.scan_coordinator.handle_spectrum_ready(record)
+        self._schedule_next_live_acquisition()
 
     @Slot(str)
     def _on_acquisition_failed(self, message: str) -> None:
         self._finish_acquisition_ui()
         self.acquisition_panel.set_live_enabled(False)
         self.scan_coordinator.handle_acquisition_failed(message)
+        self.live_next_timer.stop()
         self.statusBar().showMessage(
             "Spectrum acquisition failed. Live acquisition stopped.",
             15_000,
@@ -738,7 +781,32 @@ class MainWindow(QMainWindow):
             f"Current points: {n_points}\n\nClear it if the full history is not needed.",
         )
 
+    # -------------------------------------------------------------- performance
+
+    @Slot(object)
+    def _on_performance_updated(self, snapshot: PerformanceSnapshot) -> None:
+        self.performance_label.setVisible(self.display_settings.performance_enabled)
+        self.performance_label.setText(snapshot.format_status())
+
     # ------------------------------------------------------------- plot/view tools
+
+    def _apply_display_settings(self) -> None:
+        self.spectrum_panel.set_redraw_interval_ms(
+            self.display_settings.spectrum_redraw_interval_ms
+        )
+        self.monitor_panel.set_redraw_interval_ms(
+            self.display_settings.monitor_redraw_interval_ms
+        )
+        self.power_panel.set_redraw_interval_ms(
+            self.display_settings.power_redraw_interval_ms
+        )
+        self.performance_monitor.configure(
+            enabled=self.display_settings.performance_enabled,
+            rate_window_s=self.display_settings.performance_rate_window_s,
+            report_interval_ms=self.display_settings.performance_report_interval_ms,
+            probe_interval_ms=self.display_settings.event_loop_probe_interval_ms,
+        )
+        self.performance_label.setVisible(self.display_settings.performance_enabled)
 
     @Slot(bool)
     def _on_spectrum_auto_range_toggled(self, enabled: bool) -> None:
@@ -793,11 +861,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Power and spectrum monitors cleared.", 5000)
 
     def toggle_live(self) -> None:
-        enabled = not self.acquisition_panel.is_live_enabled()
-        self.acquisition_panel.set_live_enabled(enabled)
-        self.statusBar().showMessage(
-            f"Live acquisition: {'ON' if enabled else 'OFF'}",
-            5000,
+        self.acquisition_panel.set_live_enabled(
+            not self.acquisition_panel.is_live_enabled()
         )
 
     # -------------------------------------------------------------------- dialogs
@@ -966,7 +1031,7 @@ class MainWindow(QMainWindow):
         self._save_preferences()
         self._save_window_layout()
         self.acquisition_panel.set_live_enabled(False)
-        self.live_timer.stop()
+        self.live_next_timer.stop()
         self.power_timer.stop()
         self.file_io.close()
         self.runtime.shutdown()
