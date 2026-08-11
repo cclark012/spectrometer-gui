@@ -50,24 +50,42 @@ def power_token(power_w: float) -> str:
     return f"{compact_float_token(value)}{unit}"
 
 
-def format_power_w(power_w: float, significant_digits: int = 6) -> str:
-    """Format a power value stored in watts using an appropriate SI unit."""
+def format_power_w(
+    power_w: float,
+    significant_digits: int = 6,
+) -> str:
+    """Format power using compact SI units."""
 
     power = float(power_w)
     digits = max(1, int(significant_digits))
+
     if not math.isfinite(power):
         return "--"
 
     absolute = abs(power)
+
+    if absolute == 0.0:
+        return "0 W"
+
     if absolute >= 1.0:
         return f"{power:.{digits}g} W"
+
     if absolute >= 1e-3:
         return f"{power * 1e3:.{digits}g} mW"
+
     if absolute >= 1e-6:
         return f"{power * 1e6:.{digits}g} μW"
+
     if absolute >= 1e-9:
         return f"{power * 1e9:.{digits}g} nW"
-    return f"{power:.{digits}e} W"
+
+    if absolute >= 1e-12:
+        return f"{power * 1e12:.{digits}g} pW"
+
+    if absolute >= 1e-15:
+        return f"{power * 1e15:.{digits}g} fW"
+
+    return f"{power:.{digits}g} W"
 
 
 def field_token(field_mT: float) -> str:
