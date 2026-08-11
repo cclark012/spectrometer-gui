@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QLabel,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -17,12 +18,14 @@ from PySide6.QtWidgets import (
 
 from core.preferences import get_bool, get_int, get_str
 from core.settings import AcquisitionSettings
+from core.snr_records import SNRMetrics
 
 
 class AcquisitionPanel(QWidget):
     acquire_requested = Signal()
     background_requested = Signal()
     background_clear_requested = Signal()
+    live_changed = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -32,6 +35,7 @@ class AcquisitionPanel(QWidget):
 
         self.live_check = QCheckBox()
         self.live_check.setChecked(False)
+        self.live_check.toggled.connect(self.live_changed.emit)
 
         self.integration_ms = QSpinBox()
         self.integration_ms.setRange(1, 600_000)
@@ -75,6 +79,9 @@ class AcquisitionPanel(QWidget):
         self.field_input.setValue(0)
         self.field_input.setSuffix(" mT")
 
+        self.snr_label = QLabel("Peak -- | Area --")
+        self.snr_label.setToolTip("SNR calculated from the unsmoothed spectrum")
+
         form.addRow("Live", self.live_check)
         form.addRow("Electric dark", self.dark_check)
         form.addRow("Nonlinearity", self.nonlinearity_check)
@@ -86,6 +93,7 @@ class AcquisitionPanel(QWidget):
         form.addRow("Averages", self.averages)
         form.addRow("Boxcar width", self.boxcar_width)
         form.addRow("Magnetic field", self.field_input)
+        form.addRow("SNR", self.snr_label)
 
         layout.addLayout(form)
 
@@ -145,6 +153,25 @@ class AcquisitionPanel(QWidget):
 
         self.integration_ms.setToolTip(
             f"Allowed integration range: {min_ms} to {max_ms} ms"
+        )
+
+    def set_snr(self, result: SNRMetrics | None) -> None:
+        if result is None:
+            self.snr_label.setText("Peak -- | Area --")
+            self.snr_label.setToolTip("SNR was not evaluated for this spectrum")
+            return
+        if not result.valid:
+            self.snr_label.setText("Unavailable")
+            self.snr_label.setToolTip(result.message)
+            return
+        self.snr_label.setText(
+            f"Peak {result.peak_snr:.2f} | Area {result.integrated_snr:.2f}"
+        )
+        self.snr_label.setToolTip(
+            f"Noise sigma: {result.noise_sigma_counts:.4g} counts\n"
+            f"Signal pixels: {result.n_signal_pixels}\n"
+            f"Noise pixels: {result.n_noise_pixels}\n"
+            f"Peak fraction: {100.0 * result.peak_fraction_of_full_scale:.2f}%"
         )
 
     def load_preferences(self, settings: QSettings) -> None:
