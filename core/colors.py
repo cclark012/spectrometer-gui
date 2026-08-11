@@ -7,8 +7,10 @@ def wavelength_to_rgb(wavelength_nm: float) -> tuple[int, int, int]:
     """Approximate a visible wavelength as sRGB for a subtle UI cue."""
 
     wavelength = float(wavelength_nm)
-    if not math.isfinite(wavelength) or wavelength < 380.0 or wavelength > 780.0:
+    if not math.isfinite(wavelength) or wavelength < 380.0: 
         return 210, 210, 210
+    elif wavelength > 780.0:
+        return 55, 55, 55
 
     if wavelength <= 440.0:
         red, green, blue = -(wavelength - 440.0) / 60.0, 0.0, 1.0
