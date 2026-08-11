@@ -3,8 +3,8 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-from PySide6.QtCore import QSettings, Qt, Signal, Slot
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QSettings, QSize, Qt, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -44,9 +44,31 @@ def _format_wavelength(wavelength_nm: float) -> str:
     return f"{float(wavelength_nm):.1f} nm" if _finite(wavelength_nm) else "--"
 
 
+def _format_laser_power(power_w: float) -> str:
+    return format_power_w(power_w, significant_digits=4)
+
+
 def _row_color(wavelength_nm: float) -> QColor:
     red, green, blue = wavelength_to_rgb(float(wavelength_nm))
     return QColor(red, green, blue, 55)
+
+
+def _wavelength_swatch_icon(
+    wavelength_nm: float,
+) -> QIcon:
+    red, green, blue = wavelength_to_rgb(
+        float(wavelength_nm)
+    )
+
+    # Blend toward white for a pastel swatch.
+    red = int(round(0.60 * red + 0.40 * 255))
+    green = int(round(0.60 * green + 0.40 * 255))
+    blue = int(round(0.60 * blue + 0.40 * 255))
+
+    pixmap = QPixmap(12, 12)
+    pixmap.fill(QColor(red, green, blue))
+
+    return QIcon(pixmap)
 
 
 class LaserPanel(QWidget):
@@ -114,6 +136,7 @@ class LaserPanel(QWidget):
     def _build_table(self) -> QTableWidget:
         table = QTableWidget()
         table.setColumnCount(9)
+        table.setIconSize(QSize(12, 12))
         table.setHorizontalHeaderLabels(
             ["λ", "Set", "Min", "Max", "Nom", "On", "Ch", "Box", "Port"]
         )
@@ -190,10 +213,10 @@ class LaserPanel(QWidget):
         key = (str(laser.port), int(laser.channel))
         values = [
             _format_wavelength(laser.wavelength_nm),
-            format_power_w(laser.setpoint_w),
-            format_power_w(laser.min_setpoint_w),
-            format_power_w(laser.max_setpoint_w),
-            format_power_w(laser.nominal_power_w),
+            _format_laser_power(laser.setpoint_w),
+            _format_laser_power(laser.min_setpoint_w),
+            _format_laser_power(laser.max_setpoint_w),
+            _format_laser_power(laser.nominal_power_w),
             "",
             str(laser.channel),
             str(laser.box_id),
@@ -206,14 +229,19 @@ class LaserPanel(QWidget):
             f"Channel: {laser.channel}\n"
             f"IDN: {laser.idn}\n"
             f"Wavelength: {_format_wavelength(laser.wavelength_nm)}\n"
-            f"Setpoint: {format_power_w(laser.setpoint_w)}\n"
-            f"Range: {format_power_w(laser.min_setpoint_w)} to "
-            f"{format_power_w(laser.max_setpoint_w)}"
+            f"Setpoint: {_format_laser_power(laser.setpoint_w)}\n"
+            f"Range: {_format_laser_power(laser.min_setpoint_w)} to "
+            f"{_format_laser_power(laser.max_setpoint_w)}"
         )
 
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
-            item.setBackground(brush)
+            if column == self.COL_WAVELENGTH:
+                item.setIcon(_wavelength_swatch_icon(laser.wavelength_nm))
+
+                # Optional subtle background only in the wavelength cell.
+                item.setBackground(brush)
+
             item.setToolTip(tooltip)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if column == self.COL_WAVELENGTH:
@@ -264,7 +292,7 @@ class LaserPanel(QWidget):
         self._lasers = [updated if item == laser else item for item in self._lasers]
         row = self._row_for_key(*key)
         if row is not None:
-            self.table.item(row, self.COL_SETPOINT).setText(format_power_w(power_w))
+            self.table.item(row, self.COL_SETPOINT).setText(_format_laser_power(power_w))
         self._on_selection_changed()
 
     def _set_enabled_button(self, port: str, channel: int, enabled: bool) -> None:
@@ -384,7 +412,7 @@ class LaserPanel(QWidget):
         self.selected_detail_label.setText(
             "Selected: "
             f"{_format_wavelength(laser.wavelength_nm)}, "
-            f"{format_power_w(laser.setpoint_w)} set, "
+            f"{_format_laser_power(laser.setpoint_w)} set, "
             f"{laser.port} ch{laser.channel}"
         )
         self._load_selected_setpoint_into_spinbox()
