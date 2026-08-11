@@ -117,17 +117,22 @@ def make_emulated_obis_boxes() -> list[EmulatedObisBox]:
             "COM3",
             serial="EMU-LB-003",
             channels=[
-                EmulatedLaserState(1, 405.0, 0.100, 0.0005, 0.100, 0.001),
-                EmulatedLaserState(2, 488.0, 0.150, 0.0005, 0.150, 0.001),
-                EmulatedLaserState(3, 532.0, 0.100, 0.0005, 0.100, 0.001),
+                EmulatedLaserState(1, 355.0, 1.0, 0.0, 1.0, 0.001, idn="Nd:YAG (Triple)"),
+                EmulatedLaserState(2, 406.7, 0.100, 0.0, 0.110, 0.001, idn="Kr"),
+                EmulatedLaserState(3, 441.563, 0.500, 0.0, 0.500, 0.001, idn="He-Cd"),
+                EmulatedLaserState(4, 488.0, 0.100, 0.0, 0.110, 0.001, idn="Ar+"),
+                EmulatedLaserState(5, 532.0, 10.0, 0.0, 10.0, 0.001, idn="Nd:YAG (Double)"),
             ],
         ),
         EmulatedObisBox(
             "COM5",
             serial="EMU-LB-005",
             channels=[
-                EmulatedLaserState(1, 660.0, 0.140, 0.0005, 0.140, 0.001),
-                EmulatedLaserState(2, 808.0, 0.080, 0.0005, 0.080, 0.001),
+                EmulatedLaserState(1, 578.2, 0.250, 0.0, 0.250, 0.001, idn="Cu Vapor"),
+                EmulatedLaserState(2, 615.0, 0.050, 0.0, 0.050, 0.001, idn="He-Hg"),
+                EmulatedLaserState(3, 632.8, 0.075, 0.0, 0.075, 0.001, idn="He-Ne"),
+                EmulatedLaserState(4, 694.3, 1.0, 0.0, 1.0, 0.001, idn="Ruby"),
+                EmulatedLaserState(5, 808.0, 0.080, 0.0, 0.080, 0.001, idn="GaAlAs"),
             ],
         ),
     ]
