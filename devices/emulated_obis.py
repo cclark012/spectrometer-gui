@@ -117,17 +117,17 @@ def make_emulated_obis_boxes() -> list[EmulatedObisBox]:
             "COM3",
             serial="EMU-LB-003",
             channels=[
-                EmulatedLaserState(0, 405.0, 0.100, 0.0005, 0.100, 0.001),
-                EmulatedLaserState(1, 488.0, 0.150, 0.0005, 0.150, 0.001),
-                EmulatedLaserState(2, 561.0, 0.100, 0.0005, 0.100, 0.001),
+                EmulatedLaserState(1, 405.0, 0.100, 0.0005, 0.100, 0.001),
+                EmulatedLaserState(2, 488.0, 0.150, 0.0005, 0.150, 0.001),
+                EmulatedLaserState(3, 532.0, 0.100, 0.0005, 0.100, 0.001),
             ],
         ),
         EmulatedObisBox(
             "COM5",
             serial="EMU-LB-005",
             channels=[
-                EmulatedLaserState(0, 640.0, 0.140, 0.0005, 0.140, 0.001),
-                EmulatedLaserState(1, 730.0, 0.080, 0.0005, 0.080, 0.001),
+                EmulatedLaserState(1, 660.0, 0.140, 0.0005, 0.140, 0.001),
+                EmulatedLaserState(2, 808.0, 0.080, 0.0005, 0.080, 0.001),
             ],
         ),
     ]

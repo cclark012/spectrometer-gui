@@ -11,6 +11,15 @@ from core.laser_models import LaserChannelInfo, LaserEmissionState
 
 _FLOAT_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?")
 
+BOX_CHANNEL = 0
+FIRST_LASER_CHANNEL = 1
+DEFAULT_LASER_CHANNEL_COUNT = 5
+
+
+def laser_channel_numbers(
+    max_channels: int = DEFAULT_LASER_CHANNEL_COUNT) -> range:
+    return range(FIRST_LASER_CHANNEL, FIRST_LASER_CHANNEL + int(max_channels))
+
 
 class ObisError(RuntimeError):
     pass
@@ -159,13 +168,15 @@ class ObisBox:
         if identification:
             return identification
 
-        for channel in range(5):
-            identification = self.optional_query_value(
-                f"*IDN{channel}?",
-                timeout_s=0.25,
-            )
-            if identification:
-                return f"{self.port} {identification}"
+        # Channel 0 identifies the Laser Box controller/hub.
+        identification = self.optional_query_value(
+            f"*IDN{BOX_CHANNEL}?",
+            timeout_s=0.5,
+        )
+
+        if identification:
+            return f"{self.port} {identification}"
+
         return ""
 
     def channel_present(self, channel: int) -> bool:
@@ -180,9 +191,13 @@ class ObisBox:
                 return True
         return False
 
-    def discover_channels(self, max_channels: int = 5) -> list[LaserChannelInfo]:
+    def discover_channels(
+            self, 
+            max_channels: int = DEFAULT_LASER_CHANNEL_COUNT
+        ) -> list[LaserChannelInfo]:
+
         channels: list[LaserChannelInfo] = []
-        for channel in range(int(max_channels)):
+        for channel in laser_channel_numbers(max_channels):
             if not self.channel_present(channel):
                 continue
             try:
@@ -195,7 +210,7 @@ class ObisBox:
 
     def read_channel_info(self, channel: int) -> LaserChannelInfo:
         channel = int(channel)
-        query = lambda command: self.optional_query_value(command, timeout_s=0.3)
+        query = lambda command: self.optional_query_value(command, timeout_s=0.3) # noqa
 
         try:
             cdrh_enabled: bool | None = self.get_cdrh_delay(channel)
@@ -267,12 +282,14 @@ class ObisBox:
         )
         return response.strip().upper() in {"ON", "1", "TRUE"}
 
-    def disable_all(self, max_channels: int = 5) -> None:
-        channels = sorted(self._known_channels)
+    def disable_all(self, max_channels: int = DEFAULT_LASER_CHANNEL_COUNT) -> None:
+        channels = sorted(
+            channel for channel in self._known_channels if channel >= FIRST_LASER_CHANNEL
+        )
         if not channels:
             channels = [
                 channel
-                for channel in range(int(max_channels))
+                for channel in laser_channel_numbers(max_channels)
                 if self.channel_present(channel)
             ]
 
