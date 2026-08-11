@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+from core.snr_records import SNRMetrics
+
 FloatArray = NDArray[np.float64]
 
 
@@ -56,7 +58,7 @@ class PowerSnapshot:
     command_status: int = 0
 
     @classmethod
-    def missing(cls) -> "PowerSnapshot":
+    def missing(cls) -> "PowerSnapshot": # noqa
         return cls(powers_w=[], pm_status=[], command_status=-1)
 
 
@@ -108,6 +110,7 @@ class SpectrumRecord:
     field_value: float
     signal_max_counts: float = float("nan")
     spectrometer_max_intensity: float = float("nan")
+    snr: SNRMetrics | None = None
     run_identifier: str = ""
     notes: str = ""
 
