@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from core.configuration import (
@@ -12,7 +13,7 @@ from core.configuration import (
     load_json_defaults,
 )
 from panels.main_window import MainWindow
-from ui.theme import apply_visual_studio_dark
+from ui.theme import VISUAL_STUDIO_DARK, ThemeManager
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -86,11 +87,18 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication([sys.argv[0], *argv])
     
-    apply_visual_studio_dark(app)
-    
     QApplication.setOrganizationName("YourLab")
     QApplication.setApplicationName("MagnetoPLAcquisition")
     QApplication.setApplicationVersion("0.1")
+
+    manager = ThemeManager()
+    theme_name = QSettings().value(
+        "ui/theme",
+        VISUAL_STUDIO_DARK,
+        type=str,
+    )
+    manager.apply(app, theme_name)
+
     window = MainWindow(config)
     window.show()
 
