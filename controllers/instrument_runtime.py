@@ -6,7 +6,7 @@ from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 
 from controllers.device_controller import DeviceController
 from controllers.laser_controller import LaserController
-from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSettings
+from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSettings, SNRSettings
 
 
 class InstrumentRuntime(QObject):
@@ -54,6 +54,7 @@ class InstrumentRuntime(QObject):
     _background_clear_requested = Signal()
     _tec_target_requested = Signal(float)
     _tec_enabled_requested = Signal(bool)
+    _snr_settings_requested = Signal(object)
     _spectrometer_temperature_requested = Signal()
     _spectrometer_capabilities_requested = Signal()
 
@@ -99,6 +100,7 @@ class InstrumentRuntime(QObject):
         self._background_clear_requested.connect(controller.clear_background, queued)
         self._tec_target_requested.connect(controller.set_tec_target_c, queued)
         self._tec_enabled_requested.connect(controller.set_tec_enabled, queued)
+        self._snr_settings_requested.connect(controller.set_snr_settings, queued)
         self._spectrometer_temperature_requested.connect(
             controller.query_spectrometer_temperature,
             queued,
@@ -197,6 +199,10 @@ class InstrumentRuntime(QObject):
     @Slot(bool)
     def set_tec_enabled(self, enabled: bool) -> None:
         self._tec_enabled_requested.emit(bool(enabled))
+
+    @Slot(object)
+    def set_snr_settings(self, settings: SNRSettings) -> None:
+        self._snr_settings_requested.emit(settings)
 
     @Slot()
     def query_spectrometer_temperature(self) -> None:
