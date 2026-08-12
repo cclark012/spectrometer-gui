@@ -84,41 +84,69 @@ class SNRSettingsDialog(QDialog):
         suggestions = QGroupBox("Acquisition suggestion limits")
         suggestion_form = QFormLayout(suggestions)
 
+        # Enable/disable auto-adjust
         self.auto_suggest = QCheckBox()
         self.auto_suggest.setChecked(bool(settings.auto_suggest_enabled))
 
+        # Metric for auto-adjust
+        self.snr_metric = QComboBox()
+        self.snr_metric.addItem("Integrated SNR", "integrated")
+        self.snr_metric.addItem("Peak SNR", "peak")
+        index = self.snr_metric.findData(str(settings.recommendation_metric))
+        self.snr_metric.setCurrentIndex(index if index >= 0 else 1)
+
+        # Target SNR
         self.target_snr = QDoubleSpinBox()
         self.target_snr.setRange(1.0, 1.0e9)
         self.target_snr.setDecimals(2)
         self.target_snr.setValue(float(settings.target_snr))
 
+        # Target percent of maximum
         self.target_peak_percent = QDoubleSpinBox()
         self.target_peak_percent.setRange(1.0, 95.0)
         self.target_peak_percent.setDecimals(1)
         self.target_peak_percent.setSuffix(" % full scale")
         self.target_peak_percent.setValue(100.0 * float(settings.target_peak_fraction))
 
+        # Maximum integration time allowed
         self.max_integration_ms = QSpinBox()
-        self.max_integration_ms.setRange(1, 86_400_000)
+        self.max_integration_ms.setRange(1, 86_400_000) # One day
         self.max_integration_ms.setSuffix(" ms")
         self.max_integration_ms.setValue(int(settings.maximum_integration_ms))
 
+        # Maximum number of averages allowed
         self.max_averages = QSpinBox()
         self.max_averages.setRange(1, 1_000_000)
         self.max_averages.setValue(int(settings.maximum_averages))
 
+        # Maximum total acquisition time
         self.max_total_s = QDoubleSpinBox()
-        self.max_total_s.setRange(0.001, 86_400.0)
+        self.max_total_s.setRange(0.001, 86_400.0) # One day
         self.max_total_s.setDecimals(2)
         self.max_total_s.setSuffix(" s")
         self.max_total_s.setValue(float(settings.maximum_total_acquisition_s))
 
+        # Maximum number of auto-adjust iterations
+        self.max_iterations = QSpinBox()
+        self.max_iterations.setRange(1, 1000)
+        self.max_iterations.setValue(int(settings.auto_adjust_max_iterations))
+        
+        # Auto-adjust target tolerance
+        self.tolerance = QDoubleSpinBox()
+        self.tolerance.setRange(1.0, 100.0)
+        self.tolerance.setDecimals(1)
+        self.tolerance.setSuffix(" %")
+        self.tolerance.setValue(100 * float(settings.auto_adjust_tolerance_fraction))
+
         suggestion_form.addRow("Generate suggestions", self.auto_suggest)
+        suggestion_form.addRow("Recommendation metric", self.snr_metric)
         suggestion_form.addRow("Target SNR", self.target_snr)
         suggestion_form.addRow("Target detector level", self.target_peak_percent)
         suggestion_form.addRow("Maximum integration", self.max_integration_ms)
         suggestion_form.addRow("Maximum averages", self.max_averages)
         suggestion_form.addRow("Maximum total acquisition", self.max_total_s)
+        suggestion_form.addRow("Maximum auto-adjust iterations", self.max_iterations)
+        suggestion_form.addRow("Target tolerance", self.tolerance)
         root.addWidget(suggestions)
 
         note = QLabel(
