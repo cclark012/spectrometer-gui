@@ -330,6 +330,33 @@ class ScanPanel(QWidget):
         ):
             widget.setEnabled(not running)
 
+    def set_instrument_availability(
+        self,
+        *,
+        spectrometer_available: bool,
+        power_meter_available: bool,
+        lasers_available: bool,
+    ) -> None:
+        running = bool(
+            getattr(self, "_running", False)
+        )
+
+        self.preview_button.setEnabled(
+            lasers_available and not running
+        )
+
+        self.run_button.setEnabled(
+            lasers_available
+            and spectrometer_available
+            and not running
+        )
+
+        self.calibration_button.setEnabled(
+            lasers_available
+            and power_meter_available
+            and not running
+        )
+
     @staticmethod
     def _set_combo_data(combo: QComboBox, value: str) -> None:
         index = combo.findData(str(value))
