@@ -10,6 +10,15 @@ from core.snr_records import SNRMetrics
 FloatArray = NDArray[np.float64]
 
 
+@dataclass(frozen=True, slots=True)
+class InstrumentConnectionState:
+    key: str
+    connected: bool
+    emulated: bool = False
+    description: str = ""
+    error: str = ""
+
+
 @dataclass(slots=True)
 class BackgroundSpectrum:
     timestamp_utc: str
