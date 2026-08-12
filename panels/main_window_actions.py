@@ -189,6 +189,13 @@ def build_main_window_actions(window: QMainWindow) -> MainWindowActions:
     tools_menu.addAction(
         _action(
             window,
+            "Instrument Connections...",
+            window.show_instrument_connections_dialog,
+        )
+    )
+    tools_menu.addAction(
+        _action(
+            window,
             "Refresh Lasers",
             lambda _checked=False: window.laser_panel.refresh_requested.emit(),
         )
