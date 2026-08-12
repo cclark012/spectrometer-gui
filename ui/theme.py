@@ -8,7 +8,8 @@ from PySide6.QtWidgets import QApplication
 
 SYSTEM_THEME = "system"
 VISUAL_STUDIO_DARK = "visual_studio_dark"
-
+THEME_SETTINGS_KEY = "display/theme_name"
+LEGACY_THEME_SETTINGS_KEY = "ui/theme"
 
 class ThemeManager:
     """Apply repository-owned themes without requiring archived third-party code."""
@@ -24,11 +25,20 @@ class ThemeManager:
     def available_themes() -> tuple[str, ...]:
         return (SYSTEM_THEME, VISUAL_STUDIO_DARK)
 
-    def apply(self, app: QApplication, theme_name: str) -> str:
+    def apply(
+        self,
+        app: QApplication,
+        theme_name: str,
+    ) -> str:
         name = str(theme_name or SYSTEM_THEME)
+
+        if name not in self.available_themes():
+            name = SYSTEM_THEME
+
         if name == VISUAL_STUDIO_DARK:
             self._apply_visual_studio_dark(app)
             return VISUAL_STUDIO_DARK
+
         self._apply_system(app)
         return SYSTEM_THEME
 
@@ -56,16 +66,36 @@ class ThemeManager:
         palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#808080"))
         app.setPalette(palette)
 
-        stylesheet_path = self.theme_dir / "visual_studio_dark.qss"
-        stylesheet = stylesheet_path.read_text(encoding="utf-8")
-        # checkmark_path = (self.theme_dir / "checkmark.svg").resolve()
-        # stylesheet = stylesheet.replace("__CHECKMARK_URL__", checkmark_path.as_uri())
-        app.setStyleSheet(stylesheet)
-        # app.setStyleSheet(
-            # stylesheet_path.read_text(encoding="utf-8")
-            # if stylesheet_path.exists()
-            # else ""
-        # )
+        stylesheet_path = (
+            self.theme_dir
+            / "visual_studio_dark.qss"
+        )
+
+        if not stylesheet_path.exists():
+            app.setStyleSheet("")
+        else:
+            stylesheet = stylesheet_path.read_text(
+                encoding="utf-8"
+            )
+
+            checkmark_path = (
+                self.theme_dir
+                / "checkmark.svg"
+            ).resolve()
+
+            if checkmark_path.exists():
+                stylesheet = stylesheet.replace(
+                    "__CHECKMARK_URL__",
+                    checkmark_path.as_uri(),
+                )
+            else:
+                stylesheet = stylesheet.replace(
+                    'image: url("__CHECKMARK_URL__");',
+                    "",
+                )
+
+            app.setStyleSheet(stylesheet)
+
         pg.setConfigOptions(
             background="#1E1E1E",
             foreground="#D4D4D4",

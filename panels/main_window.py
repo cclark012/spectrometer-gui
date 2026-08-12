@@ -82,7 +82,6 @@ class MainWindow(QMainWindow):
     tec_enabled_requested = Signal(bool)
     spectrometer_temperature_requested = Signal()
     spectrometer_capabilities_requested = Signal()
-    snr_settings_changed = Signal(object)
 
     def __init__(self, config: DeviceConfig) -> None:
         super().__init__()
@@ -794,37 +793,6 @@ class MainWindow(QMainWindow):
         self.performance_label.setVisible(self.display_settings.performance_enabled)
         self.performance_label.setText(snapshot.format_status())
 
-    def _apply_display_settings(self) -> None:
-        self.spectrum_panel.set_redraw_interval_ms(
-            self.display_settings
-            .spectrum_redraw_interval_ms
-        )
-
-        self.monitor_panel.set_redraw_interval_ms(
-            self.display_settings
-            .monitor_redraw_interval_ms
-        )
-
-        self.power_panel.set_redraw_interval_ms(
-            self.display_settings
-            .power_redraw_interval_ms
-        )
-
-        self.performance_monitor.configure(
-            enabled=self.display_settings
-            .performance_enabled,
-            rate_window_s=self.display_settings
-            .performance_rate_window_s,
-            report_interval_ms=self.display_settings
-            .performance_report_interval_ms,
-            probe_interval_ms=self.display_settings
-            .event_loop_probe_interval_ms,
-        )
-
-        self.performance_label.setVisible(
-            self.display_settings.performance_enabled
-        )
-
     def _apply_snr_settings(
         self,
         *,
@@ -853,19 +821,25 @@ class MainWindow(QMainWindow):
         self.spectrum_panel.set_redraw_interval_ms(
             self.display_settings.spectrum_redraw_interval_ms
         )
+
         self.monitor_panel.set_redraw_interval_ms(
             self.display_settings.monitor_redraw_interval_ms
         )
+
         self.power_panel.set_redraw_interval_ms(
             self.display_settings.power_redraw_interval_ms
         )
+
         self.performance_monitor.configure(
             enabled=self.display_settings.performance_enabled,
             rate_window_s=self.display_settings.performance_rate_window_s,
             report_interval_ms=self.display_settings.performance_report_interval_ms,
             probe_interval_ms=self.display_settings.event_loop_probe_interval_ms,
         )
-        self.performance_label.setVisible(self.display_settings.performance_enabled)
+
+        self.performance_label.setVisible(
+            self.display_settings.performance_enabled
+        )
 
     @Slot(bool)
     def _on_spectrum_auto_range_toggled(self, enabled: bool) -> None:

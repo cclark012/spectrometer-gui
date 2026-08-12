@@ -13,7 +13,12 @@ from core.configuration import (
     load_json_defaults,
 )
 from panels.main_window import MainWindow
-from ui.theme import VISUAL_STUDIO_DARK, ThemeManager
+from ui.theme import (
+    LEGACY_THEME_SETTINGS_KEY,
+    THEME_SETTINGS_KEY,
+    VISUAL_STUDIO_DARK,
+    ThemeManager,
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -92,12 +97,40 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setApplicationVersion("0.1")
 
     manager = ThemeManager()
-    theme_name = QSettings().value(
-        "ui/theme",
-        VISUAL_STUDIO_DARK,
+    settings = QSettings()
+
+    theme_name = settings.value(
+        THEME_SETTINGS_KEY,
+        "",
         type=str,
     )
-    manager.apply(app, theme_name)
+
+    # Migrate the earlier key if it exists.
+    if not theme_name:
+        theme_name = settings.value(
+            LEGACY_THEME_SETTINGS_KEY,
+            VISUAL_STUDIO_DARK,
+            type=str,
+        )
+
+        settings.setValue(
+            THEME_SETTINGS_KEY,
+            theme_name,
+        )
+        settings.sync()
+
+    applied_theme = manager.apply(
+        app,
+        theme_name,
+    )
+
+    # Normalize an invalid or obsolete stored value.
+    if applied_theme != theme_name:
+        settings.setValue(
+            THEME_SETTINGS_KEY,
+            applied_theme,
+        )
+        settings.sync()
 
     window = MainWindow(config)
     window.show()
