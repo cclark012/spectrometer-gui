@@ -214,9 +214,27 @@ def estimate_snr(
         return SNRMetrics.invalid(str(exc))
 
 
+def selected_snr(
+    result: SNRMetrics,
+    metric: str,
+) -> float:
+    name = str(metric).strip().lower()
+
+    if name == "peak":
+        return float(result.peak_snr)
+
+    if name == "integrated":
+        return float(result.integrated_snr)
+
+    raise ValueError(
+        f"Unknown SNR metric: {metric!r}"
+    )
+
+
 def suggest_acquisition(
     *,
     result: SNRMetrics,
+    metric: str,
     current_integration_ms: int,
     current_averages: int,
     target_snr: float,
@@ -248,7 +266,7 @@ def suggest_acquisition(
             limiting_reason=f"invalid SNR estimate: {result.message}",
         )
 
-    current_snr = max(float(result.integrated_snr), float(result.peak_snr))
+    current_snr = selected_snr(result, metric)
     peak_fraction = float(result.peak_fraction_of_full_scale)
     target_fraction = min(0.90, max(0.10, float(target_peak_fraction)))
     target_snr = max(0.1, float(target_snr))
