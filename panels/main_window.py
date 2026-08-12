@@ -28,6 +28,7 @@ from core.laser_models import LaserChannelInfo
 from core.performance import PerformanceMonitor, PerformanceSnapshot
 from core.records import (
     BackgroundSpectrum,
+    InstrumentConnectionState,
     PowerSnapshot,
     PowerTracePoint,
     SpectrometerCapabilities,
@@ -52,6 +53,7 @@ from dialogs.acquisition_recommendation_dialog import (
     RecommendationChoice,
 )
 from dialogs.display_settings_dialog import DisplaySettingsDialog
+from dialogs.instrument_connections_dialog import InstrumentConnectionsDialog
 from dialogs.performance_settings_dialog import PerformanceSettingsDialog
 from dialogs.power_details_dialog import PowerDetailsDialog
 from dialogs.settings_dialog import AppSettingsDialog
@@ -106,6 +108,21 @@ class MainWindow(QMainWindow):
         self.snr_settings = SNRSettings()
         self.spectrometer_info = SpectrometerInfo()
         self.spectrometer_capabilities: SpectrometerCapabilities | None = None
+
+        self.instrument_states = {
+            "spectrometer": InstrumentConnectionState(
+                key="spectrometer",
+                connected=False,
+            ),
+            "power_meter": InstrumentConnectionState(
+                key="power_meter",
+                connected=False,
+            ),
+            "lasers": InstrumentConnectionState(
+                key="lasers",
+                connected=False,
+            ),
+        }
 
         self.app_t0 = time.perf_counter()
         self.current_record: SpectrumRecord | None = None
@@ -172,6 +189,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.spectrum_panel, "Spectrum")
         self.tabs.addTab(self.monitor_panel, "Monitor")
 
+        self.spectrum_tab_index = self.tabs.addTab(
+            self.spectrum_panel,
+            "Spectrum",
+        )
+
+        self.monitor_tab_index = self.tabs.addTab(
+            self.monitor_panel,
+            "Monitor",
+        )
+
     def _build_left_dock(self) -> None:
         self.controls_dock = QDockWidget("Controls", self)
         self.controls_dock.setObjectName("controls_dock")
@@ -197,15 +224,15 @@ class MainWindow(QMainWindow):
         self.scan_panel = ScanPanel(self)
         self.filter_wheel_panel = FilterWheelPanel(self)
 
-        lower_tabs = QTabWidget()
-        lower_tabs.addTab(self.laser_panel, "Lasers")
-        lower_tabs.addTab(self.scan_panel, "Scan")
-        lower_tabs.addTab(self.filter_wheel_panel, "Filters")
+        self.lower_tabs = QTabWidget()
+        self.laser_tab_index = self.lower_tabs.addTab(self.laser_panel, "Lasers")
+        self.scan_tab_index = self.lower_tabs.addTab(self.scan_panel, "Scan")
+        self.filter_tab_index = self.lower_tabs.addTab(self.filter_wheel_panel, "Filters")
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setObjectName("controls_splitter")
         splitter.addWidget(self.acquisition_panel)
-        splitter.addWidget(lower_tabs)
+        splitter.addWidget(self.lower_tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
@@ -397,12 +424,18 @@ class MainWindow(QMainWindow):
         self.runtime.power_meter_wavelength_ready.connect(
             self._on_power_meter_wavelength_ready
         )
+        self.runtime.power_meter_connection_changed.connect(
+            self._on_instrument_connection_changed
+        )
         self.runtime.spectrometer_info_ready.connect(self._on_spectrometer_info)
         self.runtime.spectrometer_capabilities_ready.connect(
             self._on_spectrometer_capabilities_ready
         )
         self.runtime.spectrometer_temperature_ready.connect(
             self._on_spectrometer_temperature_ready
+        )
+        self.runtime.spectrometer_connection_changed.connect(
+            self._on_instrument_connection_changed
         )
         self.runtime.background_ready.connect(self._on_background_ready)
         self.runtime.background_cleared.connect(self._on_background_cleared)
@@ -438,6 +471,9 @@ class MainWindow(QMainWindow):
         )
         self.runtime.laser_status.connect(self._show_status_message)
         self.runtime.laser_error.connect(self._on_laser_error)
+        self.runtime.laser_connection_changed.connect(
+            self._on_instrument_connection_changed
+        )
 
         self.runtime.start()
 
@@ -769,6 +805,8 @@ class MainWindow(QMainWindow):
         self,
         laser: LaserChannelInfo,
     ) -> None:
+        if not self._instrument_connected("power_meter"):
+            return
         if not self.auto_update_power_meter_wavelength:
             return
         wavelength = float(laser.wavelength_nm)
@@ -817,8 +855,40 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_connection_failed(self, message: str) -> None:
-        self.statusBar().showMessage("Device connection failed.")
-        QMessageBox.critical(self, "Device connection failed", message)
+        self.statusBar().showMessage(
+            "No spectrometer or power meter connected. "
+            "The GUI is running in offline mode.",
+            15_000,
+        )
+
+        print(message, file=sys.stderr)
+
+    @Slot(str)
+    def _connect_instrument(self, key: str) -> None:
+        if key == "spectrometer":
+            self.runtime.connect_spectrometer()
+        elif key == "power_meter":
+            self.runtime.connect_power_meter()
+        elif key == "lasers":
+            self.runtime.refresh_lasers()
+
+    @Slot(str)
+    def _disconnect_instrument(
+        self,
+        key: str,
+    ) -> None:
+        if key == "spectrometer":
+            self.runtime.disconnect_spectrometer()
+        elif key == "power_meter":
+            self.runtime.disconnect_power_meter()
+        elif key == "lasers":
+            self.runtime.disconnect_lasers()
+
+    @Slot()
+    def _reconnect_all_instruments(self) -> None:
+        self.runtime.connect_spectrometer()
+        self.runtime.connect_power_meter()
+        self.runtime.refresh_lasers()
 
     @Slot(str)
     def _on_worker_error(self, message: str) -> None:
@@ -888,6 +958,30 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_monitor_cleared(self) -> None:
         self.statusBar().showMessage("Spectrum monitor cleared.", 5000)
+
+    @Slot(object)
+    def _on_instrument_connection_changed(
+        self,
+        state: InstrumentConnectionState,
+    ) -> None:
+        self.instrument_states[state.key] = state
+        self._apply_instrument_visibility()
+
+        dialog = getattr(
+            self,
+            "_instrument_connections_dialog",
+            None,
+        )
+
+        if dialog is not None:
+            dialog.set_state(state)
+
+    def _instrument_connected(
+        self,
+        key: str,
+    ) -> bool:
+        state = self.instrument_states.get(key)
+        return bool(state and state.connected)
 
     # -------------------------------------------------------------- signal checks
 
@@ -1030,6 +1124,74 @@ class MainWindow(QMainWindow):
         self.monitor_panel.apply_plot_style(self.plot_style_settings)
         self.power_panel.apply_plot_style(self.plot_style_settings)
 
+    def _apply_instrument_visibility(self) -> None:
+        spectrometer = self._instrument_connected(
+            "spectrometer"
+        )
+        power_meter = self._instrument_connected(
+            "power_meter"
+        )
+        lasers = self._instrument_connected(
+            "lasers"
+        )
+
+        # Spectrometer controls.
+        self.acquisition_panel.setVisible(spectrometer)
+        self.tabs.setTabVisible(
+            self.monitor_tab_index,
+            spectrometer,
+        )
+
+        self.acquire_action.setEnabled(
+            spectrometer and not self.acquiring
+        )
+
+        if not spectrometer:
+            self.acquisition_panel.set_live_enabled(
+                False
+            )
+            self.live_next_timer.stop()
+            self.spectrometer_capabilities = None
+
+        # Keep Spectrum tab visible for offline file viewing.
+        self.tabs.setTabVisible(
+            self.spectrum_tab_index,
+            True,
+        )
+
+        # Newport controls.
+        self.power_dock.setVisible(power_meter)
+        self.power_label.setVisible(power_meter)
+
+        if not power_meter:
+            self.power_timer.stop()
+            self.last_power_meter_wavelength_nm = None
+        else:
+            self._apply_power_monitor_settings()
+
+        # OBIS controls.
+        self.lower_tabs.setTabVisible(
+            self.laser_tab_index,
+            lasers,
+        )
+        self.lower_tabs.setTabVisible(
+            self.scan_tab_index,
+            lasers,
+        )
+
+        # Filter definitions remain editable offline.
+        self.lower_tabs.setTabVisible(
+            self.filter_tab_index,
+            True,
+        )
+
+        # Use your actual button names here.
+        self.scan_panel.set_instrument_availability(
+            spectrometer_available=spectrometer,
+            power_meter_available=power_meter,
+            lasers_available=lasers,
+        )
+
     # -------------------------------------------------------------- clear / toggle
 
     def clear_spectrum(self) -> None:
@@ -1132,6 +1294,43 @@ class MainWindow(QMainWindow):
                     0,
                     self.request_application_restart,
                 )
+
+    def show_instrument_connections_dialog(
+        self,
+    ) -> None:
+        dialog = getattr(
+            self,
+            "_instrument_connections_dialog",
+            None,
+        )
+
+        if dialog is None:
+            dialog = InstrumentConnectionsDialog(
+                self
+            )
+
+            dialog.connect_requested.connect(
+                self._connect_instrument
+            )
+
+            dialog.disconnect_requested.connect(
+                self._disconnect_instrument
+            )
+
+            dialog.reconnect_all_requested.connect(
+                self._reconnect_all_instruments
+            )
+
+            self._instrument_connections_dialog = (
+                dialog
+            )
+
+        for state in self.instrument_states.values():
+            dialog.set_state(state)
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def show_performance_settings_dialog(self) -> None:
         dialog = PerformanceSettingsDialog(
