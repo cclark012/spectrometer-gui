@@ -238,8 +238,11 @@ class SNRSettingsDialog(QDialog):
             update_every_n_spectra=int(self.update_every_n.value()),
             target_snr=float(self.target_snr.value()),
             auto_suggest_enabled=bool(self.auto_suggest.isChecked()),
+            recommendation_metric=str(self.snr_metric.currentData()),
             target_peak_fraction=float(self.target_peak_percent.value()) / 100.0,
             maximum_integration_ms=int(self.max_integration_ms.value()),
             maximum_averages=int(self.max_averages.value()),
             maximum_total_acquisition_s=float(self.max_total_s.value()),
+            auto_adjust_tolerance_fraction=float(self.tolerance.value()) / 100.0,
+            auto_adjust_max_iterations=int(self.max_iterations.value()),
         )
