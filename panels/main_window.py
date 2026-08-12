@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self.resize(1600, 850)
 
         self._application_exit_code = 0
+        self._closing = False
         self.config = config
         self.file_name_settings = FileNameSettings()
         self.power_monitor_settings = PowerMonitorSettings()
@@ -497,6 +498,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_spectrum_ready(self, record: SpectrumRecord) -> None:
+        if self._closing:
+            return
         self._finish_acquisition_ui()
         self.performance_monitor.mark_acquisition()
         self.current_record = record
@@ -700,6 +703,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_power_ready(self, power: PowerSnapshot) -> None:
+        if self._closing:
+            return
         if self.power_monitor_settings.mode != "live":
             return
         self._display_power_snapshot(power)
@@ -788,6 +793,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_lasers_ready(self, lasers: object) -> None:
+        if self._closing:
+            return
         self.laser_panel.set_lasers(lasers)
 
     @Slot(str, int, bool)
@@ -1334,19 +1341,32 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event) -> None:
-        self._save_preferences()
-        self._save_window_layout()
+        if self._closing:
+            event.accept()
+            return
+
+        # Prevent new work from being scheduled
         self.acquisition_panel.set_live_enabled(False)
         self.live_next_timer.stop()
         self.power_timer.stop()
-        self.file_io.close()
+
+        # Persist UI state
+        self._save_preferences()
+        self._save_window_layout()
+
+        # Stop hardware workers
         self.runtime.shutdown()
-        super().closeEvent(event)
+
+        # Flush and close any remaining file/log resources.
+        self.file_io.close()
+
         event.accept()
 
         exit_code = int(self._application_exit_code)
+        app = QApplication.instance()
 
-        QTimer.singleShot(
-            0,
-            lambda: QApplication.exit(exit_code),
-        )
+        if app is not None:
+            QTimer.singleShot(
+                0,
+                lambda code=exit_code: app.exit(code),
+            )
