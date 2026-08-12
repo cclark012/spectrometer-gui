@@ -50,7 +50,7 @@ class ThemeManager:
 
     def _apply_visual_studio_dark(self, app: QApplication) -> None:
         app.setStyle("Fusion")
-        palette = QPalette()
+        palette = QPalette(app.style().standardPalette())
         palette.setColor(QPalette.ColorRole.Window, QColor("#1E1E1E"))
         palette.setColor(QPalette.ColorRole.WindowText, QColor("#D4D4D4"))
         palette.setColor(QPalette.ColorRole.Base, QColor("#252526"))
@@ -64,6 +64,23 @@ class ThemeManager:
         palette.setColor(QPalette.ColorRole.Highlight, QColor("#007ACC"))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
         palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#808080"))
+
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.Text,
+            QColor("#707070"),
+        )
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.WindowText,
+            QColor("#707070"),
+        )
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.ButtonText,
+            QColor("#707070"),
+        )
+
         app.setPalette(palette)
 
         stylesheet_path = (
@@ -79,20 +96,13 @@ class ThemeManager:
             )
 
             checkmark_path = (
-                self.theme_dir
-                / "checkmark.svg"
+                self.theme_dir / "checkmark.svg"
             ).resolve()
 
-            if checkmark_path.exists():
-                stylesheet = stylesheet.replace(
-                    "__CHECKMARK_URL__",
-                    checkmark_path.as_uri(),
-                )
-            else:
-                stylesheet = stylesheet.replace(
-                    'image: url("__CHECKMARK_URL__");',
-                    "",
-                )
+            stylesheet = stylesheet.replace(
+                "__CHECKMARK_URL__",
+                checkmark_path.as_posix(),
+            )
 
             app.setStyleSheet(stylesheet)
 
