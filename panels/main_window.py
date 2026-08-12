@@ -6,7 +6,7 @@ import time
 from dataclasses import replace
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -47,6 +47,10 @@ from core.settings import (
 )
 from core.time_utils import utc_now_iso
 from core.units import format_power_w
+from dialogs.acquisition_recommendation_dialog import (
+    AcquisitionRecommendationDialog,
+    RecommendationChoice,
+)
 from dialogs.display_settings_dialog import DisplaySettingsDialog
 from dialogs.performance_settings_dialog import PerformanceSettingsDialog
 from dialogs.power_details_dialog import PowerDetailsDialog
@@ -62,6 +66,7 @@ from panels.monitor_panel import MonitorPanel
 from panels.power_panel import PowerPanel
 from panels.scan_panel import ScanPanel
 from panels.spectrum_panel import SpectrumPanel
+from processing.snr import suggest_acquisition
 
 
 class MainWindow(QMainWindow):
@@ -182,6 +187,10 @@ class MainWindow(QMainWindow):
             self.background_clear_requested.emit
         )
         self.acquisition_panel.live_changed.connect(self._on_live_changed)
+
+        self.acquisition_panel.recommend_acquisition_requested.connect(
+                self.show_acquisition_recommendation
+            )
 
         self.laser_panel = LaserPanel(self)
         self.scan_panel = ScanPanel(self)
@@ -550,6 +559,142 @@ class MainWindow(QMainWindow):
         settings = replace(self._settings(), subtract_background=False)
         self.statusBar().showMessage("Capturing background spectrum...", 5000)
         self.background_capture_requested.emit(settings)
+
+    def _spectrometer_integration_limits_ms(
+        self,
+    ) -> tuple[int, int]:
+        caps = getattr(
+            self,
+            "spectrometer_capabilities",
+            None,
+        )
+
+        if caps is not None:
+            minimum_us = int(
+                caps.integration_time_min_us or 0
+            )
+            maximum_us = int(
+                caps.integration_time_max_us or 0
+            )
+
+            if (
+                minimum_us > 0
+                and maximum_us >= minimum_us
+            ):
+                minimum_ms = max(
+                    1,
+                    math.ceil(minimum_us / 1000.0),
+                )
+                maximum_ms = max(
+                    minimum_ms,
+                    math.floor(maximum_us / 1000.0),
+                )
+
+                return minimum_ms, maximum_ms
+
+        return (
+            int(self.acquisition_panel.integration_ms.minimum()),
+            int(self.acquisition_panel.integration_ms.maximum()),
+        )
+
+    def show_acquisition_recommendation(
+        self,
+    ) -> None:
+        record = self.current_record
+
+        if record is None or record.snr is None:
+            QMessageBox.information(
+                self,
+                "No SNR estimate",
+                "Acquire a spectrum with SNR estimation "
+                "enabled before requesting a recommendation.",
+            )
+            return
+
+        if not record.snr.valid:
+            QMessageBox.information(
+                self,
+                "Invalid SNR estimate",
+                record.snr.message,
+            )
+            return
+
+        current = self.acquisition_panel.settings(
+            run_identifier=(
+                self.file_name_settings.run_identifier
+            ),
+            notes=self.file_name_settings.notes,
+        )
+
+        minimum_ms, maximum_ms = (
+            self._spectrometer_integration_limits_ms()
+        )
+
+        maximum_ms = min(
+            maximum_ms,
+            int(
+                self.snr_settings
+                .maximum_integration_ms
+            ),
+        )
+
+        suggestion = suggest_acquisition(
+            result=record.snr,
+            metric=(
+                self.snr_settings
+                .recommendation_metric
+            ),
+            current_integration_ms=(
+                current.integration_ms
+            ),
+            current_averages=current.averages,
+            target_snr=self.snr_settings.target_snr,
+            target_peak_fraction=(
+                self.snr_settings
+                .target_peak_fraction
+            ),
+            minimum_integration_ms=minimum_ms,
+            maximum_integration_ms=maximum_ms,
+            maximum_averages=(
+                self.snr_settings
+                .maximum_averages
+            ),
+            maximum_total_acquisition_s=(
+                self.snr_settings
+                .maximum_total_acquisition_s
+            ),
+        )
+
+        dialog = AcquisitionRecommendationDialog(
+            current_integration_ms=(
+                current.integration_ms
+            ),
+            current_averages=current.averages,
+            suggestion=suggestion,
+            parent=self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.acquisition_panel.set_acquisition_parameters(
+            integration_ms=suggestion.integration_ms,
+            averages=suggestion.averages,
+        )
+
+        self.acquisition_panel.save_preferences(
+            QSettings()
+        )
+
+        if (
+            dialog.choice
+            == RecommendationChoice
+            .APPLY_AND_ACQUIRE
+        ):
+            QTimer.singleShot(
+                0,
+                self.take_spectrum,
+            )
 
     # ------------------------------------------------------------------- power
 
