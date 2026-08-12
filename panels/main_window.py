@@ -9,6 +9,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDockWidget,
     QLabel,
@@ -33,6 +34,7 @@ from core.records import (
     SpectrometerInfo,
     SpectrumRecord,
 )
+from core.restart import RESTART_EXIT_CODE
 from core.settings import (
     AcquisitionSettings,
     DeviceConfig,
@@ -88,6 +90,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Magneto-PL Spectrum Acquisition")
         self.resize(1600, 850)
 
+        self._application_exit_code = 0
         self.config = config
         self.file_name_settings = FileNameSettings()
         self.power_monitor_settings = PowerMonitorSettings()
@@ -143,6 +146,8 @@ class MainWindow(QMainWindow):
         restored = self._restore_window_layout()
         if not restored:
             QTimer.singleShot(0, self._apply_initial_layout)
+
+
 
     # ------------------------------------------------------------------ UI setup
 
@@ -961,12 +966,20 @@ class MainWindow(QMainWindow):
         self._save_preferences()
 
         if self.display_settings.theme_name != old_theme:
-            QMessageBox.information(
+            result = QMessageBox.question(
                 self,
-                "Theme changed",
-                "The new theme will be applied the next time "
-                "the GUI is started.",
+                "Restart to apply theme",
+                "The theme requires a restart.\n\n"
+                "Restart the GUI now?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
             )
+
+            if result == QMessageBox.StandardButton.Yes:
+                QTimer.singleShot(
+                    0,
+                    self.request_application_restart,
+                )
 
     def show_performance_settings_dialog(self) -> None:
         dialog = PerformanceSettingsDialog(
@@ -1152,6 +1165,29 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------------- shutdown
 
+    def request_application_restart(self) -> None:
+        if self.acquiring:
+            QMessageBox.information(
+                self,
+                "Acquisition active",
+                "Stop the current acquisition before restarting the GUI.",
+            )
+            return
+
+        if (
+            self.scan_coordinator.power_scan_active
+            or self.scan_coordinator.calibration_active
+        ):
+            QMessageBox.information(
+                self,
+                "Scan active",
+                "Stop the active scan before restarting the GUI.",
+            )
+            return
+
+        self._application_exit_code = RESTART_EXIT_CODE
+        self.close()
+
     def closeEvent(self, event) -> None:
         self._save_preferences()
         self._save_window_layout()
@@ -1161,3 +1197,11 @@ class MainWindow(QMainWindow):
         self.file_io.close()
         self.runtime.shutdown()
         super().closeEvent(event)
+        event.accept()
+
+        exit_code = int(self._application_exit_code)
+
+        QTimer.singleShot(
+            0,
+            lambda: QApplication.exit(exit_code),
+        )

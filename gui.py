@@ -12,6 +12,7 @@ from core.configuration import (
     build_device_config,
     load_json_defaults,
 )
+from core.restart import RESTART_EXIT_CODE, launch_replacement_process
 from panels.main_window import MainWindow
 from ui.theme import (
     LEGACY_THEME_SETTINGS_KEY,
@@ -132,10 +133,27 @@ def main(argv: list[str] | None = None) -> int:
         )
         settings.sync()
 
+    app.setQuitOnLastWindowClosed(False)
+
     window = MainWindow(config)
     window.show()
 
-    return app.exec()
+    exit_code = app.exec()
+
+    if exit_code == RESTART_EXIT_CODE:
+        success, pid = launch_replacement_process()
+
+        if not success:
+            print(
+                "Failed to restart the application.",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(f"Restarted application as PID {pid}.")
+        return 0
+
+    return int(exit_code)
 
 
 def cli() -> None:
