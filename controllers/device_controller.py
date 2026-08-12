@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from core.records import (
     BackgroundSpectrum,
+    InstrumentConnectionState,
     PowerSnapshot,
     SpectralAcquisition,
     SpectrometerCapabilities,
@@ -39,9 +40,11 @@ class DeviceController(QObject):
     power_read_complete = Signal(str, object)
     power_read_failed = Signal(str, str)
     power_meter_wavelength_ready = Signal(int)
+    power_meter_connection_changed = Signal(object)
     spectrometer_info_ready = Signal(object)
     spectrometer_capabilities_ready = Signal(object)
     spectrometer_temperature_ready = Signal(float)
+    spectrometer_connection_changed = Signal(object)
     status = Signal(str)
     error = Signal(str)
 
@@ -65,35 +68,47 @@ class DeviceController(QObject):
 
     @Slot()
     def connect_devices(self) -> None:
-        self._close_devices()
-        messages: list[str] = []
-        errors: list[str] = []
+        spectrometer_state = (
+            self._connect_spectrometer_now()
+        )
+        power_state = self._connect_power_meter_now()
 
-        self.spec, spectrometer_message, spectrometer_error = self._connect_spectrometer()
-        self.spec_available = self.spec is not None
-        if spectrometer_message:
-            messages.append(spectrometer_message)
-        if spectrometer_error:
-            errors.append(spectrometer_error)
-        if self.spec_available:
-            self._emit_spectrometer_info()
+        states = [
+            spectrometer_state,
+            power_state,
+        ]
 
-        self.pm, power_message, power_error = self._connect_power_meter()
-        self.power_available = self.pm is not None
-        if power_message:
-            messages.append(power_message)
-        if power_error:
-            errors.append(power_error)
+        messages = [
+            state.description
+            for state in states
+            if state.description
+        ]
 
-        if not (self.spec_available or self.power_available):
+        errors = [
+            state.error
+            for state in states
+            if state.error
+        ]
+
+        if not any(state.connected for state in states):
             self.connection_failed.emit(
-                "No spectrometer or power meter connected.\n\n" + "\n".join(errors)
+                "No spectrometer or power meter connected."
+                + (
+                    "\n\n" + "\n".join(errors)
+                    if errors
+                    else ""
+                )
             )
             return
 
         message = "; ".join(messages)
+
         if errors:
-            message += "\n\nNonfatal connection issue(s):\n" + "\n".join(errors)
+            message += (
+                "\n\nUnavailable instrument(s):\n"
+                + "\n".join(errors)
+            )
+
         self.connected.emit(message)
 
     def _connect_spectrometer(
@@ -117,6 +132,35 @@ class DeviceController(QObject):
                 error += "\nSpectrometer emulator fallback failed:\n" + traceback.format_exc()
 
         return None, "", error
+
+    def _connect_spectrometer_now(
+        self,
+    ) -> InstrumentConnectionState:
+        self._close_spectrometer()
+
+        spectrometer, message, error = (
+            self._connect_spectrometer()
+        )
+
+        self.spec = spectrometer
+        self.spec_available = spectrometer is not None
+
+        if self.spec_available:
+            self._emit_spectrometer_info()
+
+        state = InstrumentConnectionState(
+            key="spectrometer",
+            connected=self.spec_available,
+            emulated=isinstance(
+                spectrometer,
+                EmulatedSpectrometer,
+            ),
+            description=message,
+            error=error,
+        )
+
+        self.spectrometer_connection_changed.emit(state)
+        return state
 
     def _connect_power_meter(self) -> tuple[PowerMeterAdapter | None, str, str]:
         try:
@@ -147,6 +191,50 @@ class DeviceController(QObject):
                 error += "\nPower meter emulator fallback failed:\n" + traceback.format_exc()
 
         return None, "", error
+
+    def _connect_power_meter_now(
+        self,
+    ) -> InstrumentConnectionState:
+        self._close_power_meter()
+
+        meter, message, error = (
+            self._connect_power_meter()
+        )
+
+        self.pm = meter
+        self.power_available = meter is not None
+
+        state = InstrumentConnectionState(
+            key="power_meter",
+            connected=self.power_available,
+            emulated=isinstance(
+                meter,
+                EmulatedPowerMeter,
+            ),
+            description=message,
+            error=error,
+        )
+
+        self.power_meter_connection_changed.emit(state)
+        return state
+
+    @Slot()
+    def connect_spectrometer(self) -> None:
+        self._connect_spectrometer_now()
+
+    @Slot()
+    def disconnect_spectrometer(self) -> None:
+        self._close_spectrometer()
+
+        self.spectrometer_connection_changed.emit(
+            InstrumentConnectionState(
+                key="spectrometer",
+                connected=False,
+                description="Spectrometer disconnected.",
+            )
+        )
+
+        self.status.emit("Spectrometer disconnected.")
 
     @Slot(object)
     def set_snr_settings(self, settings: SNRSettings) -> None:
@@ -314,20 +402,60 @@ class DeviceController(QObject):
             self.error.emit(message)
 
     @Slot(int)
-    def set_power_meter_wavelength_nm(self, wavelength_nm: int) -> None:
+    def set_power_meter_wavelength_nm(
+        self,
+        wavelength_nm: int,
+    ) -> None:
+        if not self.power_available or self.pm is None:
+            self.status.emit(
+                "Power meter unavailable; "
+                "wavelength was not changed."
+            )
+            return
+
         try:
-            meter = self._require_power_meter()
             requested = int(round(float(wavelength_nm)))
-            meter.set_wavelength_for_laser_nm(requested)
+
+            self.pm.set_wavelength_for_laser_nm(
+                requested
+            )
+
             try:
-                actual = int(meter.get_wavelength_nm())
+                actual = int(
+                    self.pm.get_wavelength_nm()
+                )
             except Exception:
                 actual = requested
 
-            self.power_meter_wavelength_ready.emit(actual)
-            self.status.emit(f"Newport wavelength set to {actual} nm.")
+            self.power_meter_wavelength_ready.emit(
+                actual
+            )
+
+            self.status.emit(
+                f"Newport wavelength set to {actual} nm."
+            )
+
         except Exception:
             self.error.emit(traceback.format_exc())
+
+    @Slot()
+    def connect_power_meter(self) -> None:
+        self._connect_power_meter_now()
+
+
+    @Slot()
+    def disconnect_power_meter(self) -> None:
+        self._close_power_meter()
+
+        self.power_meter_connection_changed.emit(
+            InstrumentConnectionState(
+                key="power_meter",
+                connected=False,
+                description="Power meter disconnected.",
+            )
+        )
+
+        self.status.emit("Power meter disconnected.")
 
     def _acquire_spectrometer(
         self,
@@ -468,6 +596,36 @@ class DeviceController(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._close_devices()
+
+    def _close_spectrometer(self) -> None:
+        spectrometer = self.spec
+        self.spec = None
+        self.spec_available = False
+        self._capabilities = None
+        self._info = None
+
+        if spectrometer is not None:
+            close = getattr(spectrometer, "close", None)
+
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    def _close_power_meter(self) -> None:
+        meter = self.pm
+        self.pm = None
+        self.power_available = False
+
+        if meter is not None:
+            close = getattr(meter, "close", None)
+
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     def _close_devices(self) -> None:
         for device in (self.spec, self.pm):
