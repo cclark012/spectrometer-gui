@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self._apply_loaded_preferences()
 
         self._start_instrument_runtime()
+        self._apply_snr_settings()
         self._apply_power_monitor_settings()
 
         restored = self._restore_window_layout()
@@ -485,11 +486,13 @@ class MainWindow(QMainWindow):
     def _on_spectrum_ready(self, record: SpectrumRecord) -> None:
         self._finish_acquisition_ui()
         self.performance_monitor.mark_acquisition()
-        self.acquisition_panel.set_snr(record.snr)
         self.current_record = record
         self.file_io.set_current_record(record)
         self.spectrum_panel.queue_record(record)
         self._display_power_snapshot(record.p_after)
+
+        if (self.snr_settings.enabled and record.snr is not None):
+            self.acquisition_panel.set_snr(record.snr)
 
         if self.power_monitor_settings.append_spectrum_power:
             self._append_power_history(
@@ -784,7 +787,7 @@ class MainWindow(QMainWindow):
             f"Current points: {n_points}\n\nClear it if the full history is not needed.",
         )
 
-    # -------------------------------------------------------------- performance
+    # -------------------------------------------------------------- performance/snr
 
     @Slot(object)
     def _on_performance_updated(self, snapshot: PerformanceSnapshot) -> None:
@@ -821,6 +824,28 @@ class MainWindow(QMainWindow):
         self.performance_label.setVisible(
             self.display_settings.performance_enabled
         )
+
+    def _apply_snr_settings(
+        self,
+        *,
+        push_to_runtime: bool = True,
+    ) -> None:
+        """
+        Apply the current SNR settings to both the acquisition-panel display
+        and the instrument worker.
+
+        During initial preference loading, the runtime may not exist yet, so
+        push_to_runtime can be disabled.
+        """
+
+        self.acquisition_panel.set_snr_enabled(
+            bool(self.snr_settings.enabled)
+        )
+
+        if push_to_runtime and hasattr(self, "runtime"):
+            self.runtime.set_snr_settings(
+                replace(self.snr_settings)
+            )
 
     # ------------------------------------------------------------- plot/view tools
 
@@ -1005,10 +1030,7 @@ class MainWindow(QMainWindow):
             return
 
         self.snr_settings = dialog.settings()
-
-        self.runtime.set_snr_settings(
-            replace(self.snr_settings)
-        )
+        self._apply_snr_settings()
 
         self.preferences.update_dataclasses(
             self.file_name_settings,
@@ -1073,16 +1095,27 @@ class MainWindow(QMainWindow):
         self.preferences.save(scan_timing=self.scan_timing_action.isChecked())
 
     def _apply_loaded_preferences(self) -> None:
-        self.power_panel.set_mode(self.power_monitor_settings.mode)
+        self.power_panel.set_mode(
+            self.power_monitor_settings.mode
+        )
         self.power_panel.set_auto_wavelength_enabled(
             self.auto_update_power_meter_wavelength
         )
+
         self.spectrum_auto_range_action.setChecked(
             self.plot_style_settings.spectrum_auto_range
         )
-        self.scan_timing_action.setChecked(self._loaded_scan_timing)
-        self.scan_coordinator.set_timing_enabled(self._loaded_scan_timing)
+
+        self.scan_timing_action.setChecked(
+            self._loaded_scan_timing
+        )
+        self.scan_coordinator.set_timing_enabled(
+            self._loaded_scan_timing
+        )
+
         self._apply_plot_style()
+        self._apply_display_settings()
+        self._apply_snr_settings(push_to_runtime=False)
         self._update_autosave_indicator()
 
     def _restore_window_layout(self) -> bool:

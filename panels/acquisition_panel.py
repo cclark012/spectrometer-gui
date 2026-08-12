@@ -79,8 +79,12 @@ class AcquisitionPanel(QWidget):
         self.field_input.setValue(0)
         self.field_input.setSuffix(" mT")
 
-        self.snr_label = QLabel("Peak -- | Area --")
-        self.snr_label.setToolTip("SNR calculated from the unsmoothed spectrum")
+        self._snr_enabled = False
+
+        self.snr_label = QLabel("Disabled")
+        self.snr_label.setToolTip(
+            "SNR estimation is disabled"
+        )
 
         form.addRow("Live", self.live_check)
         form.addRow("Electric dark", self.dark_check)
@@ -155,24 +159,54 @@ class AcquisitionPanel(QWidget):
             f"Allowed integration range: {min_ms} to {max_ms} ms"
         )
 
-    def set_snr(self, result: SNRMetrics | None) -> None:
-        if result is None:
-            self.snr_label.setText("Peak -- | Area --")
-            self.snr_label.setToolTip("SNR was not evaluated for this spectrum")
+    def set_snr(
+        self,
+        result: SNRMetrics | None,
+    ) -> None:
+        if not self._snr_enabled:
             return
+
+        # None means this spectrum was skipped because the user selected
+        # evaluation every N spectra. Retain the previous valid result.
+        if result is None:
+            return
+
         if not result.valid:
             self.snr_label.setText("Unavailable")
             self.snr_label.setToolTip(result.message)
             return
+
         self.snr_label.setText(
-            f"Peak {result.peak_snr:.2f} | Area {result.integrated_snr:.2f}"
+            f"Peak {result.peak_snr:.2f} | "
+            f"Area {result.integrated_snr:.2f}"
         )
+
         self.snr_label.setToolTip(
-            f"Noise sigma: {result.noise_sigma_counts:.4g} counts\n"
+            f"Noise sigma: "
+            f"{result.noise_sigma_counts:.4g} counts\n"
             f"Signal pixels: {result.n_signal_pixels}\n"
             f"Noise pixels: {result.n_noise_pixels}\n"
-            f"Peak fraction: {100.0 * result.peak_fraction_of_full_scale:.2f}%"
+            f"Peak fraction: "
+            f"{100.0 * result.peak_fraction_of_full_scale:.2f}%"
         )
+
+    def set_snr_enabled(self, enabled: bool) -> None:
+        self._snr_enabled = bool(enabled)
+
+        if self._snr_enabled:
+            self.snr_label.setText(
+                "Enabled — waiting for spectrum"
+            )
+            self.snr_label.setToolTip(
+                "SNR estimation is enabled. "
+                "A result will appear after the next "
+                "scheduled SNR evaluation."
+            )
+        else:
+            self.snr_label.setText("Disabled")
+            self.snr_label.setToolTip(
+                "SNR estimation is disabled"
+            )
 
     def load_preferences(self, settings: QSettings) -> None:
         self.live_check.setChecked(
