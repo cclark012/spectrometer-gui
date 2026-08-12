@@ -19,6 +19,10 @@ class InstrumentRuntime(QObject):
     # Device-controller results.
     connected = Signal(str)
     connection_failed = Signal(str)
+    spectrometer_connection_changed = Signal(object)
+    power_meter_connection_changed = Signal(object)
+    laser_connection_changed = Signal(object)
+
     spectrum_ready = Signal(object)
     acquisition_failed = Signal(str)
     power_ready = Signal(object)
@@ -50,6 +54,8 @@ class InstrumentRuntime(QObject):
     _power_settings_requested = Signal(object)
     _power_meter_wavelength_requested = Signal(int)
     _power_read_once_requested = Signal(str)
+    _connect_power_meter_requested = Signal()
+    _disconnect_power_meter_requested = Signal()
     _background_capture_requested = Signal(object)
     _background_clear_requested = Signal()
     _tec_target_requested = Signal(float)
@@ -57,6 +63,8 @@ class InstrumentRuntime(QObject):
     _snr_settings_requested = Signal(object)
     _spectrometer_temperature_requested = Signal()
     _spectrometer_capabilities_requested = Signal()
+    _connect_spectrometer_requested = Signal()
+    _disconnect_spectrometer_requested = Signal()
 
     # Requests routed to LaserController.
     _laser_refresh_requested = Signal()
@@ -64,6 +72,7 @@ class InstrumentRuntime(QObject):
     _laser_enabled_requested = Signal(str, int, bool)
     _laser_disable_all_requested = Signal()
     _laser_cdrh_requested = Signal(str, int, bool)
+    _disconnect_lasers_requested = Signal()
 
     def __init__(self, config: DeviceConfig, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -109,6 +118,14 @@ class InstrumentRuntime(QObject):
             controller.query_spectrometer_capabilities,
             queued,
         )
+        self._connect_spectrometer_requested.connect(controller.connect_spectrometer, queued)
+        self._disconnect_spectrometer_requested.connect(controller.disconnect_spectrometer, queued)
+
+        self._connect_power_meter_requested.connect(controller.connect_power_meter, queued)
+        self._disconnect_power_meter_requested.connect(controller.disconnect_power_meter, queued)
+
+        controller.spectrometer_connection_changed.connect(self.spectrometer_connection_changed.emit)
+        controller.power_meter_connection_changed.connect(self.power_meter_connection_changed.emit)
 
         controller.connected.connect(self.connected.emit)
         controller.connection_failed.connect(self.connection_failed.emit)
@@ -142,7 +159,9 @@ class InstrumentRuntime(QObject):
         self._laser_enabled_requested.connect(controller.set_enabled, queued)
         self._laser_disable_all_requested.connect(controller.disable_all, queued)
         self._laser_cdrh_requested.connect(controller.set_cdrh_delay, queued)
+        self._disconnect_lasers_requested.connect(controller.disconnect_all_boxes, queued)
 
+        controller.connection_changed.connect(self.laser_connection_changed.emit)
         controller.lasers_ready.connect(self.lasers_ready.emit)
         controller.power_set_complete.connect(self.laser_power_set_complete.emit)
         controller.enabled_set_complete.connect(self.laser_enabled_set_complete.emit)
@@ -184,6 +203,14 @@ class InstrumentRuntime(QObject):
     def read_power_once(self, tag: str) -> None:
         self._power_read_once_requested.emit(str(tag))
 
+    @Slot()
+    def connect_power_meter(self) -> None:
+        self._connect_power_meter_requested.emit()
+
+    @Slot()
+    def disconnect_power_meter(self) -> None:
+        self._disconnect_power_meter_requested.emit()
+
     @Slot(object)
     def capture_background(self, settings: AcquisitionSettings) -> None:
         self._background_capture_requested.emit(settings)
@@ -212,6 +239,14 @@ class InstrumentRuntime(QObject):
     def query_spectrometer_capabilities(self) -> None:
         self._spectrometer_capabilities_requested.emit()
 
+    @Slot()
+    def connect_spectrometer(self) -> None:
+        self._connect_spectrometer_requested.emit()
+
+    @Slot()
+    def disconnect_spectrometer(self) -> None:
+        self._disconnect_spectrometer_requested.emit()
+
     # --------------------------------------------------------------- laser requests
 
     @Slot()
@@ -233,6 +268,10 @@ class InstrumentRuntime(QObject):
     @Slot(str, int, bool)
     def set_laser_cdrh_delay(self, port: str, channel: int, enabled: bool) -> None:
         self._laser_cdrh_requested.emit(str(port), int(channel), bool(enabled))
+
+    @Slot()
+    def disconnect_lasers(self) -> None:
+        self._disconnect_lasers_requested.emit()
 
     # -------------------------------------------------------------------- lifecycle
 
