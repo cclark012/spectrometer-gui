@@ -5,6 +5,7 @@ import traceback
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core.laser_models import LaserChannelInfo
+from core.records import InstrumentConnectionState
 from devices.emulated_obis import make_emulated_obis_boxes
 from devices.obis_adapter import find_obis_boxes
 from devices.protocols import LaserBoxAdapter
@@ -20,6 +21,7 @@ class LaserController(QObject):
     power_set_failed = Signal(str, int, str)
     enabled_set_failed = Signal(str, int, str)
     cdrh_set_failed = Signal(str, int, str)
+    connection_changed = Signal(object)
 
     def __init__(
         self,
@@ -53,6 +55,15 @@ class LaserController(QObject):
                     candidate_ports=self.candidate_ports,
                     timeout_s=2.5,
                 )
+                if not boxes:
+                    self.connection_changed.emit(
+                        InstrumentConnectionState(
+                            key="lasers",
+                            connected=False,
+                            description="No OBIS laser boxes found.",
+                        )
+                    )
+
                 if not boxes and self.fallback_emulator:
                     boxes = make_emulated_obis_boxes()
                     mode_message = "No real OBIS boxes found; using laser emulators."
@@ -72,8 +83,31 @@ class LaserController(QObject):
             if box_summary:
                 message += f" {box_summary}"
             self.status.emit(message)
+            self.connection_changed.emit(
+                InstrumentConnectionState(
+                    key="lasers",
+                    connected=bool(self.boxes),
+                    emulated=bool(self.emulate),
+                    description=message,
+                    error="",
+                )
+            )
         except Exception:
-            self.error.emit(traceback.format_exc())
+            message = traceback.format_exc()
+
+            self.boxes = {}
+            self.lasers_ready.emit([])
+
+            self.connection_changed.emit(
+                InstrumentConnectionState(
+                    key="lasers",
+                    connected=False,
+                    description="Laser connection failed.",
+                    error=message,
+                )
+            )
+
+            self.error.emit(message)
 
     def _collect_lasers(self) -> list[LaserChannelInfo]:
         lasers: list[LaserChannelInfo] = []
@@ -149,6 +183,21 @@ class LaserController(QObject):
         self.status.emit(
             "Disable-all command sent to all connected OBIS boxes."
         )
+
+    @Slot()
+    def disconnect_all_boxes(self) -> None:
+        self._close_boxes()
+        self.lasers_ready.emit([])
+
+        self.connection_changed.emit(
+            InstrumentConnectionState(
+                key="lasers",
+                connected=False,
+                description="Laser boxes disconnected.",
+            )
+        )
+
+        self.status.emit("Laser boxes disconnected.")
 
     @Slot()
     def shutdown(self) -> None:
