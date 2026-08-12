@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setApplicationName("MagnetoPLAcquisition")
     QApplication.setApplicationVersion("0.1")
 
-    manager = ThemeManager()
+    manager = ThemeManager(app)
     settings = QSettings()
 
     theme_name = settings.value(
