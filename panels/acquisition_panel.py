@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSpinBox,
@@ -26,6 +27,8 @@ class AcquisitionPanel(QWidget):
     background_requested = Signal()
     background_clear_requested = Signal()
     live_changed = Signal(bool)
+    recommend_acquisition_requested = Signal()
+    auto_tune_acquisition_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -86,6 +89,29 @@ class AcquisitionPanel(QWidget):
             "SNR estimation is disabled"
         )
 
+        recommend_button = QPushButton("Recommend")
+        recommend_button.setToolTip(
+            "Recommend integration time and averaging "
+            "from the most recent valid SNR estimate."
+        )
+        recommend_button.clicked.connect(
+            self.recommend_acquisition_requested.emit
+        )
+
+        auto_tune_button = QPushButton("Auto Tune")
+        auto_tune_button.setToolTip(
+            "Acquire verification spectra and adjust "
+            "integration time / averaging toward the "
+            "configured target SNR."
+        )
+        auto_tune_button.clicked.connect(
+            self.auto_tune_acquisition_requested.emit
+        )
+
+        recommendation_row = QHBoxLayout()
+        recommendation_row.addWidget(recommend_button)
+        recommendation_row.addWidget(auto_tune_button)
+
         form.addRow("Live", self.live_check)
         form.addRow("Electric dark", self.dark_check)
         form.addRow("Nonlinearity", self.nonlinearity_check)
@@ -98,6 +124,7 @@ class AcquisitionPanel(QWidget):
         form.addRow("Boxcar width", self.boxcar_width)
         form.addRow("Magnetic field", self.field_input)
         form.addRow("SNR", self.snr_label)
+        form.addRow("Acquisition tuning", recommendation_row)
 
         layout.addLayout(form)
 
@@ -207,6 +234,19 @@ class AcquisitionPanel(QWidget):
             self.snr_label.setToolTip(
                 "SNR estimation is disabled"
             )
+
+    def set_acquisition_parameters(
+        self,
+        *,
+        integration_ms: int,
+        averages: int,
+    ) -> None:
+        self.integration_ms.setValue(
+            int(integration_ms)
+        )
+        self.averages.setValue(
+            int(averages)
+        )
 
     def load_preferences(self, settings: QSettings) -> None:
         self.live_check.setChecked(
