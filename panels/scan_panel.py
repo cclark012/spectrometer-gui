@@ -34,6 +34,12 @@ class ScanPanel(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+
+        self._running = False
+        self._spectrometer_available = False
+        self._power_meter_available = False
+        self._lasers_available = False
+
         layout = QVBoxLayout(self)
         layout.addLayout(self._build_form())
 
@@ -306,13 +312,51 @@ class ScanPanel(QWidget):
             self.warning_label.setToolTip("")
 
     def set_running(self, running: bool) -> None:
-        running = bool(running)
-        self.run_button.setEnabled(not running)
-        self.preview_button.setEnabled(not running)
-        self.calibration_button.setEnabled(not running)
-        self.load_calibration_button.setEnabled(not running)
-        self.save_calibration_button.setEnabled(not running)
-        self.abort_button.setEnabled(running)
+        self._running = bool(running)
+        self._apply_control_state()
+
+    def set_instrument_availability(
+        self,
+        *,
+        spectrometer_available: bool,
+        power_meter_available: bool,
+        lasers_available: bool,
+    ) -> None:
+        self._spectrometer_available = bool(
+            spectrometer_available
+        )
+        self._power_meter_available = bool(
+            power_meter_available
+        )
+        self._lasers_available = bool(
+            lasers_available
+        )
+
+        self._apply_control_state()
+
+    def _apply_control_state(self) -> None:
+        idle = not self._running
+
+        self.preview_button.setEnabled(
+            idle and self._lasers_available
+        )
+
+        self.run_button.setEnabled(
+            idle
+            and self._lasers_available
+            and self._spectrometer_available
+        )
+
+        self.calibration_button.setEnabled(
+            idle
+            and self._lasers_available
+            and self._power_meter_available
+        )
+
+        self.load_calibration_button.setEnabled(idle)
+        self.save_calibration_button.setEnabled(idle)
+        self.abort_button.setEnabled(self._running)
+
         for widget in (
             self.basis_combo,
             self.spacing_combo,
@@ -328,34 +372,7 @@ class ScanPanel(QWidget):
             self.autosave_scan_spectra,
             self.custom_values,
         ):
-            widget.setEnabled(not running)
-
-    def set_instrument_availability(
-        self,
-        *,
-        spectrometer_available: bool,
-        power_meter_available: bool,
-        lasers_available: bool,
-    ) -> None:
-        running = bool(
-            getattr(self, "_running", False)
-        )
-
-        self.preview_button.setEnabled(
-            lasers_available and not running
-        )
-
-        self.run_button.setEnabled(
-            lasers_available
-            and spectrometer_available
-            and not running
-        )
-
-        self.calibration_button.setEnabled(
-            lasers_available
-            and power_meter_available
-            and not running
-        )
+            widget.setEnabled(idle)
 
     @staticmethod
     def _set_combo_data(combo: QComboBox, value: str) -> None:
