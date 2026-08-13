@@ -9,12 +9,15 @@ import numpy as np
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
     QApplication,
     QDialog,
     QDockWidget,
+    QFrame,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QScrollArea,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -69,6 +72,7 @@ from panels.power_panel import PowerPanel
 from panels.scan_panel import ScanPanel
 from panels.spectrum_panel import SpectrumPanel
 from processing.snr import suggest_acquisition
+from ui.window_geometry import clamp_main_window_to_available_screen
 
 
 class MainWindow(QMainWindow):
@@ -186,9 +190,6 @@ class MainWindow(QMainWindow):
             self._on_monitor_memory_warning
         )
 
-        self.tabs.addTab(self.spectrum_panel, "Spectrum")
-        self.tabs.addTab(self.monitor_panel, "Monitor")
-
         self.spectrum_tab_index = self.tabs.addTab(
             self.spectrum_panel,
             "Spectrum",
@@ -236,7 +237,21 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-        self.controls_dock.setWidget(splitter)
+        splitter.setMinimumSize(0, 0)
+
+        self.controls_scroll = QScrollArea(self.controls_dock)
+        self.controls_scroll.setObjectName("controls_scroll")
+        self.controls_scroll.setWidgetResizable(True)
+        self.controls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.controls_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.controls_scroll.setSizeAdjustPolicy(
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored
+        )
+        self.controls_scroll.setWidget(splitter)
+
+        self.controls_dock.setWidget(self.controls_scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.controls_dock)
 
     def _build_power_dock(self) -> None:
@@ -439,6 +454,7 @@ class MainWindow(QMainWindow):
         )
         self.runtime.background_ready.connect(self._on_background_ready)
         self.runtime.background_cleared.connect(self._on_background_cleared)
+        self.runtime.background_failed.connect(self._on_background_failed)
         self.runtime.device_status.connect(self._show_status_message)
         self.runtime.device_error.connect(self._on_worker_error)
 
@@ -501,11 +517,6 @@ class MainWindow(QMainWindow):
         )
         self.scan_coordinator.timer.log("emit acquire request")
         self.acquire_requested.emit(settings)
-
-    @Slot()
-    def _live_tick(self) -> None:
-        if self.acquisition_panel.is_live_enabled() and not self.acquiring:
-            self.take_spectrum()
 
     @Slot(bool)
     def _on_live_changed(self, enabled: bool) -> None:
@@ -586,8 +597,12 @@ class MainWindow(QMainWindow):
 
     def _finish_acquisition_ui(self) -> None:
         self.acquiring = False
-        self.acquire_action.setEnabled(True)
+
+        available = self._instrument_connected("spectrometer")
+
+        self.acquire_action.setEnabled(available)
         self.acquisition_panel.set_acquiring(False)
+        self.acquisition_panel.setEnabled(available)
 
     def capture_background(self) -> None:
         if self.acquiring:
@@ -892,8 +907,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_worker_error(self, message: str) -> None:
-        self._finish_acquisition_ui()
-        self.statusBar().showMessage("Worker error. See console output.")
+        self.statusBar().showMessage(
+            "Instrument worker error. See console output.",
+            10_000,
+        )
         print(message, file=sys.stderr)
 
     @Slot(str)
@@ -948,6 +965,17 @@ class MainWindow(QMainWindow):
     def _on_background_cleared(self) -> None:
         self.statusBar().showMessage("Background spectrum cleared.", 10_000)
 
+    @Slot(str)
+    def _on_background_failed(self, message: str) -> None:
+        self._finish_acquisition_ui()
+        self.statusBar().showMessage("Background acquisition failed.", 15_000)
+        print(message, file=sys.stderr)
+        QMessageBox.warning(
+            self,
+            "Background Acquisition Failed",
+            message.splitlines()[-1] if message else "Unknown error.",
+        )
+
     @Slot(float)
     def _on_spectrometer_temperature_ready(self, temperature_c: float) -> None:
         self.statusBar().showMessage(
@@ -975,6 +1003,11 @@ class MainWindow(QMainWindow):
 
         if dialog is not None:
             dialog.set_state(state)
+
+        QTimer.singleShot(
+            0,
+            lambda: clamp_main_window_to_available_screen(self),
+        )
 
     def _instrument_connected(
         self,
@@ -1543,6 +1576,8 @@ class MainWindow(QMainWindow):
         if self._closing:
             event.accept()
             return
+
+        self._closing = True
 
         # Prevent new work from being scheduled
         self.acquisition_panel.set_live_enabled(False)
