@@ -34,6 +34,7 @@ class InstrumentRuntime(QObject):
     spectrometer_temperature_ready = Signal(float)
     background_ready = Signal(object)
     background_cleared = Signal()
+    background_failed = Signal(str)
     device_status = Signal(str)
     device_error = Signal(str)
 
@@ -146,6 +147,7 @@ class InstrumentRuntime(QObject):
         )
         controller.background_ready.connect(self.background_ready.emit)
         controller.background_cleared.connect(self.background_cleared.emit)
+        controller.background_failed.connect(self.background_failed.emit)
         controller.status.connect(self.device_status.emit)
         controller.error.connect(self.device_error.emit)
 
