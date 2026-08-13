@@ -1462,6 +1462,7 @@ class MainWindow(QMainWindow):
 
         dialog = DisplaySettingsDialog(
             self.display_settings,
+            self.theme_manager,
             self,
         )
 

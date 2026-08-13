@@ -14,13 +14,13 @@ from PySide6.QtWidgets import (
 )
 
 from core.settings import DisplaySettings
-from ui.theme import SYSTEM_THEME, VISUAL_STUDIO_DARK
+from ui.theme import ThemeManager
 
 
 class DisplaySettingsDialog(QDialog):
     """Edit live-acquisition pacing, plot redraw rates, and startup theme."""
 
-    def __init__(self, settings: DisplaySettings, parent=None) -> None:
+    def __init__(self, settings: DisplaySettings, theme_manager: ThemeManager, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Display Settings")
         self.resize(470, 300)
@@ -74,8 +74,8 @@ class DisplaySettingsDialog(QDialog):
         )
 
         self.theme_combo = QComboBox()
-        self.theme_combo.addItem("System", SYSTEM_THEME)
-        self.theme_combo.addItem("Visual Studio Dark", VISUAL_STUDIO_DARK)
+        for key, display_name in theme_manager.available_theme_items():
+            self.theme_combo.addItem(display_name, key)
         index = self.theme_combo.findData(settings.theme_name)
         self.theme_combo.setCurrentIndex(index if index >= 0 else 0)
         form.addRow("Theme", self.theme_combo)
