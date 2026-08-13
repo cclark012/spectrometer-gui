@@ -36,6 +36,7 @@ class DeviceController(QObject):
     spectrum_ready = Signal(object)
     background_ready = Signal(object)
     background_cleared = Signal()
+    background_failed = Signal(str)
     power_ready = Signal(object)
     power_read_complete = Signal(str, object)
     power_read_failed = Signal(str, str)
@@ -261,7 +262,7 @@ class DeviceController(QObject):
             self.background_ready.emit(background)
             self.status.emit("Background spectrum captured.")
         except Exception:
-            self.error.emit(traceback.format_exc())
+            self.background_failed.emit(traceback.format_exc())
 
     @Slot()
     def clear_background(self) -> None:
