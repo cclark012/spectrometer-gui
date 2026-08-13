@@ -135,7 +135,9 @@ def main(argv: list[str] | None = None) -> int:
 
     app.setQuitOnLastWindowClosed(False)
 
-    window = MainWindow(config)
+    theme_manager = ThemeManager(app)
+    theme_manager.apply(app, theme_name)
+    window = MainWindow(config, theme_manager=theme_manager)
     window.show()
 
     exit_code = app.exec()

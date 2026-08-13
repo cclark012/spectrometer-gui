@@ -118,6 +118,12 @@ def build_main_window_actions(window: QMainWindow) -> MainWindowActions:
 
     view_menu = window.menuBar().addMenu("&View")
     view_menu.addAction(
+        _action(window, "Theme Preview...", window.show_theme_preview_dialog)
+    )
+    view_menu.addAction(
+        _action(window, "Theme Editor...", window.show_theme_editor_dialog)
+    )
+    view_menu.addAction(
         _action(
             window,
             "Display Settings...",

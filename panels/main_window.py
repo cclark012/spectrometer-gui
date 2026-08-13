@@ -65,6 +65,8 @@ from dialogs.settings_dialog import AppSettingsDialog
 from dialogs.snr_settings_dialog import SNRSettingsDialog
 from dialogs.spectrometer_details_dialog import SpectrometerDetailsDialog
 from dialogs.spectrum_axis_dialog import SpectrumAxisDialog
+from dialogs.theme_editor_dialog import ThemeEditorDialog
+from dialogs.theme_preview_dialog import ThemePreviewDialog
 from panels.acquisition_panel import AcquisitionPanel
 from panels.filter_wheels_panel import FilterWheelPanel
 from panels.gated_acquisition_panel import GatedAcquisitionPanel
@@ -75,6 +77,7 @@ from panels.power_panel import PowerPanel
 from panels.scan_panel import ScanPanel
 from panels.spectrum_panel import SpectrumPanel
 from processing.snr import suggest_acquisition
+from ui.theme import ThemeManager
 from ui.window_geometry import clamp_main_window_to_available_screen
 
 
@@ -99,8 +102,10 @@ class MainWindow(QMainWindow):
     spectrometer_temperature_requested = Signal()
     spectrometer_capabilities_requested = Signal()
 
-    def __init__(self, config: DeviceConfig) -> None:
+    def __init__(self, config: DeviceConfig, *, theme_manager: ThemeManager) -> None:
         super().__init__()
+        self.theme_manager = theme_manager
+
         self.setWindowTitle("Magneto-PL Spectrum Acquisition")
         self.resize(1600, 850)
 
@@ -423,7 +428,6 @@ class MainWindow(QMainWindow):
         self.gated_coordinator.autosave_requested.connect(self._autosave_spectrum)
         self.gated_coordinator.status_requested.connect(self._show_status_with_timeout)
         self.gated_coordinator.active_changed.connect(self.gated_panel.set_running)
-
 
     def _build_preferences_controller(self) -> None:
         self.preferences = PreferencesController(
@@ -1596,6 +1600,30 @@ class MainWindow(QMainWindow):
             self.spectrometer_temperature_requested.emit
         )
         dialog.exec()
+
+    def show_theme_editor_dialog(self) -> None:
+        dialog = ThemeEditorDialog(
+            self.theme_manager,
+            base_theme=self.display_settings.theme_name,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.saved_theme is None:
+            return
+        self.display_settings.theme_name = dialog.saved_theme.key
+        self._save_preferences()
+        self.request_application_restart()
+
+    def show_theme_preview_dialog(self) -> None:
+        dialog = ThemePreviewDialog(
+            self.theme_manager,
+            current_theme=self.display_settings.theme_name,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.display_settings.theme_name = dialog.selected_theme
+        self._save_preferences()
+        self.request_application_restart()
 
     # ---------------------------------------------------------------- file I/O
 

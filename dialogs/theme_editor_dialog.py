@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict, replace
-
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -11,7 +9,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QGridLayout,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -27,7 +24,6 @@ from ui.theme import ThemeManager
 from ui.theme_catalog import SYSTEM_THEME, sanitize_theme_key
 from ui.theme_models import ThemeDefinition
 from ui.theme_preview import ThemePreviewWidget
-
 
 _COLOR_FIELDS: tuple[tuple[str, str], ...] = (
     ("window", "Window"),
@@ -211,6 +207,7 @@ class ThemeEditorDialog(QDialog):
 
     def update_preview(self) -> None:
         from PySide6.QtWidgets import QApplication
+
         from ui.theme_render import build_palette, render_stylesheet
 
         app = QApplication.instance()
