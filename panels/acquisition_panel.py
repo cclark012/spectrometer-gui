@@ -89,28 +89,28 @@ class AcquisitionPanel(QWidget):
             "SNR estimation is disabled"
         )
 
-        recommend_button = QPushButton("Recommend")
-        recommend_button.setToolTip(
+        self.recommend_button = QPushButton("Recommend")
+        self.recommend_button.setToolTip(
             "Recommend integration time and averaging "
             "from the most recent valid SNR estimate."
         )
-        recommend_button.clicked.connect(
+        self.recommend_button.clicked.connect(
             self.recommend_acquisition_requested.emit
         )
 
-        auto_tune_button = QPushButton("Auto Tune")
-        auto_tune_button.setToolTip(
+        self.auto_tune_button = QPushButton("Auto Tune")
+        self.auto_tune_button.setToolTip(
             "Acquire verification spectra and adjust "
             "integration time / averaging toward the "
             "configured target SNR."
         )
-        auto_tune_button.clicked.connect(
+        self.auto_tune_button.clicked.connect(
             self.auto_tune_acquisition_requested.emit
         )
 
         recommendation_row = QHBoxLayout()
-        recommendation_row.addWidget(recommend_button)
-        recommendation_row.addWidget(auto_tune_button)
+        recommendation_row.addWidget(self.recommend_button)
+        recommendation_row.addWidget(self.auto_tune_button)
 
         form.addRow("Live", self.live_check)
         form.addRow("Electric dark", self.dark_check)
@@ -247,6 +247,13 @@ class AcquisitionPanel(QWidget):
         self.averages.setValue(
             int(averages)
         )
+
+    def set_auto_tuning(self, active: bool) -> None:
+        self.auto_tune_button.setText(
+            "Stop Auto Tune" if active else "Auto Tune"
+        )
+        self.acquire_button.setEnabled(not active)
+        self.recommend_button.setEnabled(not active)
 
     def load_preferences(self, settings: QSettings) -> None:
         self.live_check.setChecked(

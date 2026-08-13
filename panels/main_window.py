@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
+from controllers.auto_acquisition_coordinator import AutoAcquisitionCoordinator
 from controllers.file_io_controller import FileIOController
 from controllers.instrument_runtime import InstrumentRuntime
 from controllers.preferences_controller import PreferencesController
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
         self._build_scan_coordinator()
         self._build_preferences_controller()
 
+        # Create performance monitor labels and tracking
         self.performance_monitor = PerformanceMonitor(
             enabled=self.display_settings.performance_enabled,
             rate_window_s=self.display_settings.performance_rate_window_s,
@@ -167,14 +169,17 @@ class MainWindow(QMainWindow):
         self._apply_loaded_preferences()
 
         self._start_instrument_runtime()
+        
+        self.auto_acquisition.snr_settings_requested.connect(
+            self.runtime.set_snr_settings
+        )
+        
         self._apply_snr_settings()
         self._apply_power_monitor_settings()
 
         restored = self._restore_window_layout()
         if not restored:
             QTimer.singleShot(0, self._apply_initial_layout)
-
-
 
     # ------------------------------------------------------------------ UI setup
 
@@ -368,6 +373,32 @@ class MainWindow(QMainWindow):
         )
         self.scan_coordinator.status_requested.connect(self._show_status_with_timeout)
 
+        # Create auto-acquisition coordinator
+        self.auto_acquisition = AutoAcquisitionCoordinator(self)
+        self.acquisition_panel.auto_tune_acquisition_requested.connect(
+            self.start_or_abort_auto_tune
+        )
+        self.auto_acquisition.apply_settings_requested.connect(
+            lambda integration_ms, averages: self.acquisition_panel.set_acquisition_parameters(
+                integration_ms=integration_ms,
+                averages=averages,
+            )
+        )
+        self.auto_acquisition.spectrum_requested.connect(self.take_spectrum)
+
+        self.auto_acquisition.status_requested.connect(
+            self._show_status_with_timeout
+        )
+        self.auto_acquisition.active_changed.connect(
+            self._on_auto_tune_active_changed
+        )
+        self.auto_acquisition.completed.connect(
+            self._on_auto_tune_completed
+        )
+        self.auto_acquisition.failed.connect(
+            lambda message: QMessageBox.warning(self, "Auto Tune Failed", message)
+        )
+
     def _build_preferences_controller(self) -> None:
         self.preferences = PreferencesController(
             window=self,
@@ -529,6 +560,8 @@ class MainWindow(QMainWindow):
         )
 
     def _schedule_next_live_acquisition(self) -> None:
+        if self.auto_acquisition.active:
+            return
         if not self.acquisition_panel.is_live_enabled() or self.acquiring:
             return
         if self.scan_coordinator.power_scan_active or self.scan_coordinator.calibration_active:
@@ -576,7 +609,9 @@ class MainWindow(QMainWindow):
             10_000,
         )
         self.scan_coordinator.handle_spectrum_ready(record)
-        self._schedule_next_live_acquisition()
+        auto_consumed = self.auto_acquisition.handle_spectrum_ready(record)
+        if not auto_consumed:
+            self._schedule_next_live_acquisition()
 
     @Slot(str)
     def _on_acquisition_failed(self, message: str) -> None:
@@ -594,6 +629,7 @@ class MainWindow(QMainWindow):
             "Spectrum acquisition failed",
             message.splitlines()[-1] if message else "Unknown acquisition error.",
         )
+        self.auto_acquisition.handle_acquisition_failed(message)
 
     def _finish_acquisition_ui(self) -> None:
         self.acquiring = False
@@ -749,6 +785,69 @@ class MainWindow(QMainWindow):
                 0,
                 self.take_spectrum,
             )
+
+    def start_or_abort_auto_tune(self) -> None:
+        if self.auto_acquisition.active:
+            self.auto_acquisition.abort()
+            return
+
+        if not self._instrument_connected("spectrometer"):
+            QMessageBox.information(
+                self,
+                "No Spectrometer",
+                "Connect a spectrometer before starting automatic tuning.",
+            )
+            return
+
+        if self.acquiring:
+            QMessageBox.information(
+                self,
+                "Acquisition Active",
+                "Wait for the current acquisition to finish.",
+            )
+            return
+
+        if (
+            self.scan_coordinator.power_scan_active
+            or self.scan_coordinator.calibration_active
+            or getattr(self, "gated_coordinator", None) is not None
+            and self.gated_coordinator.active
+        ):
+            QMessageBox.information(
+                self,
+                "Sequence Active",
+                "Stop the active scan or gated sequence first.",
+            )
+            return
+
+        self.acquisition_panel.set_live_enabled(False)
+        current = self._settings()
+        minimum_ms, maximum_ms = self._spectrometer_integration_limits_ms()
+
+        self.auto_acquisition.start(
+            current_settings=current,
+            snr_settings=self.snr_settings,
+            minimum_integration_ms=minimum_ms,
+            maximum_integration_ms=maximum_ms,
+            initial_record=self.current_record,
+        )
+
+    @Slot(bool)
+    def _on_auto_tune_active_changed(self, active: bool) -> None:
+        self.acquisition_panel.set_auto_tuning(active)
+        self.acquisition_panel.set_snr_enabled(
+            active or self.snr_settings.enabled
+        )
+
+    @Slot(object)
+    def _on_auto_tune_completed(self, result) -> None:
+        self.acquisition_panel.set_acquisition_parameters(
+            integration_ms=result.integration_ms,
+            averages=result.averages,
+        )
+        self.acquisition_panel.save_preferences(QSettings())
+        if result.limit_reached:
+            QMessageBox.information(self, "Auto Tune Complete", result.message)
 
     # ------------------------------------------------------------------- power
 
