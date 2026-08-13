@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+from core.gated_acquisition import GatedFrameMetadata
 from core.snr_records import SNRMetrics
 
 FloatArray = NDArray[np.float64]
@@ -140,6 +141,7 @@ class SpectrumRecord:
 
     averaging_mode: str = "software"
     device_averaging_used: bool = False
+    gated: GatedFrameMetadata | None = None
 
     background_subtracted: bool = False
     background_timestamp_utc: str = ""

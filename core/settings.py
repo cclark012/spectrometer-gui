@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.gated_acquisition import GatedFrameMetadata
+
 
 @dataclass
 class AcquisitionSettings:
@@ -17,6 +19,7 @@ class AcquisitionSettings:
 
     averaging_mode: str = "software"  # "software" or "device"
     subtract_background: bool = False
+    gated: GatedFrameMetadata | None = None
 
     scan_active: bool = False
     scan_index: int = -1
