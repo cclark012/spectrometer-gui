@@ -574,6 +574,7 @@ class DeviceController(QObject):
                 expected_actual_power_w=float(settings.expected_actual_power_w),
                 filter_state=str(settings.filter_state),
                 averaging_mode=str(settings.averaging_mode),
+                gated=settings.gated,
                 device_averaging_used=bool(acquisition.device_averaging_used),
                 background_subtracted=bool(background_subtracted),
                 background_timestamp_utc=str(background_timestamp_utc),

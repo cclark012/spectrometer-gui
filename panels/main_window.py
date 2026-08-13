@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from controllers.auto_acquisition_coordinator import AutoAcquisitionCoordinator
 from controllers.file_io_controller import FileIOController
+from controllers.gated_acquisition_coordinator import GatedAcquisitionCoordinator
 from controllers.instrument_runtime import InstrumentRuntime
 from controllers.preferences_controller import PreferencesController
 from controllers.scan_coordinator import ScanCoordinator
@@ -66,6 +67,7 @@ from dialogs.spectrometer_details_dialog import SpectrometerDetailsDialog
 from dialogs.spectrum_axis_dialog import SpectrumAxisDialog
 from panels.acquisition_panel import AcquisitionPanel
 from panels.filter_wheels_panel import FilterWheelPanel
+from panels.gated_acquisition_panel import GatedAcquisitionPanel
 from panels.laser_panel import LaserPanel
 from panels.main_window_actions import build_main_window_actions
 from panels.monitor_panel import MonitorPanel
@@ -166,12 +168,19 @@ class MainWindow(QMainWindow):
         self.performance_monitor.updated.connect(self._on_performance_updated)
 
         self._load_preferences()
+        self.gated_panel.load_preferences(QSettings())
         self._apply_loaded_preferences()
 
         self._start_instrument_runtime()
         
         self.auto_acquisition.snr_settings_requested.connect(
             self.runtime.set_snr_settings
+        )
+        self.runtime.laser_enabled_set_complete.connect(
+            self.gated_coordinator.on_laser_enabled_set
+        )
+        self.runtime.laser_enabled_set_failed.connect(
+            self.gated_coordinator.on_laser_enabled_failed
         )
         
         self._apply_snr_settings()
@@ -229,11 +238,13 @@ class MainWindow(QMainWindow):
         self.laser_panel = LaserPanel(self)
         self.scan_panel = ScanPanel(self)
         self.filter_wheel_panel = FilterWheelPanel(self)
+        self.gated_panel = GatedAcquisitionPanel(self)
 
         self.lower_tabs = QTabWidget()
         self.laser_tab_index = self.lower_tabs.addTab(self.laser_panel, "Lasers")
         self.scan_tab_index = self.lower_tabs.addTab(self.scan_panel, "Scan")
         self.filter_tab_index = self.lower_tabs.addTab(self.filter_wheel_panel, "Filters")
+        self.gated_tab_index = self.lower_tabs.addTab(self.gated_panel, "Gated")
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setObjectName("controls_splitter")
@@ -335,6 +346,7 @@ class MainWindow(QMainWindow):
         self.power_timer.timeout.connect(self._poll_power_tick)
 
     def _build_scan_coordinator(self) -> None:
+        # Create scan coordinator
         self.scan_coordinator = ScanCoordinator(
             parent=self,
             config=self.config,
@@ -398,6 +410,20 @@ class MainWindow(QMainWindow):
         self.auto_acquisition.failed.connect(
             lambda message: QMessageBox.warning(self, "Auto Tune Failed", message)
         )
+
+        # Create gated acquisition coordinator
+        self.gated_coordinator = GatedAcquisitionCoordinator(self)
+        self.gated_panel.preview_requested.connect(self.preview_gated_acquisition)
+        self.gated_panel.run_requested.connect(self.start_gated_acquisition)
+        self.gated_panel.abort_requested.connect(self.gated_coordinator.abort)
+        self.gated_coordinator.laser_set_enabled_requested.connect(
+            self.laser_set_enabled_requested.emit
+        )
+        self.gated_coordinator.spectrum_requested.connect(self.take_spectrum)
+        self.gated_coordinator.autosave_requested.connect(self._autosave_spectrum)
+        self.gated_coordinator.status_requested.connect(self._show_status_with_timeout)
+        self.gated_coordinator.active_changed.connect(self.gated_panel.set_running)
+
 
     def _build_preferences_controller(self) -> None:
         self.preferences = PreferencesController(
@@ -531,7 +557,9 @@ class MainWindow(QMainWindow):
             run_identifier=self.file_name_settings.run_identifier,
             notes=self.file_name_settings.notes,
         )
-        return self.scan_coordinator.apply_scan_metadata(settings)
+        settings = self.scan_coordinator.apply_scan_metadata(settings)
+        settings = self.gated_coordinator.apply_metadata(settings)
+        return settings
 
     @Slot()
     def take_spectrum(self) -> None:
@@ -561,6 +589,8 @@ class MainWindow(QMainWindow):
 
     def _schedule_next_live_acquisition(self) -> None:
         if self.auto_acquisition.active:
+            return
+        if self.gated_coordinator.active:
             return
         if not self.acquisition_panel.is_live_enabled() or self.acquiring:
             return
@@ -610,7 +640,8 @@ class MainWindow(QMainWindow):
         )
         self.scan_coordinator.handle_spectrum_ready(record)
         auto_consumed = self.auto_acquisition.handle_spectrum_ready(record)
-        if not auto_consumed:
+        gated_consumed = self.gated_coordinator.handle_spectrum_ready(record)
+        if not auto_consumed and not gated_consumed:
             self._schedule_next_live_acquisition()
 
     @Slot(str)
@@ -630,6 +661,7 @@ class MainWindow(QMainWindow):
             message.splitlines()[-1] if message else "Unknown acquisition error.",
         )
         self.auto_acquisition.handle_acquisition_failed(message)
+        self.gated_coordinator.handle_acquisition_failed(message)
 
     def _finish_acquisition_ui(self) -> None:
         self.acquiring = False
@@ -848,6 +880,36 @@ class MainWindow(QMainWindow):
         self.acquisition_panel.save_preferences(QSettings())
         if result.limit_reached:
             QMessageBox.information(self, "Auto Tune Complete", result.message)
+
+    def preview_gated_acquisition(self) -> None:
+        try:
+            plan = self.gated_coordinator.preview(self.gated_panel.settings())
+        except Exception as exc:
+            QMessageBox.critical(self, "Gated Preview Failed", str(exc))
+            return
+        self.gated_panel.set_plan(plan)
+
+    def start_gated_acquisition(self) -> None:
+        laser = self.laser_panel.selected_laser()
+        if laser is None:
+            QMessageBox.information(self, "No Laser", "Select a laser first.")
+            return
+        if not self._instrument_connected("spectrometer"):
+            QMessageBox.information(self, "No Spectrometer", "Connect a spectrometer first.")
+            return
+        if self.acquiring or self.scan_coordinator.power_scan_active or self.auto_acquisition.active: # noqa
+            QMessageBox.information(self, "Sequence Active", "Stop the active acquisition first.")
+            return
+        self.acquisition_panel.set_live_enabled(False)
+        try:
+            plan = self.gated_coordinator.start(
+                settings=self.gated_panel.settings(),
+                laser=laser,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Gated Acquisition Failed", str(exc))
+            return
+        self.gated_panel.set_plan(plan)
 
     # ------------------------------------------------------------------- power
 
@@ -1317,6 +1379,11 @@ class MainWindow(QMainWindow):
             True,
         )
 
+        self.lower_tabs.setTabVisible(
+            self.gated_tab_index,
+            spectrometer and lasers
+        )
+
         # Use your actual button names here.
         self.scan_panel.set_instrument_availability(
             spectrometer_available=spectrometer,
@@ -1549,6 +1616,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _autosave_spectrum(self, record: SpectrumRecord) -> None:
+        if self.gated_coordinator.active:
+            return
         self.scan_coordinator.timer.log("autosave start")
         self.file_io.autosave_spectrum(record)
         self.scan_coordinator.timer.log("autosave complete")
@@ -1562,6 +1631,7 @@ class MainWindow(QMainWindow):
         ) = self.preferences.load()
 
     def _save_preferences(self) -> None:
+        self.gated_panel.save_preferences(QSettings())
         self.preferences.save(scan_timing=self.scan_timing_action.isChecked())
 
     def _apply_loaded_preferences(self) -> None:

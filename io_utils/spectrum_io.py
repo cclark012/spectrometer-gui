@@ -70,6 +70,23 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
         writer.writerow(["# background_timestamp_utc", record.background_timestamp_utc])
         writer.writerow(["# background_integration_ms", record.background_integration_ms])
 
+        if record.gated is not None:
+            writer.writerow(["# gated_active", 1])
+            writer.writerow(["# gated_sequence_id", record.gated.sequence_id])
+            writer.writerow(["# gated_mode", record.gated.mode])
+            writer.writerow(["# gated_frame_index", record.gated.frame_index])
+            writer.writerow(["# gated_frame_count", record.gated.frame_count])
+            writer.writerow(["# gated_cycle_index", record.gated.cycle_index])
+            writer.writerow(["# gated_label", record.gated.label])
+            writer.writerow(["# gated_laser_state", record.gated.laser_state])
+            writer.writerow(["# gated_requested_delay_ms", record.gated.requested_delay_ms])
+            writer.writerow([
+                "# gated_request_elapsed_since_transition_ms",
+                f"{record.gated.request_elapsed_since_transition_ms:.9f}",
+            ])
+        else:
+            writer.writerow(["# gated_active", 0])
+
         if record.snr is not None:
             writer.writerow(["# snr_valid", int(record.snr.valid)])
             writer.writerow(["# snr_message", record.snr.message])
