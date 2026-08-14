@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self.controls_dock.setMinimumWidth(285)
+        self.controls_dock.setMinimumWidth(250)
 
         self.acquisition_panel = AcquisitionPanel(self)
         self.acquisition_panel.acquire_requested.connect(self.take_spectrum)
@@ -941,6 +941,27 @@ class MainWindow(QMainWindow):
             str(message),
         )
 
+    def _active_automated_sequence(self) -> str | None:
+        if self.scan_coordinator.power_scan_active:
+            return "power scan"
+
+        if self.scan_coordinator.calibration_active:
+            return "calibration scan"
+
+        if (
+            hasattr(self, "gated_coordinator")
+            and self.gated_coordinator.active
+            ):
+            return "gated acquisition"
+
+        if (
+            hasattr(self, "auto_acquisition_coordinator")
+            and self.auto_acquisition.active
+            ):
+            return "automatic acquisition tuning"
+
+        return None
+
     # ------------------------------------------------------------------- power
 
     @Slot(object)
@@ -1084,7 +1105,20 @@ class MainWindow(QMainWindow):
         key: str,
     ) -> None:
         if key == "spectrometer":
+            active = self._active_automated_sequence()
+
+            if self.acquiring or active is not None:
+                QMessageBox.information(
+                    self,
+                    "Spectrometer busy",
+                    "Wait for the active acquisition "
+                    "or automated sequence to finish "
+                    "before disconnecting the spectrometer.",
+                )
+                return
+
             self.runtime.disconnect_spectrometer()
+            return
         elif key == "power_meter":
             self.runtime.disconnect_power_meter()
         elif key == "lasers":

@@ -22,7 +22,7 @@ from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
 from devices.protocols import PowerMeterAdapter, SpectrometerAdapter
-from devices.qepro_adapter import QEProSpectrometer
+from devices.qepro_adapter import QEProSpectrometer, SpectrometerCommunicationError
 from processing.background import BackgroundCorrector
 from processing.smoothing import boxcar_smooth
 from processing.snr import estimate_snr
@@ -581,8 +581,28 @@ class DeviceController(QObject):
                 background_integration_ms=int(background_integration_ms),
             )
             self.spectrum_ready.emit(record)
+
+        except SpectrometerCommunicationError as exc:
+            self._close_spectrometer()
+
+            self.spectrometer_connection_changed.emit(
+                InstrumentConnectionState(
+                    key="spectrometer",
+                    connected=False,
+                    emulated=False,
+                    description=(
+                        "QEPro connection lost."
+                    ),
+                    error=str(exc),
+                )
+            )
+
+            self.acquisition_failed.emit(str(exc))
+
         except Exception:
-            self.acquisition_failed.emit(traceback.format_exc())
+            self.acquisition_failed.emit(
+                traceback.format_exc()
+            )
 
     @Slot()
     def query_spectrometer_capabilities(self) -> None:

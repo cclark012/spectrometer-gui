@@ -8,6 +8,10 @@ import numpy as np
 from core.records import SpectralAcquisition, SpectrometerCapabilities
 
 
+class SpectrometerCommunicationError(RuntimeError):
+    pass
+
+
 class QEProSpectrometer:
     """Thin, validated adapter around python-seabreeze's Spectrometer API."""
 
@@ -49,6 +53,28 @@ class QEProSpectrometer:
             except Exception:
                 return default
         return value
+
+    @staticmethod
+    def _raise_if_transport_error(
+        operation: str,
+        exc: Exception,
+    ) -> None:
+        error_type = type(exc).__name__
+        message = str(exc)
+        lowered = message.lower()
+
+        if (
+            error_type == "SeaBreezeError"
+            or "data transfer error" in lowered
+            or "usb" in lowered
+            or "device not found" in lowered
+        ):
+            raise SpectrometerCommunicationError(
+                f"QEPro communication failed during "
+                f"{operation}: {message}"
+            ) from exc
+
+        raise exc
 
     @staticmethod
     def _coerce_float(value: Any, default: float) -> float:
@@ -229,13 +255,17 @@ class QEProSpectrometer:
         correct_dark: bool,
         correct_nonlinearity: bool,
     ) -> np.ndarray:
-        values = np.asarray(
-            self.spec.intensities(
-                correct_dark_counts=bool(correct_dark),
-                correct_nonlinearity=bool(correct_nonlinearity),
-            ),
-            dtype=float,
-        )
+        try:
+            values = np.asarray(self.spec.intensities(
+                correct_dark_counts=correct_dark,
+                correct_nonlinearity=correct_nonlinearity,
+                ), dtype=float
+            )
+        except Exception as exc:
+            self._raise_if_transport_error(
+                "spectrum readout",
+                exc,
+            )
         if values.ndim != 1:
             raise RuntimeError("QEPro intensity data must be one-dimensional.")
         if values.shape != self.wavelengths_nm.shape:
@@ -271,7 +301,15 @@ class QEProSpectrometer:
 
         averages = max(1, int(averages))
         integration_us = self._validate_integration_us(int(integration_ms) * 1000)
-        self.spec.integration_time_micros(integration_us)
+        try:
+            self.spec.integration_time_micros(
+                integration_us
+            )
+        except Exception as exc:
+            self._raise_if_transport_error(
+                "integration-time configuration",
+                exc,
+            )
 
         device_averaging_used = False
         if mode == "device":
