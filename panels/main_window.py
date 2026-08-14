@@ -651,6 +651,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_acquisition_failed(self, message: str) -> None:
         self._finish_acquisition_ui()
+
         self.acquisition_panel.set_live_enabled(False)
         self.scan_coordinator.handle_acquisition_failed(message)
         self.live_next_timer.stop()

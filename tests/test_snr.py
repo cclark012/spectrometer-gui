@@ -52,6 +52,7 @@ def test_acquisition_suggestion_respects_limits() -> None:
     )
     suggestion = suggest_acquisition(
         result=result,
+        metric="peak",
         current_integration_ms=100,
         current_averages=1,
         target_snr=100.0,
