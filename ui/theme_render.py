@@ -165,4 +165,26 @@ QScrollBar::handle {{
     background-color: {theme.border_hover};
     border-radius: {radius}px;
 }}
+QMenu {{
+    background-color: {theme.panel};
+    border: 1px solid {theme.border};
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 5px 28px 5px 22px;
+    border-radius: {radius}px;
+}}
+QMenu::item:selected {{
+    background-color: {theme.selection};
+}}
+QMenu::separator {{
+    height: 1px;
+    background-color: {theme.border_hover};
+    margin: 6px 10px;
+}}
+QToolBar::separator {{
+    width: 1px;
+    background-color: {theme.border_hover};
+    margin: 4px 7px;
+}}
 """.strip()
