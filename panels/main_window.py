@@ -152,41 +152,13 @@ class MainWindow(QMainWindow):
         self._build_timers()
         self._build_scan_coordinator()
         self._build_preferences_controller()
-
-        # Create performance monitor labels and tracking
-        self.performance_monitor = PerformanceMonitor(
-            enabled=self.display_settings.performance_enabled,
-            rate_window_s=self.display_settings.performance_rate_window_s,
-            report_interval_ms=self.display_settings.performance_report_interval_ms,
-            probe_interval_ms=self.display_settings.event_loop_probe_interval_ms,
-            parent=self,
-        )
-        self.spectrum_panel.redrawn.connect(
-            self.performance_monitor.mark_spectrum_redraw
-        )
-        self.monitor_panel.redrawn.connect(
-            self.performance_monitor.mark_monitor_redraw
-        )
-        self.power_panel.redrawn.connect(
-            self.performance_monitor.mark_power_redraw
-        )
-        self.performance_monitor.updated.connect(self._on_performance_updated)
+        self._build_performance_monitor()
 
         self._load_preferences()
         self.gated_panel.load_preferences(QSettings())
         self._apply_loaded_preferences()
 
         self._start_instrument_runtime()
-        
-        self.auto_acquisition.snr_settings_requested.connect(
-            self.runtime.set_snr_settings
-        )
-        self.runtime.laser_enabled_set_complete.connect(
-            self.gated_coordinator.on_laser_enabled_set
-        )
-        self.runtime.laser_enabled_set_failed.connect(
-            self.gated_coordinator.on_laser_enabled_failed
-        )
         
         self._apply_snr_settings()
         self._apply_power_monitor_settings()
@@ -424,10 +396,12 @@ class MainWindow(QMainWindow):
         self.gated_coordinator.laser_set_enabled_requested.connect(
             self.laser_set_enabled_requested.emit
         )
+        self.gated_coordinator.plan_ready.connect(self.gated_panel.set_plan)
         self.gated_coordinator.spectrum_requested.connect(self.take_spectrum)
         self.gated_coordinator.autosave_requested.connect(self._autosave_spectrum)
         self.gated_coordinator.status_requested.connect(self._show_status_with_timeout)
         self.gated_coordinator.active_changed.connect(self.gated_panel.set_running)
+        self.gated_coordinator.failed.connect(self._on_gated_acquisition_failed)
 
     def _build_preferences_controller(self) -> None:
         self.preferences = PreferencesController(
@@ -445,6 +419,26 @@ class MainWindow(QMainWindow):
             scan_panel=self.scan_panel,
             filter_wheel_panel=self.filter_wheel_panel,
         )
+
+    def _build_performance_monitor(self) -> None:
+        # Create performance monitor labels and tracking
+        self.performance_monitor = PerformanceMonitor(
+            enabled=self.display_settings.performance_enabled,
+            rate_window_s=self.display_settings.performance_rate_window_s,
+            report_interval_ms=self.display_settings.performance_report_interval_ms,
+            probe_interval_ms=self.display_settings.event_loop_probe_interval_ms,
+            parent=self,
+        )
+        self.spectrum_panel.redrawn.connect(
+            self.performance_monitor.mark_spectrum_redraw
+        )
+        self.monitor_panel.redrawn.connect(
+            self.performance_monitor.mark_monitor_redraw
+        )
+        self.power_panel.redrawn.connect(
+            self.performance_monitor.mark_power_redraw
+        )
+        self.performance_monitor.updated.connect(self._on_performance_updated)
 
     # ----------------------------------------------------------- worker controllers
 
@@ -551,7 +545,15 @@ class MainWindow(QMainWindow):
         self.runtime.laser_connection_changed.connect(
             self._on_instrument_connection_changed
         )
-
+        self.auto_acquisition.snr_settings_requested.connect(
+            self.runtime.set_snr_settings
+        )
+        self.runtime.laser_enabled_set_complete.connect(
+            self.gated_coordinator.on_laser_enabled_set
+        )
+        self.runtime.laser_enabled_set_failed.connect(
+            self.gated_coordinator.on_laser_enabled_failed
+        )
         self.runtime.start()
 
     # ---------------------------------------------------------------- acquisition
@@ -614,7 +616,9 @@ class MainWindow(QMainWindow):
     def _on_spectrum_ready(self, record: SpectrumRecord) -> None:
         if self._closing:
             return
+
         self._finish_acquisition_ui()
+
         self.performance_monitor.mark_acquisition()
         self.current_record = record
         self.file_io.set_current_record(record)
@@ -642,10 +646,19 @@ class MainWindow(QMainWindow):
             f"{format_power_w(record.mean_power_w(0))}",
             10_000,
         )
-        self.scan_coordinator.handle_spectrum_ready(record)
+
         auto_consumed = self.auto_acquisition.handle_spectrum_ready(record)
         gated_consumed = self.gated_coordinator.handle_spectrum_ready(record)
-        if not auto_consumed and not gated_consumed:
+
+        scan_consumed = False
+        if not gated_consumed or not auto_consumed:
+            scan_consumed = self.scan_coordinator.handle_spectrum_ready(record)
+
+        sequence_consumed = scan_consumed or auto_consumed or gated_consumed
+        if self.file_name_settings.autosave_spectra and not sequence_consumed:
+            self._autosave_spectrum(record)
+
+        if not sequence_consumed:
             self._schedule_next_live_acquisition()
 
     @Slot(str)
@@ -654,6 +667,9 @@ class MainWindow(QMainWindow):
 
         self.acquisition_panel.set_live_enabled(False)
         self.scan_coordinator.handle_acquisition_failed(message)
+        self.auto_acquisition.handle_acquisition_failed(message)
+        self.gated_coordinator.handle_acquisition_failed(message)
+
         self.live_next_timer.stop()
         self.statusBar().showMessage(
             "Spectrum acquisition failed. Live acquisition stopped.",
@@ -665,8 +681,6 @@ class MainWindow(QMainWindow):
             "Spectrum acquisition failed",
             message.splitlines()[-1] if message else "Unknown acquisition error.",
         )
-        self.auto_acquisition.handle_acquisition_failed(message)
-        self.gated_coordinator.handle_acquisition_failed(message)
 
     def _finish_acquisition_ui(self) -> None:
         self.acquiring = False
@@ -915,6 +929,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Gated Acquisition Failed", str(exc))
             return
         self.gated_panel.set_plan(plan)
+
+    @Slot(str)
+    def _on_gated_acquisition_failed(
+        self,
+        message: str,
+    ) -> None:
+        QMessageBox.warning(
+            self,
+            "Gated acquisition failed",
+            str(message),
+        )
 
     # ------------------------------------------------------------------- power
 
@@ -1382,6 +1407,11 @@ class MainWindow(QMainWindow):
         self.lower_tabs.setTabVisible(
             self.filter_tab_index,
             True,
+        )
+
+        self.gated_panel.set_instrument_availability(
+            spectrometer_available=spectrometer,
+            lasers_available=lasers,
         )
 
         self.lower_tabs.setTabVisible(
