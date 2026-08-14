@@ -107,9 +107,15 @@ class ScanPanel(QWidget):
         self.settling_time_s.setSuffix(" s")
         self.settling_time_s.setMaximumWidth(100)
 
+        self.enable_label = QLabel()
+        self.enable_label.setText("Enable before scan")
         self.enable_before_scan = QCheckBox()
         self.enable_before_scan.setChecked(True)
+        self.disable_label = QLabel()
+        self.disable_label.setText("Disable after scan")
         self.disable_after_scan = QCheckBox()
+        self.auto_label = QLabel()
+        self.auto_label.setText("Autosave spectra")
         self.autosave_scan_spectra = QCheckBox()
         self.autosave_scan_spectra.setChecked(True)
 
@@ -120,9 +126,18 @@ class ScanPanel(QWidget):
         form.addRow("Points", self.n_points)
         form.addRow("Repeats/point", self.repeats_per_point)
         form.addRow("Settling", self.settling_time_s)
-        form.addRow("Enable before scan", self.enable_before_scan)
-        form.addRow("Disable after scan", self.disable_after_scan)
-        form.addRow("Autosave spectra", self.autosave_scan_spectra)
+
+        options = QHBoxLayout()
+        for label, check in zip(
+                [self.enable_label, self.disable_label, self.auto_label],
+                [self.enable_before_scan, self.disable_after_scan, self.autosave_scan_spectra],
+                strict=True
+            ):
+            options.addWidget(label)
+            options.addWidget(check)
+
+        form.addRow(options)
+
         return form
 
     @staticmethod

@@ -112,10 +112,29 @@ class AcquisitionPanel(QWidget):
         recommendation_row.addWidget(self.recommend_button)
         recommendation_row.addWidget(self.auto_tune_button)
 
-        form.addRow("Live", self.live_check)
-        form.addRow("Electric dark", self.dark_check)
-        form.addRow("Nonlinearity", self.nonlinearity_check)
-        form.addRow("Subtract background", self.subtract_background_check)
+        live_label = QLabel()
+        live_label.setText("Live")
+        electric_dark_label = QLabel()
+        electric_dark_label.setText("Electric Dark")
+        nonlinearity_label = QLabel()
+        nonlinearity_label.setText("Nonlinearity")
+        sub_background_label = QLabel()
+        sub_background_label.setText("Subtract Background")
+        labels = [
+            live_label, electric_dark_label, nonlinearity_label, sub_background_label
+        ]
+
+        checks = [
+            self.live_check, self.dark_check, 
+            self.nonlinearity_check, self.subtract_background_check
+        ]
+
+        options = QHBoxLayout()
+        for label, check in zip(labels, checks, strict=True):
+            options.addWidget(label)
+            options.addWidget(check)
+            
+        form.addRow(options)
         form.addRow("Background", self.take_background_button)
         form.addRow("", self.clear_background_button)
         form.addRow("Integration time", self.integration_ms)

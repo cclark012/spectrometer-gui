@@ -56,10 +56,16 @@ class GatedAcquisitionPanel(QWidget):
         self.transition_pre = self._spin(0, 100_000, 3)
         self.transition_post = self._spin(1, 100_000, 20)
 
+        self.enable_label = QLabel()
+        self.enable_label.setText("Enable before start")
         self.enable_before = QCheckBox()
         self.enable_before.setChecked(True)
+        self.disable_label = QLabel()
+        self.disable_label.setText("Disable after finish")
         self.disable_after = QCheckBox()
         self.disable_after.setChecked(True)
+        self.auto_label = QLabel()
+        self.auto_label.setText("Autosave frames")
         self.autosave = QCheckBox()
         self.autosave.setChecked(True)
 
@@ -76,9 +82,18 @@ class GatedAcquisitionPanel(QWidget):
         form.addRow("Delay step", self.delayed_step_ms)
         form.addRow("Pre-transition frames", self.transition_pre)
         form.addRow("Post-transition frames", self.transition_post)
-        form.addRow("Enable before start", self.enable_before)
-        form.addRow("Disable after finish", self.disable_after)
-        form.addRow("Autosave frames", self.autosave)
+
+        options = QHBoxLayout()
+        for label, check in zip(
+                [self.enable_label, self.disable_label, self.auto_label], 
+                [self.enable_before, self.disable_after, self.autosave],
+                strict=True
+            ): 
+            options.addWidget(label)
+            options.addWidget(check)
+
+        form.addRow(options)
+
         layout.addLayout(form)
 
         self.warning_label = QLabel()
@@ -102,7 +117,7 @@ class GatedAcquisitionPanel(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Action", "State", "Wait", "Frame", "Requested delay"]
         )
-        layout.addWidget(self.table, stretch=1)
+        layout.addWidget(self.table, stretch=0)
 
         self._update_mode_visibility()
         self._apply_control_state()
