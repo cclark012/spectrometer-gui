@@ -178,12 +178,12 @@ QMenu::item:selected {{
     background-color: {theme.selection};
 }}
 QMenu::separator {{
-    height: 1px;
+    height: 2px;
     background-color: {theme.border_hover};
     margin: 6px 10px;
 }}
 QToolBar::separator {{
-    width: 1px;
+    width: 2px;
     background-color: {theme.border_hover};
     margin: 4px 7px;
 }}

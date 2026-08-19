@@ -41,6 +41,7 @@ from core.records import (
     SpectrumRecord,
 )
 from core.restart import RESTART_EXIT_CODE
+from core.sequence_arbiter import AUTOMATED_SEQUENCE_OWNERS, SequenceArbiter
 from core.settings import (
     AcquisitionSettings,
     DeviceConfig,
@@ -139,6 +140,8 @@ class MainWindow(QMainWindow):
         self.app_t0 = time.perf_counter()
         self.current_record: SpectrumRecord | None = None
         self.acquiring = False
+        self._acquisition_owner: str | None = None
+        self.sequence_arbiter = SequenceArbiter()
         self.auto_update_power_meter_wavelength = True
         self.last_power_meter_wavelength_nm: int | None = None
         self.last_signal_warning_s = -1.0e99
@@ -155,13 +158,13 @@ class MainWindow(QMainWindow):
         self._build_performance_monitor()
 
         self._load_preferences()
-        self.gated_panel.load_preferences(QSettings())
         self._apply_loaded_preferences()
 
         self._start_instrument_runtime()
-        
+
         self._apply_snr_settings()
         self._apply_power_monitor_settings()
+        self._refresh_sequence_controls()
 
         restored = self._restore_window_layout()
         if not restored:
@@ -335,11 +338,9 @@ class MainWindow(QMainWindow):
         self.scan_panel.preview_requested.connect(
             self.scan_coordinator.preview_power_scan
         )
-        self.scan_panel.run_requested.connect(self.scan_coordinator.start_power_scan)
+        self.scan_panel.run_requested.connect(self.start_power_scan)
         self.scan_panel.abort_requested.connect(self.scan_coordinator.abort_power_scan)
-        self.scan_panel.calibration_requested.connect(
-            self.scan_coordinator.start_calibration_scan
-        )
+        self.scan_panel.calibration_requested.connect(self.start_calibration_scan)
         self.scan_panel.save_calibration_requested.connect(
             self.scan_coordinator.save_current_calibration
         )
@@ -355,12 +356,15 @@ class MainWindow(QMainWindow):
         self.scan_coordinator.power_read_once_requested.connect(
             self.power_read_once_requested.emit
         )
-        self.scan_coordinator.spectrum_requested.connect(self.take_spectrum)
+        self.scan_coordinator.spectrum_requested.connect(
+            lambda: self._request_automated_spectrum("power_scan")
+        )
         self.scan_coordinator.autosave_requested.connect(self._autosave_spectrum)
         self.scan_coordinator.auto_wavelength_requested.connect(
             self._maybe_update_power_meter_wavelength_for_laser
         )
         self.scan_coordinator.status_requested.connect(self._show_status_with_timeout)
+        self.scan_coordinator.active_changed.connect(self._on_scan_active_changed)
 
         # Create auto-acquisition coordinator
         self.auto_acquisition = AutoAcquisitionCoordinator(self)
@@ -373,7 +377,9 @@ class MainWindow(QMainWindow):
                 averages=averages,
             )
         )
-        self.auto_acquisition.spectrum_requested.connect(self.take_spectrum)
+        self.auto_acquisition.spectrum_requested.connect(
+            lambda: self._request_automated_spectrum("auto_tune")
+        )
 
         self.auto_acquisition.status_requested.connect(
             self._show_status_with_timeout
@@ -397,10 +403,14 @@ class MainWindow(QMainWindow):
             self.laser_set_enabled_requested.emit
         )
         self.gated_coordinator.plan_ready.connect(self.gated_panel.set_plan)
-        self.gated_coordinator.spectrum_requested.connect(self.take_spectrum)
+        self.gated_coordinator.spectrum_requested.connect(
+            lambda: self._request_automated_spectrum("gated")
+        )
         self.gated_coordinator.autosave_requested.connect(self._autosave_spectrum)
         self.gated_coordinator.status_requested.connect(self._show_status_with_timeout)
-        self.gated_coordinator.active_changed.connect(self.gated_panel.set_running)
+        self.gated_coordinator.active_changed.connect(
+            self._on_gated_active_changed
+        )
         self.gated_coordinator.failed.connect(self._on_gated_acquisition_failed)
 
     def _build_preferences_controller(self) -> None:
@@ -417,6 +427,7 @@ class MainWindow(QMainWindow):
             power_panel=self.power_panel,
             laser_panel=self.laser_panel,
             scan_panel=self.scan_panel,
+            gated_panel=self.gated_panel,
             filter_wheel_panel=self.filter_wheel_panel,
         )
 
@@ -473,7 +484,7 @@ class MainWindow(QMainWindow):
             self._on_laser_enable_requested
         )
         self.laser_panel.disable_all_requested.connect(
-            self.runtime.disable_all_lasers
+            self._on_disable_all_lasers_requested
         )
         self.laser_panel.set_cdrh_delay_requested.connect(
             self.runtime.set_laser_cdrh_delay
@@ -567,40 +578,135 @@ class MainWindow(QMainWindow):
         settings = self.gated_coordinator.apply_metadata(settings)
         return settings
 
-    @Slot()
-    def take_spectrum(self) -> None:
+    def _claim_sequence(self, owner: str) -> bool:
+        if self.sequence_arbiter.claim(owner):
+            self._refresh_sequence_controls()
+            return True
+        QMessageBox.information(
+            self,
+            "Sequence active",
+            f"Stop the active {self.sequence_arbiter.label} first.",
+        )
+        return False
+
+    def _release_sequence(self, owner: str) -> None:
+        if self.sequence_arbiter.release(owner):
+            self._refresh_sequence_controls()
+
+    def _begin_sequence(self, owner: str) -> bool:
+        if self.sequence_arbiter.owner == "live":
+            self.acquisition_panel.set_live_enabled(False)
         if self.acquiring:
-            return
+            QMessageBox.information(
+                self,
+                "Acquisition active",
+                "Wait for the current instrument operation to finish.",
+            )
+            return False
+        return self._claim_sequence(owner)
+
+    def _refresh_sequence_controls(self) -> None:
+        owner = self.sequence_arbiter.owner
+        spectrometer = self._instrument_connected("spectrometer")
+        automated = owner in AUTOMATED_SEQUENCE_OWNERS
+
+        self.acquisition_panel.set_sequence_owner(owner)
+        self.acquisition_panel.set_acquiring(self.acquiring)
+        self.scan_panel.set_external_busy(
+            owner is not None and owner not in {"power_scan", "calibration"}
+        )
+        self.gated_panel.set_external_busy(
+            owner is not None and owner != "gated"
+        )
+        self.laser_panel.set_sequence_busy(automated)
+        self.power_panel.set_sequence_busy(automated)
+        self.acquire_action.setEnabled(
+            spectrometer and owner is None and not self.acquiring
+        )
+
+    def _request_spectrum(self, owner: str) -> bool:
+        if self.acquiring or not self._instrument_connected("spectrometer"):
+            return False
+
+        valid_request = {
+            "manual": lambda: self.sequence_arbiter.owner in {None, "manual"},
+            "live": lambda: (
+                self.sequence_arbiter.owner == "live"
+                and self.acquisition_panel.is_live_enabled()
+            ),
+            "power_scan": lambda: (
+                self.sequence_arbiter.owner == "power_scan"
+                and self.scan_coordinator.power_scan_active
+            ),
+            "gated": lambda: (
+                self.sequence_arbiter.owner == "gated"
+                and self.gated_coordinator.active
+            ),
+            "auto_tune": lambda: (
+                self.sequence_arbiter.owner == "auto_tune"
+                and self.auto_acquisition.active
+            ),
+        }.get(owner)
+        if valid_request is None or not valid_request():
+            return False
+        if not self._claim_sequence(owner):
+            return False
+
         self.acquiring = True
-        self.acquire_action.setEnabled(False)
-        self.acquisition_panel.set_acquiring(True)
+        self._acquisition_owner = owner
+        self._refresh_sequence_controls()
         settings = self._settings()
         self.statusBar().showMessage(
             f"Acquiring spectrum: {settings.integration_ms} ms, "
             f"avg={settings.averages}, boxcar={settings.boxcar_width}",
             5000,
         )
-        self.scan_coordinator.timer.log("emit acquire request")
+        self.scan_coordinator.timer.log(f"emit {owner} acquire request")
         self.acquire_requested.emit(settings)
+        return True
+
+    def _request_automated_spectrum(self, owner: str) -> None:
+        """Fail the requesting state machine if a frame cannot be queued."""
+
+        if self._request_spectrum(owner):
+            return
+        if not self._instrument_connected("spectrometer"):
+            message = "The spectrometer disconnected before the frame was queued."
+        else:
+            message = "The frame could not be queued because acquisition ownership changed."
+
+        if owner == "power_scan":
+            self.scan_coordinator.handle_acquisition_failed(message)
+        elif owner == "gated":
+            self.gated_coordinator.handle_acquisition_failed(message)
+        elif owner == "auto_tune":
+            self.auto_acquisition.handle_acquisition_failed(message)
+
+    @Slot()
+    def take_spectrum(self) -> None:
+        self._request_spectrum("manual")
 
     @Slot(bool)
     def _on_live_changed(self, enabled: bool) -> None:
         self.live_next_timer.stop()
         if enabled:
+            if not self._instrument_connected("spectrometer") or not self._claim_sequence(
+                "live"
+            ):
+                self.acquisition_panel.set_live_enabled(False)
+                return
             self._schedule_next_live_acquisition()
+        elif not self.acquiring or self._acquisition_owner != "live":
+            self._release_sequence("live")
         self.statusBar().showMessage(
             f"Live acquisition: {'ON' if enabled else 'OFF'}",
             5000,
         )
 
     def _schedule_next_live_acquisition(self) -> None:
-        if self.auto_acquisition.active:
-            return
-        if self.gated_coordinator.active:
-            return
         if not self.acquisition_panel.is_live_enabled() or self.acquiring:
             return
-        if self.scan_coordinator.power_scan_active or self.scan_coordinator.calibration_active:
+        if self.sequence_arbiter.owner != "live":
             return
         self.live_next_timer.start(max(0, int(self.display_settings.live_acquisition_gap_ms)))
 
@@ -608,15 +714,14 @@ class MainWindow(QMainWindow):
     def _start_live_acquisition_if_ready(self) -> None:
         if not self.acquisition_panel.is_live_enabled() or self.acquiring:
             return
-        if self.scan_coordinator.power_scan_active or self.scan_coordinator.calibration_active:
-            return
-        self.take_spectrum()
+        self._request_spectrum("live")
 
     @Slot(object)
     def _on_spectrum_ready(self, record: SpectrumRecord) -> None:
         if self._closing:
             return
 
+        owner = self._acquisition_owner
         self._finish_acquisition_ui()
 
         self.performance_monitor.mark_acquisition()
@@ -625,7 +730,10 @@ class MainWindow(QMainWindow):
         self.spectrum_panel.queue_record(record)
         self._display_power_snapshot(record.p_after)
 
-        if (self.snr_settings.enabled and record.snr is not None):
+        if (
+            (self.snr_settings.enabled or owner == "auto_tune")
+            and record.snr is not None
+        ):
             self.acquisition_panel.set_snr(record.snr)
 
         if self.power_monitor_settings.append_spectrum_power:
@@ -638,37 +746,51 @@ class MainWindow(QMainWindow):
         if self.monitor_panel.tracking_enabled():
             self.monitor_panel.add_record(record)
 
-        if self.file_name_settings.autosave_spectra and not self.scan_coordinator.power_scan_active:
-            self._autosave_spectrum(record)
-
         self.statusBar().showMessage(
             f"Spectrum acquired: {record.timestamp_utc}, mean ch1 power "
             f"{format_power_w(record.mean_power_w(0))}",
             10_000,
         )
 
-        auto_consumed = self.auto_acquisition.handle_spectrum_ready(record)
-        gated_consumed = self.gated_coordinator.handle_spectrum_ready(record)
+        if owner == "auto_tune":
+            self.auto_acquisition.handle_spectrum_ready(record)
+        elif owner == "gated":
+            self.gated_coordinator.handle_spectrum_ready(record)
+        elif owner == "power_scan":
+            self.scan_coordinator.handle_spectrum_ready(record)
 
-        scan_consumed = False
-        if not gated_consumed or not auto_consumed:
-            scan_consumed = self.scan_coordinator.handle_spectrum_ready(record)
-
-        sequence_consumed = scan_consumed or auto_consumed or gated_consumed
-        if self.file_name_settings.autosave_spectra and not sequence_consumed:
+        # Automated coordinators own their save policy. Manual and live frames
+        # use the global autosave setting exactly once.
+        if (
+            self.file_name_settings.autosave_spectra
+            and owner in {None, "manual", "live"}
+        ):
             self._autosave_spectrum(record)
 
-        if not sequence_consumed:
+        if owner == "manual":
+            self._release_sequence("manual")
+        elif owner == "live" and self.acquisition_panel.is_live_enabled():
             self._schedule_next_live_acquisition()
+        elif owner == "live":
+            self._release_sequence("live")
 
     @Slot(str)
     def _on_acquisition_failed(self, message: str) -> None:
+        owner = self._acquisition_owner
         self._finish_acquisition_ui()
 
-        self.acquisition_panel.set_live_enabled(False)
-        self.scan_coordinator.handle_acquisition_failed(message)
-        self.auto_acquisition.handle_acquisition_failed(message)
-        self.gated_coordinator.handle_acquisition_failed(message)
+        if owner == "power_scan":
+            self.scan_coordinator.handle_acquisition_failed(message)
+        elif owner == "auto_tune":
+            self.auto_acquisition.handle_acquisition_failed(message)
+        elif owner == "gated":
+            self.gated_coordinator.handle_acquisition_failed(message)
+        elif owner == "manual":
+            self._release_sequence("manual")
+
+        if owner == "live":
+            self.acquisition_panel.set_live_enabled(False)
+            self._release_sequence("live")
 
         self.live_next_timer.stop()
         self.statusBar().showMessage(
@@ -684,19 +806,18 @@ class MainWindow(QMainWindow):
 
     def _finish_acquisition_ui(self) -> None:
         self.acquiring = False
-
-        available = self._instrument_connected("spectrometer")
-
-        self.acquire_action.setEnabled(available)
+        self._acquisition_owner = None
         self.acquisition_panel.set_acquiring(False)
-        self.acquisition_panel.setEnabled(available)
+        self._refresh_sequence_controls()
 
     def capture_background(self) -> None:
-        if self.acquiring:
+        if not self._instrument_connected("spectrometer"):
+            return
+        if self.acquiring or not self._claim_sequence("background"):
             return
         self.acquiring = True
-        self.acquire_action.setEnabled(False)
-        self.acquisition_panel.set_acquiring(True)
+        self._acquisition_owner = "background"
+        self._refresh_sequence_controls()
         settings = replace(self._settings(), subtract_background=False)
         self.statusBar().showMessage("Capturing background spectrum...", 5000)
         self.background_capture_requested.emit(settings)
@@ -850,45 +971,40 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.acquiring:
-            QMessageBox.information(
-                self,
-                "Acquisition Active",
-                "Wait for the current acquisition to finish.",
-            )
+        if not self._begin_sequence("auto_tune"):
             return
 
-        if (
-            self.scan_coordinator.power_scan_active
-            or self.scan_coordinator.calibration_active
-            or getattr(self, "gated_coordinator", None) is not None
-            and self.gated_coordinator.active
-        ):
-            QMessageBox.information(
-                self,
-                "Sequence Active",
-                "Stop the active scan or gated sequence first.",
-            )
-            return
-
-        self.acquisition_panel.set_live_enabled(False)
         current = self._settings()
         minimum_ms, maximum_ms = self._spectrometer_integration_limits_ms()
-
-        self.auto_acquisition.start(
-            current_settings=current,
-            snr_settings=self.snr_settings,
-            minimum_integration_ms=minimum_ms,
-            maximum_integration_ms=maximum_ms,
-            initial_record=self.current_record,
-        )
+        try:
+            self.auto_acquisition.start(
+                current_settings=current,
+                snr_settings=self.snr_settings,
+                minimum_integration_ms=minimum_ms,
+                maximum_integration_ms=maximum_ms,
+                # A prior frame may have been measured with different SNR
+                # windows/metrics. Always verify the current settings with a
+                # fresh acquisition after the worker receives its SNR config.
+                initial_record=None,
+            )
+        except Exception as exc:
+            self._release_sequence("auto_tune")
+            QMessageBox.critical(self, "Auto Tune Failed", str(exc))
+            return
+        if not self.auto_acquisition.active:
+            self._release_sequence("auto_tune")
 
     @Slot(bool)
     def _on_auto_tune_active_changed(self, active: bool) -> None:
+        if active:
+            self.sequence_arbiter.claim("auto_tune")
+        else:
+            self.sequence_arbiter.release("auto_tune")
         self.acquisition_panel.set_auto_tuning(active)
         self.acquisition_panel.set_snr_enabled(
             active or self.snr_settings.enabled
         )
+        self._refresh_sequence_controls()
 
     @Slot(object)
     def _on_auto_tune_completed(self, result) -> None:
@@ -908,6 +1024,57 @@ class MainWindow(QMainWindow):
             return
         self.gated_panel.set_plan(plan)
 
+    def start_power_scan(self) -> None:
+        if not self._instrument_connected("spectrometer") or not self._instrument_connected(
+            "lasers"
+        ):
+            QMessageBox.information(
+                self,
+                "Instruments unavailable",
+                "Connect the spectrometer and laser box before starting a power scan.",
+            )
+            return
+        if not self._begin_sequence("power_scan"):
+            return
+        try:
+            started = self.scan_coordinator.start_power_scan()
+        except Exception as exc:
+            self._release_sequence("power_scan")
+            QMessageBox.critical(self, "Power Scan Failed", str(exc))
+            return
+        if not started:
+            self._release_sequence("power_scan")
+
+    def start_calibration_scan(self) -> None:
+        if not all(
+            self._instrument_connected(key)
+            for key in ("power_meter", "lasers")
+        ):
+            QMessageBox.information(
+                self,
+                "Instruments unavailable",
+                "Connect the power meter and laser box before running calibration.",
+            )
+            return
+        if not self._begin_sequence("calibration"):
+            return
+        try:
+            started = self.scan_coordinator.start_calibration_scan()
+        except Exception as exc:
+            self._release_sequence("calibration")
+            QMessageBox.critical(self, "Calibration Failed", str(exc))
+            return
+        if not started:
+            self._release_sequence("calibration")
+
+    @Slot(bool, str)
+    def _on_scan_active_changed(self, active: bool, owner: str) -> None:
+        if active:
+            self.sequence_arbiter.claim(owner)
+        else:
+            self.sequence_arbiter.release(owner)
+        self._refresh_sequence_controls()
+
     def start_gated_acquisition(self) -> None:
         laser = self.laser_panel.selected_laser()
         if laser is None:
@@ -916,19 +1083,30 @@ class MainWindow(QMainWindow):
         if not self._instrument_connected("spectrometer"):
             QMessageBox.information(self, "No Spectrometer", "Connect a spectrometer first.")
             return
-        if self.acquiring or self.scan_coordinator.power_scan_active or self.auto_acquisition.active: # noqa
-            QMessageBox.information(self, "Sequence Active", "Stop the active acquisition first.")
+        if not self._instrument_connected("lasers"):
+            QMessageBox.information(self, "No Laser Box", "Connect a laser box first.")
             return
-        self.acquisition_panel.set_live_enabled(False)
+        if not self._begin_sequence("gated"):
+            return
         try:
             plan = self.gated_coordinator.start(
                 settings=self.gated_panel.settings(),
                 laser=laser,
             )
         except Exception as exc:
+            self._release_sequence("gated")
             QMessageBox.critical(self, "Gated Acquisition Failed", str(exc))
             return
         self.gated_panel.set_plan(plan)
+
+    @Slot(bool)
+    def _on_gated_active_changed(self, active: bool) -> None:
+        if active:
+            self.sequence_arbiter.claim("gated")
+        else:
+            self.sequence_arbiter.release("gated")
+        self.gated_panel.set_running(active)
+        self._refresh_sequence_controls()
 
     @Slot(str)
     def _on_gated_acquisition_failed(
@@ -940,27 +1118,6 @@ class MainWindow(QMainWindow):
             "Gated acquisition failed",
             str(message),
         )
-
-    def _active_automated_sequence(self) -> str | None:
-        if self.scan_coordinator.power_scan_active:
-            return "power scan"
-
-        if self.scan_coordinator.calibration_active:
-            return "calibration scan"
-
-        if (
-            hasattr(self, "gated_coordinator")
-            and self.gated_coordinator.active
-            ):
-            return "gated acquisition"
-
-        if (
-            hasattr(self, "auto_acquisition_coordinator")
-            and self.auto_acquisition.active
-            ):
-            return "automatic acquisition tuning"
-
-        return None
 
     # ------------------------------------------------------------------- power
 
@@ -995,7 +1152,7 @@ class MainWindow(QMainWindow):
         # one worker thread. Avoid building a queue of stale live-poll requests
         # behind a long spectrum acquisition; spectrum-associated before/after
         # readings are still recorded by DeviceController.acquire().
-        if self.acquiring:
+        if self.acquiring or self.sequence_arbiter.automated:
             return
         if self.power_monitor_settings.live_polling_enabled:
             self.power_poll_requested.emit()
@@ -1092,6 +1249,13 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _connect_instrument(self, key: str) -> None:
+        if self.acquiring or self.sequence_arbiter.active:
+            QMessageBox.information(
+                self,
+                "Instrument busy",
+                "Stop the active acquisition sequence before changing connections.",
+            )
+            return
         if key == "spectrometer":
             self.runtime.connect_spectrometer()
         elif key == "power_meter":
@@ -1104,19 +1268,14 @@ class MainWindow(QMainWindow):
         self,
         key: str,
     ) -> None:
+        if self.acquiring or self.sequence_arbiter.active:
+            QMessageBox.information(
+                self,
+                "Instrument busy",
+                "Stop the active acquisition sequence before changing connections.",
+            )
+            return
         if key == "spectrometer":
-            active = self._active_automated_sequence()
-
-            if self.acquiring or active is not None:
-                QMessageBox.information(
-                    self,
-                    "Spectrometer busy",
-                    "Wait for the active acquisition "
-                    "or automated sequence to finish "
-                    "before disconnecting the spectrometer.",
-                )
-                return
-
             self.runtime.disconnect_spectrometer()
             return
         elif key == "power_meter":
@@ -1126,6 +1285,13 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _reconnect_all_instruments(self) -> None:
+        if self.acquiring or self.sequence_arbiter.active:
+            QMessageBox.information(
+                self,
+                "Instrument busy",
+                "Stop the active acquisition sequence before reconnecting instruments.",
+            )
+            return
         self.runtime.connect_spectrometer()
         self.runtime.connect_power_meter()
         self.runtime.refresh_lasers()
@@ -1143,6 +1309,26 @@ class MainWindow(QMainWindow):
         print(message, file=sys.stderr)
         self.statusBar().showMessage(
             "Laser controller error. See console output.",
+            10_000,
+        )
+
+    @Slot()
+    def _on_disable_all_lasers_requested(self) -> None:
+        """Stop laser-owning state machines before issuing the emergency command."""
+
+        owner = self.sequence_arbiter.owner
+        if owner in {"power_scan", "calibration"}:
+            self.scan_coordinator.abort_power_scan()
+        elif owner == "gated":
+            self.gated_coordinator.abort()
+        elif owner == "auto_tune":
+            self.auto_acquisition.abort()
+
+        # Send this after coordinator abort requests so it is the final queued
+        # laser command even when an abort also emits a channel-specific disable.
+        self.runtime.disable_all_lasers()
+        self.statusBar().showMessage(
+            "Disable All requested; automated laser work is stopping.",
             10_000,
         )
 
@@ -1180,6 +1366,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_background_ready(self, background: BackgroundSpectrum) -> None:
         self._finish_acquisition_ui()
+        self._release_sequence("background")
         self.statusBar().showMessage(
             f"Background captured: {background.timestamp_utc}, "
             f"{background.integration_ms} ms, avg={background.averages}",
@@ -1193,6 +1380,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_background_failed(self, message: str) -> None:
         self._finish_acquisition_ui()
+        self._release_sequence("background")
         self.statusBar().showMessage("Background acquisition failed.", 15_000)
         print(message, file=sys.stderr)
         QMessageBox.warning(
@@ -1400,10 +1588,6 @@ class MainWindow(QMainWindow):
             spectrometer,
         )
 
-        self.acquire_action.setEnabled(
-            spectrometer and not self.acquiring
-        )
-
         if not spectrometer:
             self.acquisition_panel.set_live_enabled(
                 False
@@ -1459,6 +1643,7 @@ class MainWindow(QMainWindow):
             power_meter_available=power_meter,
             lasers_available=lasers,
         )
+        self._refresh_sequence_controls()
 
     # -------------------------------------------------------------- clear / toggle
 
@@ -1651,6 +1836,14 @@ class MainWindow(QMainWindow):
         self._save_preferences()
 
     def show_spectrometer_details_dialog(self) -> None:
+        if self.acquiring or self.sequence_arbiter.active:
+            QMessageBox.information(
+                self,
+                "Instrument busy",
+                "Stop the active instrument operation before querying or changing "
+                "spectrometer settings.",
+            )
+            return
         if self.spectrometer_capabilities is None:
             self.spectrometer_capabilities_requested.emit()
             QMessageBox.information(
@@ -1710,8 +1903,6 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _autosave_spectrum(self, record: SpectrumRecord) -> None:
-        if self.gated_coordinator.active:
-            return
         self.scan_coordinator.timer.log("autosave start")
         self.file_io.autosave_spectrum(record)
         self.scan_coordinator.timer.log("autosave complete")
@@ -1725,7 +1916,6 @@ class MainWindow(QMainWindow):
         ) = self.preferences.load()
 
     def _save_preferences(self) -> None:
-        self.gated_panel.save_preferences(QSettings())
         self.preferences.save(scan_timing=self.scan_timing_action.isChecked())
 
     def _apply_loaded_preferences(self) -> None:
@@ -1813,22 +2003,11 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------- shutdown
 
     def request_application_restart(self) -> None:
-        if self.acquiring:
+        if self.acquiring or self.sequence_arbiter.active:
             QMessageBox.information(
                 self,
-                "Acquisition active",
-                "Stop the current acquisition before restarting the GUI.",
-            )
-            return
-
-        if (
-            self.scan_coordinator.power_scan_active
-            or self.scan_coordinator.calibration_active
-        ):
-            QMessageBox.information(
-                self,
-                "Scan active",
-                "Stop the active scan before restarting the GUI.",
+                "Sequence active",
+                "Stop the active acquisition sequence before restarting the GUI.",
             )
             return
 
@@ -1840,12 +2019,28 @@ class MainWindow(QMainWindow):
             event.accept()
             return
 
+        if self.acquiring or self.sequence_arbiter.active:
+            result = QMessageBox.question(
+                self,
+                "Acquisition still active",
+                "An instrument operation is still active. Exit, stop scheduling new work, "
+                "and send Disable All to the laser boxes?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+
         self._closing = True
 
         # Prevent new work from being scheduled
         self.acquisition_panel.set_live_enabled(False)
         self.live_next_timer.stop()
         self.power_timer.stop()
+
+        if self._instrument_connected("lasers"):
+            self.runtime.disable_all_lasers()
 
         # Persist UI state
         self._save_preferences()

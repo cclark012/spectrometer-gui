@@ -7,16 +7,22 @@ import sys
 import time
 from pathlib import Path
 
-from pythonnet import load
-
+_IMPORT_ERROR: Exception | None = None
 try:
-    load("netfx")
-except RuntimeError:
-    pass
+    from pythonnet import load
 
-import System
-from System import Array, Object, Int32, Single, Double
-from System.Reflection import Assembly
+    try:
+        load("netfx")
+    except RuntimeError:
+        pass
+
+    import System
+    from System import Array, Double, Int32, Object, Single
+    from System.Reflection import Assembly
+except Exception as exc:  # Report the optional bench dependency from main().
+    _IMPORT_ERROR = exc
+    System = None
+    Array = Double = Int32 = Object = Single = Assembly = None
 
 
 DLL_PATH = Path(
@@ -364,6 +370,10 @@ def main() -> int:
         print("DLL path does not exist:")
         print(" ", DLL_PATH)
         print("Edit DLL_PATH at the top of this script.")
+        return 2
+
+    if _IMPORT_ERROR is not None:
+        print(f"Could not load pythonnet/.NET: {_IMPORT_ERROR}", file=sys.stderr)
         return 2
 
     add_dll_search_path(DLL_PATH)

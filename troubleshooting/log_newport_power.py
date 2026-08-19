@@ -7,8 +7,6 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from devices.newport_2936r_dotnet import Newport2936R
-
 DLL_PATH = Path(
     r"C:\Program Files\Newport\Newport Power Meter Application\Samples\PowerMeterCommands.dll"
 )
@@ -19,10 +17,12 @@ def utc_now_iso() -> str:
 
 
 def main() -> int:
+    from devices.newport_2936r_dotnet import Newport2936R
+
     out_path = Path("newport_power_log.csv")
 
     with Newport2936R(DLL_PATH, channel=1, units=2) as pm:
-        with out_path.open("w", newline="") as f:
+        with out_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
 
             writer.writerow(

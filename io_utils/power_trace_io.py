@@ -17,8 +17,11 @@ def save_power_trace_csv(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     max_channels = max((len(point.powers_w) for point in points), default=0)
+    max_status_channels = max((len(point.pm_status) for point in points), default=0)
     header = ["timestamp_utc", "elapsed_s"] + [
         f"ch{index + 1}_power_W" for index in range(max_channels)
+    ] + ["source", "command_status"] + [
+        f"ch{index + 1}_pm_status" for index in range(max_status_channels)
     ]
 
     with atomic_text_writer(path) as file:
@@ -35,5 +38,12 @@ def save_power_trace_csv(
                 if index < len(point.powers_w)
                 else ""
                 for index in range(max_channels)
+            )
+            row.extend([point.source, str(int(point.command_status))])
+            row.extend(
+                str(int(point.pm_status[index]))
+                if index < len(point.pm_status)
+                else ""
+                for index in range(max_status_channels)
             )
             writer.writerow(row)

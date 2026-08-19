@@ -82,7 +82,7 @@ def load_dataclass(settings: QSettings, prefix: str, target: object) -> None:
         raw = settings.value(key)
         try:
             setattr(target, field.name, _decode_value(raw, current))
-        except (TypeError, ValueError, json.JSONDecodeError):
+        except (TypeError, ValueError):
             # Keep the current value if an old/corrupt preference cannot be parsed.
             continue
 

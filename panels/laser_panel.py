@@ -95,6 +95,7 @@ class LaserPanel(QWidget):
 
         self._lasers: list[LaserChannelInfo] = []
         self._laser_by_key: dict[tuple[str, int], LaserChannelInfo] = {}
+        self._sequence_busy = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -116,6 +117,7 @@ class LaserPanel(QWidget):
         layout.addWidget(self.cdrh_delay_check)
 
         self._apply_detail_column_visibility(False)
+        self._apply_manual_control_state()
 
     def _build_toolbar(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -207,6 +209,7 @@ class LaserPanel(QWidget):
         else:
             self.selected_detail_label.setText("Selected: no lasers found")
             self.cdrh_delay_check.setEnabled(False)
+        self._apply_manual_control_state()
 
     def _populate_row(self, row: int, laser: LaserChannelInfo) -> None:
         brush = QBrush(_row_color(laser.wavelength_nm))
@@ -252,6 +255,7 @@ class LaserPanel(QWidget):
         button = QPushButton("ON" if enabled else "OFF")
         button.setCheckable(True)
         button.setChecked(enabled)
+        button.setEnabled(not self._sequence_busy)
         button.setMinimumWidth(46)
         button.setMaximumWidth(58)
         button.setToolTip(
@@ -407,6 +411,7 @@ class LaserPanel(QWidget):
         if laser is None:
             self.selected_detail_label.setText("Selected: --")
             self.cdrh_delay_check.setEnabled(False)
+            self._apply_manual_control_state()
             return
 
         self.selected_detail_label.setText(
@@ -425,6 +430,32 @@ class LaserPanel(QWidget):
             self.cdrh_delay_check.setEnabled(True)
             self.cdrh_delay_check.setChecked(bool(laser.cdrh_delay_enabled))
         self.cdrh_delay_check.blockSignals(False)
+        self._apply_manual_control_state()
+
+    def set_sequence_busy(self, busy: bool) -> None:
+        self._sequence_busy = bool(busy)
+        self._apply_manual_control_state()
+
+    def _apply_manual_control_state(self) -> None:
+        editable = not self._sequence_busy
+        selected = self.selected_laser()
+        self.refresh_button.setEnabled(editable)
+        self.power_spin.setEnabled(editable and selected is not None)
+        self.power_units.setEnabled(editable and selected is not None)
+        self.set_power_button.setEnabled(editable and selected is not None)
+        self.cdrh_delay_check.setEnabled(
+            editable
+            and selected is not None
+            and selected.cdrh_delay_enabled is not None
+        )
+
+        for row in range(self.table.rowCount()):
+            button = self.table.cellWidget(row, self.COL_EMISSION)
+            if isinstance(button, QPushButton):
+                button.setEnabled(editable)
+
+        # Emergency stop stays available while a sequence owns the controls.
+        self.disable_all_button.setEnabled(bool(self._lasers))
 
     def _load_selected_setpoint_into_spinbox(self) -> None:
         laser = self.selected_laser()

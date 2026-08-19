@@ -56,15 +56,11 @@ def build_gated_plan(settings: GatedAcquisitionSettings) -> GatedPlan:
             wait(settings.on_settle_ms)
             for index in range(settings.on_frames_per_cycle):
                 frame(cycle=cycle, label=f"on_{index + 1}", state="on")
-                if index + 1 < settings.on_frames_per_cycle:
-                    wait(settings.inter_frame_gap_ms)
 
             laser(False, transition=True)
             wait(settings.off_settle_ms)
             for index in range(settings.off_frames_per_cycle):
                 frame(cycle=cycle, label=f"off_{index + 1}", state="off")
-                if index + 1 < settings.off_frames_per_cycle:
-                    wait(settings.inter_frame_gap_ms)
 
     elif settings.mode == "delayed_after_off":
         for cycle in range(settings.cycles):
@@ -94,15 +90,11 @@ def build_gated_plan(settings: GatedAcquisitionSettings) -> GatedPlan:
             wait(settings.on_settle_ms)
             for index in range(settings.transition_pre_frames):
                 frame(cycle=cycle, label=f"pre_off_{index + 1}", state="on")
-                if index + 1 < settings.transition_pre_frames:
-                    wait(settings.inter_frame_gap_ms)
 
             laser(False, transition=True)
             wait(settings.off_settle_ms)
             for index in range(settings.transition_post_frames):
                 frame(cycle=cycle, label=f"post_off_{index + 1}", state="off")
-                if index + 1 < settings.transition_post_frames:
-                    wait(settings.inter_frame_gap_ms)
 
     frame_count = len(frame_specs)
     actions: list[GatedAction] = []

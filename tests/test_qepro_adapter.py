@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from devices.qepro_adapter import QEProSpectrometer
+from devices.qepro_adapter import QEProSpectrometer, SpectrometerCommunicationError
 
 
 class FakeFeature:
@@ -100,3 +100,51 @@ def test_integration_limit_fallback_is_qepro_safe() -> None:
     adapter = make_adapter()
     adapter.spec.integration_time_micros_limits = None
     assert adapter._integration_limits_us() == (8_000, 60_000_000)
+
+
+def test_seabreeze_transport_failure_is_normalized() -> None:
+    class SeaBreezeError(RuntimeError):
+        pass
+
+    class DisconnectedSpectrometer(FakeSpectrometer):
+        def intensities(self, **_kwargs) -> np.ndarray:
+            raise SeaBreezeError("USB data transfer error")
+
+    adapter = make_adapter(DisconnectedSpectrometer())
+    with pytest.raises(SpectrometerCommunicationError, match="spectrum readout"):
+        adapter.acquire_spectrum(
+            integration_ms=10,
+            averages=1,
+            correct_dark=False,
+            correct_nonlinearity=False,
+        )
+
+
+def test_non_transport_backend_error_is_not_reclassified() -> None:
+    class InvalidDataSpectrometer(FakeSpectrometer):
+        def intensities(self, **_kwargs) -> np.ndarray:
+            raise ValueError("bad correction setting")
+
+    adapter = make_adapter(InvalidDataSpectrometer())
+    with pytest.raises(ValueError, match="bad correction setting"):
+        adapter.acquire_spectrum(
+            integration_ms=10,
+            averages=1,
+            correct_dark=False,
+            correct_nonlinearity=False,
+        )
+
+
+def test_usb_capability_error_is_not_mistaken_for_disconnect() -> None:
+    class UnsupportedFeatureSpectrometer(FakeSpectrometer):
+        def intensities(self, **_kwargs) -> np.ndarray:
+            raise ValueError("USB feature is not supported by this backend")
+
+    adapter = make_adapter(UnsupportedFeatureSpectrometer())
+    with pytest.raises(ValueError, match="USB feature is not supported"):
+        adapter.acquire_spectrum(
+            integration_ms=10,
+            averages=1,
+            correct_dark=False,
+            correct_nonlinearity=False,
+        )

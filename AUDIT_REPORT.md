@@ -1,171 +1,143 @@
-# Spectrometer GUI Refactor and Audit Report
+# Spectrometer GUI Engineering Audit — 2026-08-19
 
 ## Scope
 
-The supplied archive was reviewed module by module. The refactor focused on:
+The supplied project contains 112 Python files (about 20,500 lines). The review
+covered application startup, Qt signal routing, worker-thread boundaries,
+instrument adapters, acquisition coordinators, persistence, planning,
+visualization settings, tests, and troubleshooting utilities.
 
-- removing abandoned and duplicate implementations;
-- separating hardware adapters, worker-thread routing, scan state, panel logic,
-  preferences, and file I/O;
-- correcting known scan, status-word, interpolation, threading, persistence,
-  and plotting defects;
-- reducing avoidable serial/GUI overhead;
-- adding hardware-independent regression tests;
-- preserving hardware-dependent behavior when changing it without bench
-  confirmation would be risky.
+This pass intentionally did not invent hardware behavior that could not be
+verified without the instruments. Changes were limited to defects supported by
+source analysis and hardware-independent regression tests.
 
-## Structural changes
+## High-impact corrections
 
-### Main window
+### One acquisition owner
 
-`panels/main_window.py` was reduced from approximately 2,465 lines to about 950
-lines. It now acts as the top-level UI shell rather than owning every workflow.
+`core/sequence_arbiter.py` now provides one lease shared by manual, live,
+background, power-scan, calibration, gated, and automatic-tuning workflows.
+Main-window requests validate that lease and the originating coordinator before
+queuing a spectrum. This prevents overlapping workflows and drops stale timer
+callbacks after an abort.
 
-Extracted components include:
+Panel availability is composed from connection state, current acquisition, and
+the lease owner. Scan, gated, laser, power-meter, and acquisition controls can no
+longer re-enable one another independently. `Disable All` remains available
+during automated laser work. Scan/calibration abort and failure exits now issue a
+best-effort laser-disable request before returning control to the user.
+The always-available `Disable All` action first aborts the owning state machine,
+then queues the box-wide disable command so a sequence cannot turn a laser back
+on afterward.
 
-- `controllers/scan_coordinator.py`: power scans, calibration scans, filter
-  prompts, warning handling, and scan timing;
-- `controllers/instrument_runtime.py`: worker threads and queued request routing;
-- `controllers/file_io_controller.py`: save/open/log operations;
-- `controllers/preferences_controller.py`: dataclass/panel/window persistence;
-- `panels/spectrum_panel.py`: throttled spectrum rendering and axis state;
-- `panels/monitor_views.py`: field-power map and optional 3D view support;
-- `panels/main_window_actions.py`: menus, toolbar, and actions.
+### Deterministic spectrum routing and autosave
 
-### Device code
+Completed spectra are routed only to the coordinator that requested them.
+Manual/live autosave runs once through the global setting; power-scan and gated
+autosave remain coordinator-owned. This fixes both duplicate manual/live files
+and gated frames that previously never saved.
 
-- Real and emulated OBIS implementations are separate.
-- Newport is imported lazily so emulator-only startup does not require
-  Python.NET or the Newport driver stack.
-- Protocols define the common spectrometer, power-meter, and laser-box adapter
-  interfaces.
-- QEPro and Newport can connect independently.
+Power-scan spectrum handling now returns a consumed flag and scan coordinators
+emit explicit owner-aware active-state transitions. Gated inter-frame delay is
+applied in one place (the coordinator), eliminating doubled delays from the
+planner and coordinator both waiting.
 
-### Processing and I/O
+### QEPro connection loss
 
-- Monitor metric calculations, smoothing, and background correction moved to
-  `processing/`.
-- Calibration, spectrum, power-trace, and filename logic are separated under
-  `io_utils/`.
-- Spectrum, calibration, and bounded power-trace writes are atomic.
-- Legacy prototypes were removed; useful bench scripts were retained under
-  `troubleshooting/` and `benchmarks/`.
+The QEPro adapter now normalizes SeaBreeze/USB disconnects from spectrum,
+capability, hardware-averaging, integration-limit, and TEC operations as
+`SpectrometerCommunicationError`. `DeviceController` centralizes the resulting
+close/disconnected-state transition for acquisition, background, TEC,
+temperature, and capability requests.
 
-## Correctness fixes
+### Lossless CSV round trips
 
-- Correct worker-thread startup order and queued GUI/worker communication.
-- Independent QEPro and Newport connection/failure behavior.
-- No stale live-power request queue during a blocking spectrum acquisition.
-- Newport PM:PWS status-word validation and configurable retry handling.
-- Correct handling of status range/unit fields when combining before/after
-  snapshots.
-- Laser table state updates without full serial rediscovery after every command.
-- Scan plans are regenerated at Run, not reused from a stale Preview.
-- Impossible/non-finite scan points fail; clipped setpoints produce visible
-  warnings.
-- Calibration inverse interpolation rejects out-of-range requests.
-- Calibration identity is checked against the selected laser.
-- Scan repeats avoid redundant OBIS setpoint writes and settling delays.
-- Manual power-meter wavelength state is committed only after hardware
-  acknowledgement.
-- Integration limits and averaging modes are validated in adapters.
-- QEPro feature lists ignore unavailable empty backend lists and detect
-  top-level or feature-level averaging setters.
-- Background interpolation handles descending grids, duplicate wavelengths,
-  mismatched arrays, and invalid integration times.
-- Monitor integration and interpolation are independent of wavelength-array
-  order.
-- Background capture cannot be queued concurrently with another acquisition.
-- Axis limits and plot settings persist without being overwritten by new data.
-- Power, monitor, and spectrum redraws use bounded-rate dirty-flag updates.
-- Configuration JSON is validated before device startup.
+Spectrum CSV save/load now round-trips:
 
-## Performance changes
+- all `SNRMetrics` fields, including invalid results as a real Boolean;
+- all gated frame metadata;
+- scan, background, power, and correction metadata already supported.
 
-- Removed full OBIS rediscovery after normal setpoint and enable/disable calls.
-- Avoided stale power-poll queues during long QEPro acquisition.
-- Added plot redraw throttling while retaining every acquired monitor point.
-- Cached background response on the active wavelength grid.
-- Used online/running averaging rather than storing all spectra in memory.
-- Cached QEPro capability probing and hardware-averaging method discovery.
-- Kept hardware-only dependencies lazy where practical.
-- Avoided repeating setpoint and settling operations for scan repeats at the
-  same power.
+Power-trace CSV output now retains the point source, Newport command status,
+and per-channel PM status words. Both writers remain atomic.
 
-## Automated validation
+### Laser and diagnostics safety
 
-The cleaned tree passes:
+- OBIS public laser operations reject channel 0 before constructing `SOURce`
+  commands.
+- Laser-emulator fallback reports the connection as emulated and no longer emits
+  a transient disconnected state first.
+- The duplicate Andor ctypes probe was consolidated into
+  `troubleshooting/andor_ctypes_probe.py`. The corrected probe distinguishes
+  successful native calls, does not expose undefined output buffers on errors,
+  uses the SDK2 vendor return-code table, keeps JSON stdout clean, and supports
+  `--help` off Windows.
+- Optional Newport, OBIS, and serial-port diagnostics are import-safe and report
+  missing bench dependencies from their command-line entry points.
+
+### Themes and packaging
+
+The startup path now creates one `ThemeManager`, preserving the true system
+palette for later restoration. Display Settings contains a live theme preview
+and a coupled Clone/Customize action. Custom-theme writes are atomic, separators
+are more visible, the obsolete QSS file was removed, and the `ui` package plus
+SVG assets are included in setuptools package discovery.
+
+Gated preferences are now managed by `PreferencesController` with the other
+panels rather than through special-case `QSettings` calls in `MainWindow`.
+
+## Automated verification
+
+The audit environment supplied Python 3.12, while the project targets Python
+3.14, and did not include PySide6, pyqtgraph, pyserial, SeaBreeze, Python.NET,
+or vendor SDKs. Within that limitation:
 
 ```text
-python -m compileall -q .
-pytest -q
+115 Python files syntax-compiled successfully
+56 hardware-independent tests passed
+0 failed
+98 non-test modules passed a stubbed optional-dependency import smoke test
+AST duplicate-definition check: 0 issues
+git diff --check: clean
 ```
 
-Result at packaging time:
+The tests include acquisition arbitration, scan/gated planning, SNR and gated
+CSV round trips, power-trace status retention, QEPro disconnect normalization,
+Newport validation, configuration, filters, calibration, background processing,
+monitor metrics, and filename generation.
 
-```text
-36 passed
-```
+## Required bench validation
 
-The tests cover power scan planning, filter planning, calibration I/O, spectrum
-I/O, Newport status decoding, background correction, monitor metrics,
-configuration validation, and QEPro adapter edge cases.
+Before replacing the lab tree:
 
-## Environment limitation
+1. Install the declared Python 3.14 environment and run `pytest -q`.
+2. Launch fully emulated mode and exercise every menu/dialog, theme preview,
+   live start/stop, background, auto tune, scans, and gated abort.
+3. Disconnect/reconnect QEPro during an ordinary acquisition and during TEC and
+   capability requests; verify one clean disconnected transition and recovery.
+4. Verify Newport before/after power, continuous trace status columns, wavelength
+   acknowledgement, and a short calibration.
+5. Verify each real OBIS box, low-power setpoint, CDRH variant, enable/disable,
+   emergency Disable All, power scan, and gated completion/abort.
+6. Confirm gated frame timestamps and autosave count for paired, delayed, and
+   transition modes. Software timing is not hardware gating.
+7. Run `python -m troubleshooting.andor_ctypes_probe --output report.json
+   --verbose` on the Andor computer with Solis closed.
 
-The audit environment does not contain PySide6, pyqtgraph, pyserial,
-python-seabreeze, Python.NET, OceanDirect, or physical instruments. Therefore:
+## Remaining architectural limits
 
-- all Python files were syntax-compiled;
-- hardware-independent tests were executed;
-- actual Qt window construction, USB/serial behavior, and vendor-DLL calls were
-  not executed here.
-
-A bench validation run is still required.
-
-## Deliberately preserved behavior
-
-The following were not changed because they are hardware- or experiment-policy
-choices and should be confirmed before altering semantics:
-
-1. **OBIS write acknowledgement**: an empty non-error response is treated as
-   success. Some firmware may not return `OK` consistently.
-2. **Single QEPro/Newport worker**: this preserves the working connection model.
-   Separate workers would permit exposure-synchronous Newport sampling but
-   require careful validation of the Newport DLL's thread behavior.
-3. **Stored boxcar data**: boxcar smoothing remains part of the saved spectrum.
-   Making smoothing display-only would change historical data semantics.
-4. **CDRH command fallback**: indexed and unindexed forms are retained because
-   Laser Box firmware variants may differ.
-5. **QSettings identity**: the existing organization/application names are
-   retained so user preferences do not appear to disappear.
-6. **Lab filter defaults and local ports**: the active lab config is retained;
-   a generic example and local override mechanism were added instead.
-7. **Project license**: no license was invented. The prior unsupported license
-   declaration was removed from package metadata.
-
-## Bench validation checklist
-
-Before replacing the working lab tree, verify:
-
-1. Start in fully emulated mode and exercise every menu/dialog.
-2. Start with QEPro only; acquire and save a spectrum.
-3. Start with Newport only; verify live/spectra-only modes and wavelength set.
-4. Start with both; verify before/after power metadata and status validation.
-5. Connect each OBIS box; refresh, set low power, enable/disable, and CDRH query.
-6. Run a short emulated and real setpoint scan with repeats.
-7. Run/load/save a calibration and preview expected-actual/filter-planned scans.
-8. Confirm manual filter prompts occur only when the planned state changes.
-9. Verify axis limits, plot style, file settings, and dock layout persist.
-10. Interrupt a spectrum/calibration save and confirm no partial final file is
-    left under the requested name.
-11. Close during an ordinary idle state and after a completed acquisition.
-12. Benchmark OceanDirect separately before enabling it as an acquisition
-    backend.
-
-## Recommended next work
-
-After bench validation, the highest-value architectural improvement is an
-optional dedicated Newport worker capable of collecting exposure-synchronous
-power samples. That should be implemented only after confirming the Newport DLL
-can be used safely from its own persistent worker thread.
+- `MainWindow` is still large (about 2,000 lines/109 methods), although hardware,
+  sequence state, file I/O, preferences, actions, and processing are delegated.
+  A further presenter/dialog split should follow GUI regression coverage rather
+  than precede the first bench pass.
+- QEPro and Newport share one device worker. A dedicated Newport worker is still
+  recommended for exposure-synchronous sampling after confirming DLL thread
+  behavior.
+- A vendor call that never returns cannot be cancelled safely by Qt; shutdown
+  can therefore wait on a blocked worker.
+- Gated timing is software scheduled and includes serial, readout, Windows, and
+  Qt event-loop latency. Requested and observed request delays are stored.
+- The Andor files are diagnostics only. A production Kymera/iDus adapter,
+  acquisition worker, capability model, and GUI integration remain future work.
+- Real-device acknowledgement and reconnection behavior require the bench tests
+  above; passing offline tests is not evidence of hardware validation.

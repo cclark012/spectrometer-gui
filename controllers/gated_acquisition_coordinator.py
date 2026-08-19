@@ -158,8 +158,16 @@ class GatedAcquisitionCoordinator(QObject):
         if self._abort_requested:
             self._finish_aborted()
         else:
+            next_is_frame = bool(
+                self._actions
+                and self._actions[0].kind in {"acquire", "acquire_at_delay"}
+            )
             self._schedule(
-                max(0, int(self._settings.inter_frame_gap_ms)),
+                (
+                    max(0, int(self._settings.inter_frame_gap_ms))
+                    if next_is_frame
+                    else 0
+                ),
                 self._advance,
             )
         return True

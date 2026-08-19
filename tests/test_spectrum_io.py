@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from core.gated_acquisition import GatedFrameMetadata
 from core.records import PowerSnapshot, SpectrumRecord
+from core.snr_records import SNRMetrics
 from io_utils.spectrum_io import (
     load_spectrum_csv,
     load_spectrum_record,
@@ -25,13 +27,39 @@ def _record() -> SpectrumRecord:
         correct_nonlinearity=True,
         field_value=10.0,
         run_identifier="run-A",
-        notes="line one\nline two",
+        notes="line one, with comma\nline two contains literal \\n text",
         scan_active=True,
         scan_index=1,
         scan_count=3,
         laser_channel=2,
         laser_wavelength_nm=532.0,
         filter_state="W1:open",
+        gated=GatedFrameMetadata(
+            sequence_id="gate-1",
+            mode="delayed_after_off",
+            frame_index=2,
+            frame_count=5,
+            cycle_index=0,
+            label="delay_50_ms",
+            laser_state="off",
+            requested_delay_ms=50,
+            request_elapsed_since_transition_ms=52.25,
+        ),
+        snr=SNRMetrics(
+            valid=True,
+            message="ok",
+            peak_snr=12.5,
+            integrated_snr=20.5,
+            noise_sigma_counts=2.5,
+            peak_signal_counts=125.0,
+            integrated_signal_counts_nm=500.0,
+            integrated_noise_counts_nm=25.0,
+            mean_signal_counts=100.0,
+            baseline_at_signal_center_counts=3.0,
+            peak_fraction_of_full_scale=0.25,
+            n_signal_pixels=8,
+            n_noise_pixels=12,
+        ),
     )
 
 
@@ -50,11 +78,13 @@ def test_spectrum_csv_round_trip(tmp_path):
     assert loaded.integration_ms == 100
     assert loaded.averages == 2
     assert loaded.run_identifier == "run-A"
-    assert loaded.notes == "line one\nline two"
+    assert loaded.notes == record.notes
     assert loaded.scan_active is True
     assert loaded.laser_channel == 2
     assert loaded.filter_state == "W1:open"
     assert loaded.p_before.pm_status == [0x118]
+    assert loaded.gated == record.gated
+    assert loaded.snr == record.snr
 
     text = path.read_text(encoding="utf-8")
     assert "intensity_counts_per_s" in text
@@ -80,3 +110,16 @@ def test_mean_power_snapshot_preserves_latest_range_and_combines_flags():
 
     assert snapshot.powers_w == [2.0]
     assert snapshot.pm_status == [(0x128 & ~0x0F) | 0x0E]
+
+
+def test_invalid_snr_round_trips_as_boolean_false(tmp_path):
+    record = _record()
+    record.snr = SNRMetrics.invalid("not enough noise pixels")
+    path = tmp_path / "invalid-snr.csv"
+
+    save_spectrum_record(path, record)
+    loaded = load_spectrum_record(path)
+
+    assert loaded.snr is not None
+    assert loaded.snr.valid is False
+    assert loaded.snr.message == "not enough noise pixels"

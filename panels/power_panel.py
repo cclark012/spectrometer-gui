@@ -35,6 +35,7 @@ class PowerPanel(QWidget):
         super().__init__(parent)
 
         self.power_trace: deque[PowerTracePoint] = deque(maxlen=int(max_points))
+        self._sequence_busy = False
 
         layout = QVBoxLayout(self)
 
@@ -113,6 +114,17 @@ class PowerPanel(QWidget):
         self._redraw_timer.setInterval(200)
         self._redraw_timer.timeout.connect(self._redraw_if_dirty)
         self._redraw_timer.start()
+
+    def set_sequence_busy(self, busy: bool) -> None:
+        self._sequence_busy = bool(busy)
+        enabled = not self._sequence_busy
+        for widget in (
+            self.power_mode_combo,
+            self.auto_wavelength_check,
+            self.pm_wavelength_spin,
+            self.set_pm_wavelength_button,
+        ):
+            widget.setEnabled(enabled)
 
     def set_max_points(self, max_points: int) -> None:
         max_points = int(max_points)
