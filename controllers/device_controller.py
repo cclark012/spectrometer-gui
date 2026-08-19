@@ -147,7 +147,12 @@ class DeviceController(QObject):
         self.spec_available = spectrometer is not None
 
         if self.spec_available:
-            self._emit_spectrometer_info()
+            try:
+                self._emit_spectrometer_info()
+            except SpectrometerCommunicationError as exc:
+                self._close_spectrometer()
+                message = ""
+                error = f"Spectrometer capability query failed: {exc}"
 
         state = InstrumentConnectionState(
             key="spectrometer",
@@ -261,6 +266,9 @@ class DeviceController(QObject):
             self.background.set_background(background)
             self.background_ready.emit(background)
             self.status.emit("Background spectrum captured.")
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.background_failed.emit(str(exc))
         except Exception:
             self.background_failed.emit(traceback.format_exc())
 
@@ -275,6 +283,9 @@ class DeviceController(QObject):
         try:
             self._require_spectrometer().set_tec_target_c(float(temperature_c))
             self.status.emit(f"TEC target set to {float(temperature_c):.2f} °C.")
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.error.emit(str(exc))
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -283,6 +294,9 @@ class DeviceController(QObject):
         try:
             self._require_spectrometer().set_tec_enabled(bool(enabled))
             self.status.emit(f"TEC {'enabled' if enabled else 'disabled'}.")
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.error.emit(str(exc))
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -291,6 +305,9 @@ class DeviceController(QObject):
         try:
             temperature = float(self._require_spectrometer().get_ccd_temperature_c())
             self.spectrometer_temperature_ready.emit(temperature)
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.error.emit(str(exc))
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -298,6 +315,21 @@ class DeviceController(QObject):
         if not self.spec_available or self.spec is None:
             raise RuntimeError("Spectrometer is not connected.")
         return self.spec
+
+    def _handle_spectrometer_connection_loss(
+        self,
+        exc: SpectrometerCommunicationError,
+    ) -> None:
+        self._close_spectrometer()
+        state = InstrumentConnectionState(
+            key="spectrometer",
+            connected=False,
+            emulated=False,
+            description="QEPro connection lost.",
+            error=str(exc),
+        )
+        self.spectrometer_connection_changed.emit(state)
+        self.status.emit(state.description)
 
     def _require_power_meter(self) -> PowerMeterAdapter:
         if not self.power_available or self.pm is None:
@@ -321,6 +353,8 @@ class DeviceController(QObject):
 
         try:
             self._capabilities = self.spec.capabilities()
+        except SpectrometerCommunicationError:
+            raise
         except Exception as exc:
             self._capabilities = SpectrometerCapabilities(
                 model=type(self.spec).__name__,
@@ -583,20 +617,7 @@ class DeviceController(QObject):
             self.spectrum_ready.emit(record)
 
         except SpectrometerCommunicationError as exc:
-            self._close_spectrometer()
-
-            self.spectrometer_connection_changed.emit(
-                InstrumentConnectionState(
-                    key="spectrometer",
-                    connected=False,
-                    emulated=False,
-                    description=(
-                        "QEPro connection lost."
-                    ),
-                    error=str(exc),
-                )
-            )
-
+            self._handle_spectrometer_connection_loss(exc)
             self.acquisition_failed.emit(str(exc))
 
         except Exception:
@@ -612,6 +633,9 @@ class DeviceController(QObject):
             else:
                 self.spectrometer_info_ready.emit(self._info)
                 self.spectrometer_capabilities_ready.emit(self._capabilities)
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.error.emit(str(exc))
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -650,17 +674,5 @@ class DeviceController(QObject):
                     pass
 
     def _close_devices(self) -> None:
-        for device in (self.spec, self.pm):
-            if device is None:
-                continue
-            close = getattr(device, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
-
-        self.spec = None
-        self.pm = None
-        self.spec_available = False
-        self.power_available = False
+        self._close_spectrometer()
+        self._close_power_meter()

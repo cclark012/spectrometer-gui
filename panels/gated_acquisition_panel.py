@@ -27,6 +27,7 @@ class GatedAcquisitionPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._running = False
+        self._external_busy = False
         self._spectrometer_available = False
         self._lasers_available = False
 
@@ -85,10 +86,10 @@ class GatedAcquisitionPanel(QWidget):
 
         options = QHBoxLayout()
         for label, check in zip(
-                [self.enable_label, self.disable_label, self.auto_label], 
+                [self.enable_label, self.disable_label, self.auto_label],
                 [self.enable_before, self.disable_after, self.autosave],
                 strict=True
-            ): 
+            ):
             options.addWidget(label)
             options.addWidget(check)
 
@@ -234,6 +235,10 @@ class GatedAcquisitionPanel(QWidget):
         self._running = bool(running)
         self._apply_control_state()
 
+    def set_external_busy(self, busy: bool) -> None:
+        self._external_busy = bool(busy)
+        self._apply_control_state()
+
     def set_instrument_availability(
         self,
         *,
@@ -245,7 +250,7 @@ class GatedAcquisitionPanel(QWidget):
         self._apply_control_state()
 
     def _apply_control_state(self) -> None:
-        idle = not self._running
+        idle = not self._running and not self._external_busy
         self.preview_button.setEnabled(idle and self._lasers_available)
         self.run_button.setEnabled(
             idle and self._lasers_available and self._spectrometer_available

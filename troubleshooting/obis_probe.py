@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 
-import serial
-from serial.tools import list_ports
+
+def _serial_modules():
+    try:
+        import serial
+        from serial.tools import list_ports
+    except ImportError as exc:
+        raise RuntimeError(
+            "The OBIS probe requires pyserial. Install the project dependencies "
+            "before running this command."
+        ) from exc
+    return serial, list_ports
 
 
 def list_serial_ports() -> None:
+    _serial, list_ports = _serial_modules()
     for p in list_ports.comports():
         print("-" * 60)
         print("device      :", p.device)
@@ -22,6 +33,7 @@ def list_serial_ports() -> None:
 
 class ObisSerial:
     def __init__(self, port: str, baudrate: int = 115200, timeout_s: float = 2.0):
+        serial, _list_ports = _serial_modules()
         self.ser = serial.Serial(
             port=port,
             baudrate=baudrate,
@@ -83,13 +95,21 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.list:
-        list_serial_ports()
+        try:
+            list_serial_ports()
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 2
         return 0
 
     if not args.port:
         raise SystemExit("Specify --port COMx or use --list.")
 
-    obis = ObisSerial(args.port)
+    try:
+        obis = ObisSerial(args.port)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 2
 
     try:
         print("Controller:")

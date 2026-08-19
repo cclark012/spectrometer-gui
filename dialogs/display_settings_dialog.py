@@ -3,18 +3,22 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
 
 from core.settings import DisplaySettings
+from dialogs.theme_editor_dialog import ThemeEditorDialog
 from ui.theme import ThemeManager
+from ui.theme_preview import ThemePreviewWidget
 
 
 class DisplaySettingsDialog(QDialog):
@@ -23,8 +27,9 @@ class DisplaySettingsDialog(QDialog):
     def __init__(self, settings: DisplaySettings, theme_manager: ThemeManager, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Display Settings")
-        self.resize(470, 300)
+        self.resize(720, 700)
         self._settings = replace(settings)
+        self._theme_manager = theme_manager
 
         root = QVBoxLayout(self)
         form = QFormLayout()
@@ -74,11 +79,13 @@ class DisplaySettingsDialog(QDialog):
         )
 
         self.theme_combo = QComboBox()
-        for key, display_name in theme_manager.available_theme_items():
-            self.theme_combo.addItem(display_name, key)
-        index = self.theme_combo.findData(settings.theme_name)
-        self.theme_combo.setCurrentIndex(index if index >= 0 else 0)
-        form.addRow("Theme", self.theme_combo)
+        self.customize_theme_button = QPushButton("Clone / Customize…")
+        self.customize_theme_button.clicked.connect(self._customize_theme)
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(self.theme_combo, stretch=1)
+        theme_row.addWidget(self.customize_theme_button)
+        form.addRow("Theme", theme_row)
+        self._reload_theme_items(settings.theme_name)
 
         root.addLayout(form)
 
@@ -88,6 +95,9 @@ class DisplaySettingsDialog(QDialog):
         )
         note.setWordWrap(True)
         root.addWidget(note)
+
+        self.theme_preview = ThemePreviewWidget(self)
+        root.addWidget(self.theme_preview, stretch=1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -111,6 +121,46 @@ class DisplaySettingsDialog(QDialog):
                 )
             )
             self._update_rate_label(label, spin.value(), gap=gap)
+
+        self.theme_combo.currentIndexChanged.connect(self._update_theme_preview)
+        self._update_theme_preview()
+
+    def _reload_theme_items(self, selected: str) -> None:
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.clear()
+        for key, display_name in self._theme_manager.available_theme_items():
+            self.theme_combo.addItem(display_name, key)
+        index = self.theme_combo.findData(str(selected))
+        self.theme_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.theme_combo.blockSignals(False)
+
+    def _update_theme_preview(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        palette, stylesheet, plot_background, plot_foreground = (
+            self._theme_manager.preview_components(
+                app,
+                str(self.theme_combo.currentData()),
+            )
+        )
+        self.theme_preview.apply_preview(
+            palette=palette,
+            stylesheet=stylesheet,
+            plot_background=plot_background,
+            plot_foreground=plot_foreground,
+        )
+
+    def _customize_theme(self) -> None:
+        dialog = ThemeEditorDialog(
+            self._theme_manager,
+            base_theme=str(self.theme_combo.currentData()),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.saved_theme is None:
+            return
+        self._reload_theme_items(dialog.saved_theme.key)
+        self._update_theme_preview()
 
     @staticmethod
     def _milliseconds_spin(value: int, *, minimum: int, maximum: int) -> QSpinBox:

@@ -36,6 +36,7 @@ class ScanPanel(QWidget):
         super().__init__(parent)
 
         self._running = False
+        self._external_busy = False
         self._spectrometer_available = False
         self._power_meter_available = False
         self._lasers_available = False
@@ -330,6 +331,10 @@ class ScanPanel(QWidget):
         self._running = bool(running)
         self._apply_control_state()
 
+    def set_external_busy(self, busy: bool) -> None:
+        self._external_busy = bool(busy)
+        self._apply_control_state()
+
     def set_instrument_availability(
         self,
         *,
@@ -350,7 +355,7 @@ class ScanPanel(QWidget):
         self._apply_control_state()
 
     def _apply_control_state(self) -> None:
-        idle = not self._running
+        idle = not self._running and not self._external_busy
 
         self.preview_button.setEnabled(
             idle and self._lasers_available

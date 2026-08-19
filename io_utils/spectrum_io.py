@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
 
+from core.gated_acquisition import GatedFrameMetadata
 from core.records import PowerSnapshot, SpectrumRecord
 from core.snr_records import SNRMetrics
 from io_utils.atomic import atomic_text_writer
@@ -47,6 +49,7 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
         writer.writerow(["# p_after_command_status", record.p_after.command_status])
         writer.writerow(["# run_identifier", record.run_identifier])
         writer.writerow(["# notes", record.notes.replace("\n", "\\n")])
+        writer.writerow(["# notes_json", json.dumps(record.notes, ensure_ascii=False)])
 
         writer.writerow(["# scan_active", int(record.scan_active)])
         writer.writerow(["# scan_index", record.scan_index])
@@ -98,6 +101,32 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
             writer.writerow(
                 ["# snr_peak_fraction", f"{record.snr.peak_fraction_of_full_scale:.12e}"]
             )
+            writer.writerow(
+                ["# snr_peak_signal_counts", f"{record.snr.peak_signal_counts:.12e}"]
+            )
+            writer.writerow(
+                [
+                    "# snr_integrated_signal_counts_nm",
+                    f"{record.snr.integrated_signal_counts_nm:.12e}",
+                ]
+            )
+            writer.writerow(
+                [
+                    "# snr_integrated_noise_counts_nm",
+                    f"{record.snr.integrated_noise_counts_nm:.12e}",
+                ]
+            )
+            writer.writerow(
+                ["# snr_mean_signal_counts", f"{record.snr.mean_signal_counts:.12e}"]
+            )
+            writer.writerow(
+                [
+                    "# snr_baseline_at_signal_center_counts",
+                    f"{record.snr.baseline_at_signal_center_counts:.12e}",
+                ]
+            )
+            writer.writerow(["# snr_n_signal_pixels", record.snr.n_signal_pixels])
+            writer.writerow(["# snr_n_noise_pixels", record.snr.n_noise_pixels])
 
         writer.writerow(
             [
@@ -250,6 +279,16 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
     """
 
     metadata, wavelengths, intensities = _read_spectrum_file(Path(path))
+    notes = _first(metadata, "notes").replace("\\n", "\n")
+    notes_json = _first(metadata, "notes_json")
+    if notes_json:
+        try:
+            decoded_notes = json.loads(notes_json)
+        except (TypeError, ValueError):
+            pass
+        else:
+            if isinstance(decoded_notes, str):
+                notes = decoded_notes
     signal_max = _float_value(metadata, "signal_max_counts")
     if not np.isfinite(signal_max):
         signal_max = float(np.nanmax(intensities))
@@ -264,17 +303,48 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         pm_status=_int_list(metadata, "p_after_status"),
         command_status=_int_value(metadata, "p_after_command_status", -1),
     )
+    gated = None
+    if _bool_value(metadata, "gated_active"):
+        gated = GatedFrameMetadata(
+            sequence_id=_first(metadata, "gated_sequence_id"),
+            mode=_first(metadata, "gated_mode"),
+            frame_index=_int_value(metadata, "gated_frame_index", -1),
+            frame_count=_int_value(metadata, "gated_frame_count", 0),
+            cycle_index=_int_value(metadata, "gated_cycle_index", -1),
+            label=_first(metadata, "gated_label"),
+            laser_state=_first(metadata, "gated_laser_state"),
+            requested_delay_ms=_int_value(metadata, "gated_requested_delay_ms", 0),
+            request_elapsed_since_transition_ms=_float_value(
+                metadata,
+                "gated_request_elapsed_since_transition_ms",
+            ),
+        )
+
     snr_metrics = None
-    valid = _first(metadata, "snr_valid", False)
-    if valid:
+    if "snr_valid" in metadata:
         snr_metrics = SNRMetrics(
-            valid=valid,
+            valid=_bool_value(metadata, "snr_valid"),
             message=_first(metadata, "snr_message"),
             peak_snr=_float_value(metadata, "snr_peak"),
             integrated_snr=_float_value(metadata, "snr_integrated"),
             noise_sigma_counts=_float_value(metadata, "snr_noise_sigma_counts"),
             peak_fraction_of_full_scale=_float_value(metadata, "snr_peak_fraction"),
-            # TODO - Finish this 
+            peak_signal_counts=_float_value(metadata, "snr_peak_signal_counts"),
+            integrated_signal_counts_nm=_float_value(
+                metadata,
+                "snr_integrated_signal_counts_nm",
+            ),
+            integrated_noise_counts_nm=_float_value(
+                metadata,
+                "snr_integrated_noise_counts_nm",
+            ),
+            mean_signal_counts=_float_value(metadata, "snr_mean_signal_counts"),
+            baseline_at_signal_center_counts=_float_value(
+                metadata,
+                "snr_baseline_at_signal_center_counts",
+            ),
+            n_signal_pixels=_int_value(metadata, "snr_n_signal_pixels", 0),
+            n_noise_pixels=_int_value(metadata, "snr_n_noise_pixels", 0),
         )
 
     return SpectrumRecord(
@@ -299,7 +369,7 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
             "spectrometer_max_intensity",
         ),
         run_identifier=_first(metadata, "run_identifier"),
-        notes=_first(metadata, "notes").replace("\\n", "\n"),
+        notes=notes,
         scan_active=_bool_value(metadata, "scan_active"),
         scan_index=_int_value(metadata, "scan_index", -1),
         scan_count=_int_value(metadata, "scan_count", 0),
@@ -315,6 +385,7 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         filter_state=_first(metadata, "filter_state", "none"),
         averaging_mode=_first(metadata, "averaging_mode", "software"),
         device_averaging_used=_bool_value(metadata, "device_averaging_used"),
+        gated=gated,
         background_subtracted=_bool_value(metadata, "background_subtracted"),
         background_timestamp_utc=_first(metadata, "background_timestamp_utc"),
         background_integration_ms=_int_value(

@@ -166,7 +166,7 @@ def run_serial(args: args.Namespace) -> int:
                 continue
 
             print(f"  raw bytes: {raw!r}")
-            
+
             if raw:
                 try:
                     print(f"  text: {raw.decode('ascii', errors='replace')!r}")

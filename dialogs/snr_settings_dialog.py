@@ -130,7 +130,7 @@ class SNRSettingsDialog(QDialog):
         self.max_iterations = QSpinBox()
         self.max_iterations.setRange(1, 1000)
         self.max_iterations.setValue(int(settings.auto_adjust_max_iterations))
-        
+
         # Auto-adjust target tolerance
         self.tolerance = QDoubleSpinBox()
         self.tolerance.setRange(1.0, 100.0)

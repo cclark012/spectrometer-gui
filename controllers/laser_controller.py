@@ -40,6 +40,7 @@ class LaserController(QObject):
     def refresh(self) -> None:
         try:
             self._close_boxes()
+            using_emulator = bool(self.emulate)
 
             if self.emulate:
                 boxes = make_emulated_obis_boxes()
@@ -55,17 +56,9 @@ class LaserController(QObject):
                     candidate_ports=self.candidate_ports,
                     timeout_s=2.5,
                 )
-                if not boxes:
-                    self.connection_changed.emit(
-                        InstrumentConnectionState(
-                            key="lasers",
-                            connected=False,
-                            description="No OBIS laser boxes found.",
-                        )
-                    )
-
                 if not boxes and self.fallback_emulator:
                     boxes = make_emulated_obis_boxes()
+                    using_emulator = True
                     mode_message = "No real OBIS boxes found; using laser emulators."
 
             self.status.emit(mode_message)
@@ -87,7 +80,7 @@ class LaserController(QObject):
                 InstrumentConnectionState(
                     key="lasers",
                     connected=bool(self.boxes),
-                    emulated=bool(self.emulate),
+                    emulated=bool(self.boxes) and using_emulator,
                     description=message,
                     error="",
                 )

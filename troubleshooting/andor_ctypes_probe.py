@@ -10,7 +10,7 @@ changing acquisition, cooler, shutter, grating, slit, or wavelength settings.
 Run from the project root::
 
     python -m troubleshooting.andor_ctypes_probe
-    python -m troubleshooting.andor_ctypes_probe --json > andor_ctypes_probe.json
+    python -m troubleshooting.andor_ctypes_probe --output andor_ctypes_probe.json
     python -m troubleshooting.andor_ctypes_probe \
         --solis-dir "C:\\Program Files\\Andor SOLIS" --json
 
@@ -29,29 +29,65 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from io_utils.atomic import atomic_text_writer
+
+
+_VERBOSE = False
+
+
+def _debug(*parts: object) -> None:
+    if _VERBOSE:
+        print(*(str(part) for part in parts), file=sys.stderr, flush=True)
+
 
 DRV_SUCCESS = 20002
 ATSPECTROGRAPH_SUCCESS = 20202
 
 CAMERA_RETURN_CODES = {
+    20001: "DRV_ERROR_CODES",
     20002: "DRV_SUCCESS",
     20003: "DRV_VXDNOTINSTALLED",
-    20006: "DRV_ERROR_ACK",
+    20004: "DRV_ERROR_SCAN",
+    20005: "DRV_ERROR_CHECK_SUM",
+    20006: "DRV_ERROR_FILELOAD",
+    20007: "DRV_UNKNOWN_FUNCTION",
+    20008: "DRV_ERROR_VXD_INIT",
+    20009: "DRV_ERROR_ADDRESS",
     20010: "DRV_ERROR_PAGELOCK",
-    20013: "DRV_ERROR_NOCAMERA",
-    20017: "DRV_ERROR_NOHANDLE",
-    20018: "DRV_GATING_NOT_AVAILABLE",
-    20021: "DRV_ERROR_MAP",
-    20024: "DRV_ERROR_UNMAP",
-    20026: "DRV_ERROR_PAGEUNLOCK",
-    20034: "DRV_TEMP_OFF",
+    20011: "DRV_ERROR_PAGE_UNLOCK",
+    20012: "DRV_ERROR_BOARDTEST",
+    20013: "DRV_ERROR_ACK",
+    20014: "DRV_ERROR_UP_FIFO",
+    20015: "DRV_ERROR_PATTERN",
+    20017: "DRV_ACQUISITION_ERRORS",
+    20018: "DRV_ACQ_BUFFER",
+    20019: "DRV_ACQ_DOWNFIFO_FULL",
+    20020: "DRV_PROC_UNKNOWN_INSTRUCTION",
+    20021: "DRV_ILLEGAL_OP_CODE",
+    20022: "DRV_KINETIC_TIME_NOT_MET",
+    20023: "DRV_ACCUM_TIME_NOT_MET",
+    20024: "DRV_NO_NEW_DATA",
+    20025: "PCI_DMA_FAIL",
+    20026: "DRV_SPOOLERROR",
+    20027: "DRV_SPOOLSETUPERROR",
+    20029: "SATURATED",
+    20033: "DRV_TEMPERATURE_CODES",
+    20034: "DRV_TEMPERATURE_OFF",
     20035: "DRV_TEMP_NOT_STABILIZED",
-    20036: "DRV_TEMP_STABILIZED",
-    20037: "DRV_TEMP_NOT_REACHED",
-    20038: "DRV_TEMP_OUT_RANGE",
-    20039: "DRV_TEMP_NOT_SUPPORTED",
-    20040: "DRV_TEMP_DRIFT",
-    20049: "DRV_NOT_INITIALIZED",
+    20036: "DRV_TEMPERATURE_STABILIZED",
+    20037: "DRV_TEMPERATURE_NOT_REACHED",
+    20038: "DRV_TEMPERATURE_OUT_RANGE",
+    20039: "DRV_TEMPERATURE_NOT_SUPPORTED",
+    20040: "DRV_TEMPERATURE_DRIFT",
+    20049: "DRV_GENERAL_ERRORS",
+    20050: "DRV_INVALID_AUX",
+    20051: "DRV_COF_NOTLOADED",
+    20052: "DRV_FPGAPROG",
+    20053: "DRV_FLEXERROR",
+    20054: "DRV_GPIBERROR",
+    20055: "ERROR_DMA_UPLOAD",
+    20064: "DRV_DATATYPE",
+    20065: "DRV_DRIVER_ERRORS",
     20066: "DRV_P1INVALID",
     20067: "DRV_P2INVALID",
     20068: "DRV_P3INVALID",
@@ -59,20 +95,53 @@ CAMERA_RETURN_CODES = {
     20070: "DRV_INIERROR",
     20071: "DRV_COFERROR",
     20072: "DRV_ACQUIRING",
-    20075: "DRV_IDLE",
-    20076: "DRV_TEMPCYCLE",
-    20077: "DRV_NOT_AVAILABLE",
+    20073: "DRV_IDLE",
+    20074: "DRV_TEMPCYCLE",
+    20075: "DRV_NOT_INITIALIZED",
+    20076: "DRV_P5INVALID",
+    20077: "DRV_P6INVALID",
+    20078: "DRV_INVALID_MODE",
+    20079: "DRV_INVALID_FILTER",
+    20080: "DRV_I2CERRORS",
+    20081: "DRV_DRV_I2CDEVNOTFOUND",
+    20082: "DRV_I2CTIMEOUT",
+    20083: "DRV_P7INVALID",
+    20089: "DRV_USBERROR",
+    20090: "DRV_IOCERROR",
+    20091: "DRV_VRMVERSIONERROR",
+    20093: "DRV_USB_INTERRUPT_ENDPOINT_ERROR",
+    20094: "DRV_RANDOM_TRACK_ERROR",
+    20095: "DRV_INVALID_TRIGGER_MODE",
+    20096: "DRV_LOAD_FIRMWARE_ERROR",
+    20097: "DRV_DIVIDE_BY_ZERO_ERROR",
+    20098: "DRV_INVALID_RINGEXPOSURES",
+    20099: "DRV_BINNING_ERROR",
+    20100: "DRV_INVALID_AMPLIFIER",
+    20101: "DRV_INVALID_COUNTCONVERT_MODE",
+    20115: "DRV_ERROR_MAP",
+    20116: "DRV_ERROR_UNMAP",
+    20117: "DRV_ERROR_MDL",
+    20118: "DRV_ERROR_UNMDL",
+    20119: "DRV_ERROR_BUFFSIZE",
+    20121: "DRV_ERROR_NOHANDLE",
+    20130: "DRV_GATING_NOT_AVAILABLE",
+    20131: "DRV_FPGA_VOLTAGE_ERROR",
+    20990: "DRV_ERROR_NOCAMERA",
+    20991: "DRV_NOT_SUPPORTED",
+    20992: "DRV_NOT_AVAILABLE",
 }
 
 SPECTROGRAPH_RETURN_CODES = {
+    20201: "ATSPECTROGRAPH_COMMUNICATION_ERROR",
     20202: "ATSPECTROGRAPH_SUCCESS",
+    20249: "ATSPECTROGRAPH_ERROR",
     20266: "ATSPECTROGRAPH_P1INVALID",
     20267: "ATSPECTROGRAPH_P2INVALID",
     20268: "ATSPECTROGRAPH_P3INVALID",
     20269: "ATSPECTROGRAPH_P4INVALID",
-    20270: "ATSPECTROGRAPH_NOT_INITIALIZED",
-    20275: "ATSPECTROGRAPH_NOT_AVAILABLE",
-    20276: "ATSPECTROGRAPH_COMMUNICATION_ERROR",
+    20270: "ATSPECTROGRAPH_P5INVALID",
+    20275: "ATSPECTROGRAPH_NOT_INITIALIZED",
+    20292: "ATSPECTROGRAPH_NOT_AVAILABLE",
 }
 
 
@@ -102,6 +171,7 @@ class CallResult:
     available: bool
     code: int | None = None
     code_name: str = ""
+    success: bool = False
     value: Any = None
     error: str = ""
 
@@ -140,8 +210,14 @@ class NativeLibrary:
 
 
 class ResultRecorder:
-    def __init__(self, code_names: dict[int, str]) -> None:
-        self.code_names = code_names
+    def __init__(
+        self,
+        code_names: dict[int, str],
+        *,
+        success_codes: set[int],
+    ) -> None:
+        self.code_names = dict(code_names)
+        self.success_codes = set(success_codes)
 
     def unavailable(self, name: str) -> CallResult:
         return CallResult(function=name, available=False)
@@ -152,23 +228,43 @@ class ResultRecorder:
         function: Callable[..., Any] | None,
         *args: Any,
         value: Callable[[], Any] | None = None,
+        accepted_codes: set[int] | None = None,
     ) -> CallResult:
         if function is None:
             return self.unavailable(name)
+
         try:
             code = int(function(*args))
-            result_value = value() if value is not None else None
+            valid_codes = (
+                self.success_codes
+                if accepted_codes is None
+                else set(accepted_codes)
+            )
+            success = code in valid_codes
+            code_name = self.code_names.get(code, f"UNKNOWN_{code}")
+
+            # Output buffers are undefined when the native call fails. Do not
+            # report their initial zero values as real instrument values.
+            result_value = (
+                value()
+                if success and value is not None
+                else None
+            )
+
             return CallResult(
                 function=name,
                 available=True,
                 code=code,
-                code_name=self.code_names.get(code, f"UNKNOWN_{code}"),
+                code_name=code_name,
+                success=success,
                 value=result_value,
+                error="" if success else code_name,
             )
         except Exception:
             return CallResult(
                 function=name,
                 available=True,
+                success=False,
                 error=traceback.format_exc(),
             )
 
@@ -240,7 +336,10 @@ def _spectrograph_dll_path(root: Path) -> Path:
 
 def _probe_camera(root: Path, dll_path: Path) -> dict[str, Any]:
     library = NativeLibrary(dll_path)
-    recorder = ResultRecorder(CAMERA_RETURN_CODES)
+    recorder = ResultRecorder(
+        CAMERA_RETURN_CODES,
+        success_codes={DRV_SUCCESS},
+    )
     report: dict[str, Any] = {
         "dll": str(dll_path),
         "symbols": {},
@@ -384,6 +483,16 @@ def _probe_camera(root: Path, dll_path: Path) -> dict[str, Any]:
                 fn,
                 ctypes.byref(temperature),
                 value=lambda: int(temperature.value),
+                accepted_codes={
+                    DRV_SUCCESS,
+                    20034,
+                    20035,
+                    20036,
+                    20037,
+                    20038,
+                    20039,
+                    20040,
+                },
             )
 
             cooler_on = ctypes.c_int()
@@ -641,9 +750,12 @@ def _spectrograph_prefix(library: NativeLibrary) -> str | None:
 
 
 def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
-    print("Probing spectrograph...")
+    _debug("Probing spectrograph...")
     library = NativeLibrary(dll_path)
-    recorder = ResultRecorder(SPECTROGRAPH_RETURN_CODES)
+    recorder = ResultRecorder(
+        SPECTROGRAPH_RETURN_CODES,
+        success_codes={ATSPECTROGRAPH_SUCCESS},
+    )
     prefix = _spectrograph_prefix(library)
     report: dict[str, Any] = {
         "dll": str(dll_path),
@@ -669,14 +781,15 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
     count_name, get_count = optional(
         "GetNumberDevices", [ctypes.POINTER(ctypes.c_int)]
     )
+    _debug("GetNumberDevices", [ctypes.POINTER(ctypes.c_int)])
 
     init_result = recorder.record(initialize_name, initialize, os.fsencode(str(root)))
     report["initialize"] = init_result
     if init_result.code != ATSPECTROGRAPH_SUCCESS:
-        print("Spectrograph failed to initialize...")
+        _debug("Spectrograph failed to initialize...")
         return report
 
-    print("Spectrograph initialized...")
+    _debug("Spectrograph initialized...")
 
     try:
         count = ctypes.c_int()
@@ -688,19 +801,19 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
         )
         report["get_number_devices"] = count_result
         if count_result.code != ATSPECTROGRAPH_SUCCESS:
-            print("Spectrograph numbering failed...")
+            _debug("Spectrograph numbering failed...")
             return report
 
         for device_index in range(max(0, int(count.value))):
             device: dict[str, Any] = {"index": device_index, "queries": {}}
-            print(f"Device {device_index}: {device}")
+            _debug(f"Spectrograph device index: {device_index}")
             queries = device["queries"]
 
             function_name, function = optional(
                 "GetSerialNumber", [ctypes.c_int, ctypes.c_char_p]
             )
             serial = ctypes.create_string_buffer(256)
-            print(f"Serial Number: {serial}")
+
             queries["serial_number"] = recorder.record(
                 function_name,
                 function,
@@ -708,12 +821,13 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 serial,
                 value=lambda: _buffer_text(serial),
             )
+            _debug("Serial Number:", queries["serial_number"])
 
             function_name, function = optional(
                 "GetNumberGratings", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
             )
             grating_count = ctypes.c_int()
-            print(f"Number of Gratings: {grating_count}")
+
             grating_count_result = recorder.record(
                 function_name,
                 function,
@@ -722,12 +836,13 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 value=lambda: int(grating_count.value),
             )
             queries["grating_count"] = grating_count_result
+            _debug("Grating Count:", queries["grating_count"])
 
             function_name, function = optional(
                 "GetGrating", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
             )
             current_grating = ctypes.c_int()
-            print(f"Current Grating: {current_grating}")
+
             queries["current_grating"] = recorder.record(
                 function_name,
                 function,
@@ -735,12 +850,13 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(current_grating),
                 value=lambda: int(current_grating.value),
             )
+            _debug("Current Grating:", queries["current_grating"])
 
             function_name, function = optional(
                 "GetWavelength", [ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
             )
             wavelength = ctypes.c_float()
-            print(f"Wavelength: {wavelength} nm")
+
             queries["wavelength_nm"] = recorder.record(
                 function_name,
                 function,
@@ -748,12 +864,13 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(wavelength),
                 value=lambda: float(wavelength.value),
             )
+            _debug("Wavelength:", queries["wavelength_nm"])
 
             function_name, function = optional(
                 "GetTurret", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
             )
             turret = ctypes.c_int()
-            print(f"Turret: {turret}")
+
             queries["turret"] = recorder.record(
                 function_name,
                 function,
@@ -761,6 +878,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(turret),
                 value=lambda: int(turret.value),
             )
+            _debug("Turret:", queries["turret"])
 
             function_name, function = optional(
                 "EepromGetOpticalParams",
@@ -774,9 +892,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
             focal_length = ctypes.c_float()
             angular_deviation = ctypes.c_float()
             focal_tilt = ctypes.c_float()
-            print(f"Focal Length: {focal_length} mm")
-            print(f"Angular Deviation: {angular_deviation} degrees")
-            print(f"Focal Tilt: {focal_tilt} degrees")
+
             queries["optical_parameters"] = recorder.record(
                 function_name,
                 function,
@@ -790,6 +906,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     "focal_tilt": float(focal_tilt.value),
                 },
             )
+            _debug("Optical Parameters:", queries["optical_parameters"])
 
             gratings: list[dict[str, Any]] = []
             get_info_name, get_info = optional(
@@ -803,6 +920,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     ctypes.POINTER(ctypes.c_int),
                 ],
             )
+            _debug(get_info_name, get_info)
             limits_name, get_limits = optional(
                 "GetWavelengthLimits",
                 [
@@ -812,6 +930,8 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     ctypes.POINTER(ctypes.c_float),
                 ],
             )
+            _debug("Limits:", limits_name, get_limits)
+            _debug(f"Number of Gratings: {grating_count.value}")
             for grating_index in range(1, max(0, int(grating_count.value)) + 1):
                 lines = ctypes.c_float()
                 blaze = ctypes.create_string_buffer(256)
@@ -833,6 +953,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                         "offset": int(offset.value),
                     },
                 )
+                _debug(f"Grating {grating_index}: {info_result}")
                 minimum = ctypes.c_float()
                 maximum = ctypes.c_float()
                 limits_result = recorder.record(
@@ -847,6 +968,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                         "maximum_nm": float(maximum.value),
                     },
                 )
+                _debug(f"Wavelength limits: {minimum} - {maximum}")
                 gratings.append(
                     {
                         "index": grating_index,
@@ -893,6 +1015,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     )
                 auto_slits.append(slit)
             queries["auto_slits"] = auto_slits
+            _debug(f"Auto Slits: {auto_slits}")
 
             shutter_present_name, shutter_present_fn = optional(
                 "ShutterIsPresent", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -918,6 +1041,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     ctypes.byref(shutter),
                     value=lambda: int(shutter.value),
                 )
+                _debug(f"Shutter: {queries["shutter_state"]}")
 
             flippers: list[dict[str, Any]] = []
             present_name, flipper_present_fn = optional(
@@ -956,6 +1080,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     )
                 flippers.append(entry)
             queries["flipper_mirrors"] = flippers
+            _debug(f"Flipper Mirrors: {flippers}")
 
             focus_present_name, focus_present_fn = optional(
                 "FocusMirrorIsPresent",
@@ -970,6 +1095,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 value=lambda: bool(focus_present.value),
             )
             queries["focus_mirror_present"] = focus_present_result
+            _debug(f"Focus Mirror Present: {focus_present_result}")
             if focus_present_result.code == ATSPECTROGRAPH_SUCCESS and focus_present.value:
                 focus_name, get_focus = optional(
                     "GetFocusMirror", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -984,16 +1110,38 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 )
 
             detector_offset_name, get_detector_offset = optional(
-                "GetDetectorOffset", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+                "GetDetectorOffset",
+                [
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.POINTER(ctypes.c_int),
+                ],
             )
-            detector_offset = ctypes.c_int()
-            queries["detector_offset"] = recorder.record(
-                detector_offset_name,
-                get_detector_offset,
-                ctypes.c_int(device_index),
-                ctypes.byref(detector_offset),
-                value=lambda: int(detector_offset.value),
-            )
+            detector_offsets: list[dict[str, Any]] = []
+            for entrance_port in (0, 1):
+                for exit_port in (0, 1):
+                    detector_offset = ctypes.c_int()
+                    result = recorder.record(
+                        detector_offset_name,
+                        get_detector_offset,
+                        ctypes.c_int(device_index),
+                        ctypes.c_int(entrance_port),
+                        ctypes.c_int(exit_port),
+                        ctypes.byref(detector_offset),
+                        value=lambda detector_offset=detector_offset: int(
+                            detector_offset.value
+                        ),
+                    )
+                    detector_offsets.append(
+                        {
+                            "entrance_port": entrance_port,
+                            "exit_port": exit_port,
+                            "result": _jsonable(result),
+                        }
+                    )
+            queries["detector_offsets"] = detector_offsets
+            _debug(f"Detector Offsets: {detector_offsets}")
 
             pixel_width_name, get_pixel_width = optional(
                 "GetPixelWidth", [ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
@@ -1006,6 +1154,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(pixel_width),
                 value=lambda: float(pixel_width.value),
             )
+            _debug(f"Pixel Width (um): {queries["pixel_width_um"]}")
 
             pixel_count_name, get_pixel_count = optional(
                 "GetNumberPixels", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -1019,6 +1168,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 value=lambda: int(pixel_count.value),
             )
             queries["pixel_count"] = pixel_count_result
+            _debug(f"Pixel Count: {pixel_count_result}")
 
             calibration_name, get_calibration = optional(
                 "GetCalibration",
@@ -1043,10 +1193,10 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     },
                 )
                 queries["calibration_summary"] = calibration_result
+                _debug(f"Calibration Summary: {calibration_result}")
 
             report["devices"].append(device)
     finally:
-        print(f"Report failed...")
         report["close"] = recorder.record(close_name, close)
 
     return report
@@ -1064,18 +1214,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Write machine-readable JSON instead of a short summary.",
+        help="Write machine-readable JSON to stdout.",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Write the complete JSON report directly to this file.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Write progress diagnostics to stderr.",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if os.name != "nt":
         print("This probe requires Windows.", file=sys.stderr)
         return 2
-    print("Probing Andor Capabilities...")
 
-    args = parse_args(argv)
+    global _VERBOSE
+    _VERBOSE = bool(args.verbose)
+    _debug("Probing Andor capabilities...")
     report = ProbeReport()
     dll_handle = None
 
@@ -1088,26 +1250,26 @@ def main(argv: list[str] | None = None) -> int:
         spectrograph_path = _spectrograph_dll_path(root)
         report.camera_dll = str(camera_path)
         report.spectrograph_dll = str(spectrograph_path)
-        print(f"Root: {root}")
+        _debug(f"Root: {root}")
 
-        print("Probing camera...")
+        _debug("Probing camera...")
         try:
             report.camera = _probe_camera(root, camera_path)
-            print("Camera probed...")
+            _debug("Camera probe complete.")
         except Exception:
             report.camera = {"fatal_error": traceback.format_exc()}
-            print("Camera probe failed...")
+            _debug("Camera probe failed.")
 
         try:
             report.spectrograph = _probe_spectrograph(root, spectrograph_path)
-            print("Spectrograph probed...")
+            _debug("Spectrograph probe complete.")
         except Exception:
             report.spectrograph = {"fatal_error": traceback.format_exc()}
-            print("Spectrograph probe failed...")
+            _debug("Spectrograph probe failed.")
     except Exception:
         report.warnings.append(traceback.format_exc())
     finally:
-        print("Final try...")
+        _debug("Releasing DLL search path handle...")
         if dll_handle is not None:
             try:
                 dll_handle.close()
@@ -1115,10 +1277,20 @@ def main(argv: list[str] | None = None) -> int:
                 pass
 
     payload = _jsonable(asdict(report))
-    print("Finished probing...")
+    json_text = json.dumps(payload, indent=2) + "\n"
+
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+        with atomic_text_writer(output_path) as file:
+            file.write(json_text)
+        _debug(f"Wrote JSON report to {output_path}")
+
+    _debug("Finished probing.")
     if args.json:
-        print(json.dumps(payload, indent=2))
-    else:
+        # JSON mode writes no progress text to stdout, so shell redirection
+        # produces a valid JSON document. Diagnostics remain on stderr.
+        sys.stdout.write(json_text)
+    elif not args.output:
         print(f"Python: {report.python}")
         print(f"Platform: {report.platform}")
         print(f"Solis directory: {report.solis_dir or '--'}")
@@ -1140,7 +1312,9 @@ def main(argv: list[str] | None = None) -> int:
             print("Warnings:")
             for warning in report.warnings:
                 print(warning)
-        print("Run with --json for the complete report.")
+        print("Run with --json or --output for the complete report.")
+    elif args.output:
+        print(f"Wrote Andor probe report to: {Path(args.output).resolve()}")
 
     has_camera = bool(report.camera.get("available_camera_count", 0))
     has_spectrograph = bool(report.spectrograph.get("devices", []))

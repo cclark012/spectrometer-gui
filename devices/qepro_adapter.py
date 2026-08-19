@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -44,31 +44,61 @@ class QEProSpectrometer:
         self._hardware_average_method_checked = False
         self._hardware_average_method: Callable[[int], Any] | None = None
 
-    @staticmethod
-    def _read_attr_or_method(obj: object, name: str, default: Any = None) -> Any:
-        value = getattr(obj, name, default)
+    def _read_attr_or_method(
+        self,
+        obj: object,
+        name: str,
+        default: Any = None,
+    ) -> Any:
+        try:
+            value = getattr(obj, name, default)
+        except Exception as exc:
+            self._raise_if_transport_error(f"{name} query", exc)
         if callable(value):
             try:
                 return value()
-            except Exception:
+            except Exception as exc:
+                if self._is_transport_error(exc):
+                    self._raise_if_transport_error(f"{name} query", exc)
                 return default
         return value
+
+    @staticmethod
+    def _is_transport_error(exc: Exception) -> bool:
+        type_names = {
+            cls.__name__.lower()
+            for cls in type(exc).__mro__
+        }
+        message = str(exc).lower()
+        return bool(
+            "seabreezeerror" in type_names
+            or "usberror" in type_names
+            or any(
+                token in message
+                for token in (
+                    "data transfer error",
+                    "device not found",
+                    "no device",
+                    "not connected",
+                    "disconnected",
+                    "libusb",
+                    "usb communication",
+                    "usb transfer",
+                    "usb read",
+                    "usb write",
+                    "endpoint",
+                    "bulk transfer",
+                )
+            )
+        )
 
     @staticmethod
     def _raise_if_transport_error(
         operation: str,
         exc: Exception,
-    ) -> None:
-        error_type = type(exc).__name__
+    ) -> NoReturn:
         message = str(exc)
-        lowered = message.lower()
-
-        if (
-            error_type == "SeaBreezeError"
-            or "data transfer error" in lowered
-            or "usb" in lowered
-            or "device not found" in lowered
-        ):
+        if QEProSpectrometer._is_transport_error(exc):
             raise SpectrometerCommunicationError(
                 f"QEPro communication failed during "
                 f"{operation}: {message}"
@@ -87,16 +117,25 @@ class QEProSpectrometer:
     def _features(self) -> dict[str, list[object]]:
         try:
             features = self.spec.features
-        except Exception:
+        except Exception as exc:
+            if self._is_transport_error(exc):
+                self._raise_if_transport_error("feature discovery", exc)
             return {}
         return dict(features or {})
 
     def _feature(self, name: str) -> object | None:
-        accessor = getattr(self.spec, "f", None)
+        try:
+            accessor = getattr(self.spec, "f", None)
+        except Exception as exc:
+            self._raise_if_transport_error("feature accessor query", exc)
         if accessor is not None:
             try:
                 feature = getattr(accessor, name)
-            except (AttributeError, KeyError, RuntimeError):
+            except (AttributeError, KeyError):
+                feature = None
+            except Exception as exc:
+                if self._is_transport_error(exc):
+                    self._raise_if_transport_error(f"{name} feature access", exc)
                 feature = None
             if feature is not None:
                 return feature
@@ -129,7 +168,12 @@ class QEProSpectrometer:
                         continue
                     try:
                         value = getattr(feature, attribute)
-                    except Exception:
+                    except Exception as exc:
+                        if self._is_transport_error(exc):
+                            self._raise_if_transport_error(
+                                f"{name} capability discovery",
+                                exc,
+                            )
                         continue
                     if callable(value):
                         methods.add(attribute)
@@ -151,7 +195,15 @@ class QEProSpectrometer:
 
         for feature in self._feature_objects():
             for name in exact_names:
-                method = getattr(feature, name, None)
+                try:
+                    method = getattr(feature, name, None)
+                except Exception as exc:
+                    if self._is_transport_error(exc):
+                        self._raise_if_transport_error(
+                            "hardware averaging discovery",
+                            exc,
+                        )
+                    continue
                 if callable(method):
                     self._hardware_average_method = method
                     return method
@@ -164,7 +216,15 @@ class QEProSpectrometer:
                     continue
                 if not (lowered.startswith("set") or "set_" in lowered):
                     continue
-                method = getattr(feature, name, None)
+                try:
+                    method = getattr(feature, name, None)
+                except Exception as exc:
+                    if self._is_transport_error(exc):
+                        self._raise_if_transport_error(
+                            "hardware averaging discovery",
+                            exc,
+                        )
+                    continue
                 if callable(method):
                     self._hardware_average_method = method
                     return method
@@ -207,36 +267,52 @@ class QEProSpectrometer:
         return feature
 
     def get_ccd_temperature_c(self) -> float:
-        return float(self._thermo().read_temperature_degrees_celsius())
+        try:
+            return float(self._thermo().read_temperature_degrees_celsius())
+        except Exception as exc:
+            self._raise_if_transport_error("CCD temperature readout", exc)
 
     def set_tec_target_c(self, temperature_c: float) -> None:
-        self._thermo().set_temperature_setpoint_degrees_celsius(float(temperature_c))
+        try:
+            self._thermo().set_temperature_setpoint_degrees_celsius(
+                float(temperature_c)
+            )
+        except Exception as exc:
+            self._raise_if_transport_error("TEC setpoint configuration", exc)
 
     def set_tec_enabled(self, enabled: bool) -> None:
         thermo = self._thermo()
         state = "on" if enabled else "off"
         try:
-            thermo.enable_tec(state)
-        except (TypeError, ValueError):
-            thermo.enable_tec(bool(enabled))
+            try:
+                thermo.enable_tec(state)
+            except (TypeError, ValueError):
+                thermo.enable_tec(bool(enabled))
+        except Exception as exc:
+            self._raise_if_transport_error("TEC state configuration", exc)
 
     def set_hardware_averages(self, averages: int) -> bool:
         method = self._find_hardware_average_method()
         if method is None:
             return False
-        method(max(1, int(averages)))
+        try:
+            method(max(1, int(averages)))
+        except Exception as exc:
+            self._raise_if_transport_error("hardware averaging configuration", exc)
         return True
 
     def _integration_limits_us(self) -> tuple[int, int]:
-        limits = getattr(self.spec, "integration_time_micros_limits", None)
         try:
+            limits = getattr(self.spec, "integration_time_micros_limits", None)
             min_us, max_us = limits() if callable(limits) else limits
             min_us = int(min_us)
             max_us = int(max_us)
             if min_us <= 0 or max_us < min_us:
                 raise ValueError("invalid integration limits")
             return min_us, max_us
-        except Exception:
+        except Exception as exc:
+            if self._is_transport_error(exc):
+                self._raise_if_transport_error("integration-limit query", exc)
             return self.DEFAULT_MIN_INTEGRATION_US, self.DEFAULT_MAX_INTEGRATION_US
 
     def _validate_integration_us(self, integration_us: int) -> int:
@@ -256,10 +332,12 @@ class QEProSpectrometer:
         correct_nonlinearity: bool,
     ) -> np.ndarray:
         try:
-            values = np.asarray(self.spec.intensities(
-                correct_dark_counts=correct_dark,
-                correct_nonlinearity=correct_nonlinearity,
-                ), dtype=float
+            values = np.asarray(
+                self.spec.intensities(
+                    correct_dark_counts=correct_dark,
+                    correct_nonlinearity=correct_nonlinearity,
+                ),
+                dtype=float,
             )
         except Exception as exc:
             self._raise_if_transport_error(
@@ -315,10 +393,14 @@ class QEProSpectrometer:
         if mode == "device":
             try:
                 device_averaging_used = self.set_hardware_averages(averages)
+            except SpectrometerCommunicationError:
+                raise
             except Exception:
                 device_averaging_used = False
                 try:
                     self.set_hardware_averages(1)
+                except SpectrometerCommunicationError:
+                    raise
                 except Exception:
                     pass
         else:
@@ -326,6 +408,8 @@ class QEProSpectrometer:
             # configured for N scans. Reset to one before Python-side averaging.
             try:
                 self.set_hardware_averages(1)
+            except SpectrometerCommunicationError:
+                raise
             except Exception:
                 pass
 

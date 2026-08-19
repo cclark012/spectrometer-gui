@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     app = QApplication([sys.argv[0], *argv])
-    
+
     QApplication.setOrganizationName("YourLab")
     QApplication.setApplicationName("MagnetoPLAcquisition")
     QApplication.setApplicationVersion("0.1")
@@ -135,9 +135,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app.setQuitOnLastWindowClosed(False)
 
-    theme_manager = ThemeManager(app)
-    theme_manager.apply(app, theme_name)
-    window = MainWindow(config, theme_manager=theme_manager)
+    window = MainWindow(config, theme_manager=manager)
     window.show()
 
     exit_code = app.exec()

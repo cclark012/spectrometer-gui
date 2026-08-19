@@ -26,6 +26,9 @@ meter does not prevent spectra from being acquired.
 - Bounded power and scalar spectrum-monitor traces
 - Spectrum, power-trace, monitor, and calibration CSV export
 - Background capture and optional integration-time-scaled subtraction
+- Bounded SNR recommendations and automatic verification-based tuning
+- Software-timed paired, delayed-after-off, and transition gated acquisition
+- Live theme preview, built-in themes, and a semantic custom-theme editor
 - Emulated devices for offline testing
 
 ## Requirements
@@ -138,9 +141,11 @@ controllers/
   laser_controller.py          OBIS worker-thread operations
   instrument_runtime.py        thread ownership and queued request routing
   scan_coordinator.py          power/calibration/filter scan state machine
+  gated_acquisition_coordinator.py software-timed laser/spectrum state machine
+  auto_acquisition_coordinator.py bounded SNR tuning state machine
   file_io_controller.py        dialogs and data export orchestration
   preferences_controller.py    QSettings persistence
-core/                           records, settings, units, colors, timing
+core/                           records, settings, units, timing, sequence arbiter
 processing/                     background, smoothing, monitor calculations
 devices/                        real and emulated hardware adapters
 dialogs/                        modal configuration/details dialogs
@@ -153,9 +158,10 @@ troubleshooting/                focused bench diagnostic scripts
 benchmarks/                     optional backend benchmarks
 ```
 
-`MainWindow` is intentionally limited to top-level UI coordination. Blocking
-hardware calls are routed to worker objects. Scan and calibration state is owned
-by `ScanCoordinator`, not by the window.
+`MainWindow` is the top-level UI coordinator. Blocking hardware calls are routed
+to worker objects, while scan, gated, and automatic-tuning state stays in their
+dedicated coordinators. `SequenceArbiter` grants exactly one workflow ownership
+of acquisition controls at a time.
 
 ## Data files
 
@@ -166,6 +172,7 @@ Spectrum CSV files preserve:
 - Newport readings and status words before/after acquisition
 - laser, scan, field, filter, and calibration metadata
 - background and averaging metadata
+- complete gated-frame and SNR metadata
 - run identifier and notes
 
 Spectrum, calibration, and bounded power-trace exports use same-directory
@@ -188,6 +195,7 @@ example:
 ```bash
 python -m troubleshooting.obis_probe --list
 python -m troubleshooting.test_newport_clean
+python -m troubleshooting.andor_ctypes_probe --output andor_report.json --verbose
 python -m benchmarks.oceandirect_averaging
 ```
 
@@ -199,6 +207,11 @@ python -m benchmarks.oceandirect_averaging
   the spectrum are still collected.
 - Worker shutdown waits for an active blocking vendor call to return. A driver
   call that never returns cannot be cancelled cleanly by Qt alone.
+- Gated acquisition is software timed, not hardware triggered. Requested and
+  observed request delays are recorded, but Windows/serial/readout latency must
+  be characterized on the bench.
+- Andor support is currently limited to read-only diagnostic probes; production
+  Kymera/iDus control is not yet implemented.
 - The OBIS command adapter treats a write with no explicit error response as
   successful. Confirm command acknowledgement behavior on the installed
   firmware before making it stricter.

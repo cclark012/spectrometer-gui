@@ -7,6 +7,9 @@ __pycache__/
 .coverage
 htmlcov/
 *.pyc
+build/
+dist/
+*.egg-info/
 
 # Local environments / interpreters
 .venv/

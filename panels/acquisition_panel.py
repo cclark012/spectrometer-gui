@@ -33,6 +33,9 @@ class AcquisitionPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
+        self._acquiring = False
+        self._sequence_owner: str | None = None
+
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
@@ -125,7 +128,7 @@ class AcquisitionPanel(QWidget):
         ]
 
         checks = [
-            self.live_check, self.dark_check, 
+            self.live_check, self.dark_check,
             self.nonlinearity_check, self.subtract_background_check
         ]
 
@@ -133,7 +136,7 @@ class AcquisitionPanel(QWidget):
         for label, check in zip(labels, checks, strict=True):
             options.addWidget(label)
             options.addWidget(check)
-            
+
         form.addRow(options)
         form.addRow("Background", self.take_background_button)
         form.addRow("", self.clear_background_button)
@@ -154,6 +157,7 @@ class AcquisitionPanel(QWidget):
         layout.addWidget(self.acquire_button)
 
         layout.addStretch(1)
+        self._apply_control_state()
 
     def settings(self, *, run_identifier: str = "", notes: str = "") -> AcquisitionSettings:
         integration_ms = int(self.integration_ms.value())
@@ -181,9 +185,44 @@ class AcquisitionPanel(QWidget):
         self.live_check.setChecked(bool(enabled))
 
     def set_acquiring(self, acquiring: bool) -> None:
-        enabled = not bool(acquiring)
-        self.acquire_button.setEnabled(enabled)
-        self.take_background_button.setEnabled(enabled)
+        self._acquiring = bool(acquiring)
+        self._apply_control_state()
+
+    def set_sequence_owner(self, owner: str | None) -> None:
+        self._sequence_owner = str(owner) if owner is not None else None
+        self._apply_control_state()
+
+    def _apply_control_state(self) -> None:
+        owner = self._sequence_owner
+        acquiring = self._acquiring
+        idle = owner is None and not acquiring
+
+        self.acquire_button.setEnabled(idle)
+        self.take_background_button.setEnabled(idle)
+        self.clear_background_button.setEnabled(idle)
+        self.recommend_button.setEnabled(idle)
+
+        # Live stays clickable during a live frame so the user can stop the
+        # chain. Auto Tune likewise remains clickable while it owns the lease
+        # so its button can act as Abort.
+        self.live_check.setEnabled(owner in {None, "live"})
+        self.auto_tune_button.setEnabled(
+            owner in {None, "auto_tune"}
+            and (not acquiring or owner == "auto_tune")
+        )
+
+        parameters_enabled = not acquiring and owner in {None, "live"}
+        for widget in (
+            self.integration_ms,
+            self.averaging_mode_combo,
+            self.averages,
+            self.boxcar_width,
+            self.dark_check,
+            self.nonlinearity_check,
+            self.subtract_background_check,
+            self.field_input,
+        ):
+            widget.setEnabled(parameters_enabled)
 
     def set_integration_limits_us(self, min_us: int, max_us: int) -> None:
         min_us = int(min_us or 0)
@@ -271,8 +310,7 @@ class AcquisitionPanel(QWidget):
         self.auto_tune_button.setText(
             "Stop Auto Tune" if active else "Auto Tune"
         )
-        self.acquire_button.setEnabled(not active)
-        self.recommend_button.setEnabled(not active)
+        self._apply_control_state()
 
     def load_preferences(self, settings: QSettings) -> None:
         self.live_check.setChecked(

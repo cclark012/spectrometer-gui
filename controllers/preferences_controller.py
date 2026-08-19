@@ -32,6 +32,7 @@ class PreferencesController:
         power_panel,
         laser_panel,
         scan_panel,
+        gated_panel,
         filter_wheel_panel,
     ) -> None:
         self.window = window
@@ -40,6 +41,7 @@ class PreferencesController:
         self.power_panel = power_panel
         self.laser_panel = laser_panel
         self.scan_panel = scan_panel
+        self.gated_panel = gated_panel
         self.filter_wheel_panel = filter_wheel_panel
         self.update_dataclasses(
             file_settings,
@@ -93,6 +95,7 @@ class PreferencesController:
         self.power_panel.load_preferences(settings)
         self.laser_panel.load_preferences(settings)
         self.scan_panel.load_preferences(settings)
+        self.gated_panel.load_preferences(settings)
 
         auto_wavelength = self.power_panel.auto_wavelength_enabled()
         scan_timing = settings.value("tools/scan_timing", False, type=bool)
@@ -114,6 +117,7 @@ class PreferencesController:
         self.power_panel.save_preferences(settings)
         self.laser_panel.save_preferences(settings)
         self.scan_panel.save_preferences(settings)
+        self.gated_panel.save_preferences(settings)
         settings.sync()
 
     def restore_window_layout(self) -> bool:

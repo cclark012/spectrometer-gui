@@ -32,6 +32,9 @@ dev = [
 [tool.setuptools]
 py-modules = ["gui"]
 
+[tool.setuptools.package-data]
+ui = ["themes/*.svg"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
@@ -46,6 +49,7 @@ include = [
   "validation*",
   "benchmarks*",
   "troubleshooting*",
+  "ui*",
 ]
 
 [tool.ruff]

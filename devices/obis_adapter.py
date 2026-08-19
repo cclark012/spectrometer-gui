@@ -21,6 +21,15 @@ def laser_channel_numbers(
     return range(FIRST_LASER_CHANNEL, FIRST_LASER_CHANNEL + int(max_channels))
 
 
+def _laser_channel(channel: int) -> int:
+    value = int(channel)
+    if value < FIRST_LASER_CHANNEL:
+        raise ValueError(
+            f"OBIS laser channels start at {FIRST_LASER_CHANNEL}; got {value}."
+        )
+    return value
+
+
 class ObisError(RuntimeError):
     pass
 
@@ -192,7 +201,7 @@ class ObisBox:
         return False
 
     def discover_channels(
-            self, 
+            self,
             max_channels: int = DEFAULT_LASER_CHANNEL_COUNT
         ) -> list[LaserChannelInfo]:
 
@@ -209,7 +218,7 @@ class ObisBox:
         return channels
 
     def read_channel_info(self, channel: int) -> LaserChannelInfo:
-        channel = int(channel)
+        channel = _laser_channel(channel)
         query = lambda command: self.optional_query_value(command, timeout_s=0.3) # noqa
 
         try:
@@ -245,7 +254,7 @@ class ObisBox:
         return info
 
     def set_power_w(self, channel: int, power_w: float) -> None:
-        channel = int(channel)
+        channel = _laser_channel(channel)
         power_w = float(power_w)
         if not math.isfinite(power_w) or power_w < 0:
             raise ValueError(f"Invalid OBIS power setpoint: {power_w!r}")
@@ -254,31 +263,36 @@ class ObisBox:
         )
 
     def get_power_setpoint_w(self, channel: int) -> float:
+        channel = _laser_channel(channel)
         response = self.query_value(
-            f"SOURce{int(channel)}:POWer:LEVel:IMMediate:AMPLitude?"
+            f"SOURce{channel}:POWer:LEVel:IMMediate:AMPLitude?"
         )
         return _first_float(response)
 
     def set_enabled(self, channel: int, enabled: bool) -> None:
+        channel = _laser_channel(channel)
         state = "ON" if enabled else "OFF"
-        self.write_command(f"SOURce{int(channel)}:AM:STATe {state}")
+        self.write_command(f"SOURce{channel}:AM:STATe {state}")
 
     def get_enabled(self, channel: int) -> LaserEmissionState:
-        response = self.query_value(f"SOURce{int(channel)}:AM:STATe?")
+        channel = _laser_channel(channel)
+        response = self.query_value(f"SOURce{channel}:AM:STATe?")
         return _state_from_text(response)
 
     def set_cdrh_delay(self, channel: int, enabled: bool) -> str:
+        channel = _laser_channel(channel)
         state = "ON" if enabled else "OFF"
         return self._try_first_successful_write(
             [
-                f"SYSTem{int(channel)}:CDRH {state}",
+                f"SYSTem{channel}:CDRH {state}",
                 f"SYSTem:CDRH {state}",
             ]
         )
 
     def get_cdrh_delay(self, channel: int) -> bool:
+        channel = _laser_channel(channel)
         response = self._try_first_successful_query(
-            [f"SYSTem{int(channel)}:CDRH?", "SYSTem:CDRH?"]
+            [f"SYSTem{channel}:CDRH?", "SYSTem:CDRH?"]
         )
         return response.strip().upper() in {"ON", "1", "TRUE"}
 

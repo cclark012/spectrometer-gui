@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from io_utils.atomic import atomic_text_writer
+
 
 @dataclass(frozen=True, slots=True)
 class ThemeDefinition:
@@ -41,27 +43,13 @@ class ThemeDefinition:
     control_padding_px: int = 5
 
     def to_json(self, path: Path) -> None:
-        path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        path.write_text(
-            json.dumps(
-                asdict(self),
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        with atomic_text_writer(path) as file:
+            file.write(json.dumps(asdict(self), indent=2) + "\n")
 
     @classmethod
     def from_json(
         cls,
         path: Path,
-    ) -> "ThemeDefinition": # noqa
-        data = json.loads(
-            path.read_text(encoding="utf-8")
-        )
-
+    ) -> "ThemeDefinition":  # noqa
+        data = json.loads(path.read_text(encoding="utf-8"))
         return cls(**data)
