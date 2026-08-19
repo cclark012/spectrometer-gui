@@ -722,6 +722,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
     count_name, get_count = optional(
         "GetNumberDevices", [ctypes.POINTER(ctypes.c_int)]
     )
+    _debug("GetNumberDevices", [ctypes.POINTER(ctypes.c_int)])
 
     init_result = recorder.record(initialize_name, initialize, os.fsencode(str(root)))
     report["initialize"] = init_result
@@ -761,6 +762,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 serial,
                 value=lambda: _buffer_text(serial),
             )
+            _debug("Serial Number:", queries["serial_number"])
 
             function_name, function = optional(
                 "GetNumberGratings", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -775,6 +777,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 value=lambda: int(grating_count.value),
             )
             queries["grating_count"] = grating_count_result
+            _debug("Grating Count:", queries["grating_count"])
 
             function_name, function = optional(
                 "GetGrating", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -788,6 +791,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(current_grating),
                 value=lambda: int(current_grating.value),
             )
+            _debug("Current Grating:", queries["current_grating"])
 
             function_name, function = optional(
                 "GetWavelength", [ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
@@ -801,6 +805,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(wavelength),
                 value=lambda: float(wavelength.value),
             )
+            _debug("Wavelength:", queries["wavelength_nm"])
 
             function_name, function = optional(
                 "GetTurret", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -814,6 +819,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(turret),
                 value=lambda: int(turret.value),
             )
+            _debug("Turret:", queries["turret"])
 
             function_name, function = optional(
                 "EepromGetOpticalParams",
@@ -829,7 +835,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
             focal_tilt = ctypes.c_float()
             
             
-            
             queries["optical_parameters"] = recorder.record(
                 function_name,
                 function,
@@ -843,6 +848,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     "focal_tilt": float(focal_tilt.value),
                 },
             )
+            _debug("Optical Parameters:", queries["optical_parameters"])
 
             gratings: list[dict[str, Any]] = []
             get_info_name, get_info = optional(
@@ -856,6 +862,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     ctypes.POINTER(ctypes.c_int),
                 ],
             )
+            _debug(get_info_name, get_info)
             limits_name, get_limits = optional(
                 "GetWavelengthLimits",
                 [
@@ -865,6 +872,7 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     ctypes.POINTER(ctypes.c_float),
                 ],
             )
+            _debug(limits_name, get_limits)
             for grating_index in range(1, max(0, int(grating_count.value)) + 1):
                 lines = ctypes.c_float()
                 blaze = ctypes.create_string_buffer(256)
