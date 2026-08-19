@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import NamedTuple
 
 from pythonnet import load
+
+from core.records import PowerSnapshot
 
 try:
     load("netfx")
@@ -22,11 +23,6 @@ from System.Reflection import Assembly  # pyright: ignore[reportMissingImports]
 class NewportError(RuntimeError):
     pass
 
-
-class PowerWithStatus(NamedTuple):
-    powers_w: list[float]
-    pm_status: list[int]
-    command_status: int
 
 
 class Newport2936R:
@@ -55,7 +51,7 @@ class Newport2936R:
         units: int = UNITS_WATTS,
         logging: bool = False,
         configure: bool = True,
-    ):
+    ) -> None:
         self.dll_path = Path(dll_path)
         self.channel = int(channel)
         self.units = int(units)
@@ -65,6 +61,7 @@ class Newport2936R:
         self.obj = None
         self.device_key = ""
         self.n_channels = 0
+        self._dll_directory_handle = None
 
         self._load_assembly()
         self._construct_device()
@@ -84,7 +81,7 @@ class Newport2936R:
             sys.path.insert(0, dll_dir)
 
         if hasattr(os, "add_dll_directory"):
-            os.add_dll_directory(dll_dir)
+            self._dll_directory_handle = os.add_dll_directory(dll_dir)
 
         self.assembly = Assembly.LoadFrom(str(self.dll_path))
 
@@ -150,7 +147,12 @@ class Newport2936R:
 
         return f"{method.ReturnType.FullName} {method.Name}(" + ", ".join(parts) + ")"
 
-    def _invoke(self, name: str, values: list[object], n_params: int | None = None):
+    def _invoke(
+        self,
+        name: str,
+        values: list[object],
+        n_params: int | None = None,
+    ) -> tuple[object, list[object], str]:
         methods = []
 
         for method in self.obj.GetType().GetMethods():
@@ -205,7 +207,7 @@ class Newport2936R:
         )
 
     def query(self, command: str) -> str:
-        result, final_args, sig = self._invoke(
+        result, _, _ = self._invoke(
             "Query",
             [self.device_key, str(command)],
             n_params=2,
@@ -214,7 +216,7 @@ class Newport2936R:
         return "" if result is None else str(result).strip()
 
     def write(self, command: str) -> int:
-        result, final_args, sig = self._invoke(
+        result, _, _ = self._invoke(
             "Write",
             [self.device_key, str(command)],
             n_params=2,
@@ -228,7 +230,7 @@ class Newport2936R:
         return self.query("*IDN?")
 
     def get_num_channels(self) -> int:
-        result, final_args, sig = self._invoke(
+        result, _, _ = self._invoke(
             "GetNumChannels",
             [self.device_key],
             n_params=1,
@@ -241,6 +243,10 @@ class Newport2936R:
 
         if channel < 1:
             raise ValueError("channel must be 1 or greater")
+        if self.n_channels and channel > self.n_channels:
+            raise ValueError(
+                f"channel {channel} exceeds available channel count {self.n_channels}"
+            )
 
         self._invoke(
             "SetChannel",
@@ -251,7 +257,7 @@ class Newport2936R:
         self.channel = channel
 
     def set_run(self, run: bool = True) -> int:
-        result, final_args, sig = self._invoke(
+        result, _, _ = self._invoke(
             "CmdSetRun",
             [self.device_key, Int32(1 if run else 0)],
             n_params=2,
@@ -262,7 +268,7 @@ class Newport2936R:
         return status
 
     def get_run(self) -> int:
-        result, final_args, sig = self._invoke(
+        result, final_args, _ = self._invoke(
             "CmdGetRun",
             [self.device_key, Int32(0)],
             n_params=2,
@@ -273,7 +279,7 @@ class Newport2936R:
         return int(final_args[1])
 
     def set_units(self, units: int = UNITS_WATTS) -> int:
-        result, final_args, sig = self._invoke(
+        result, _, _ = self._invoke(
             "CmdSetUnits",
             [self.device_key, Int32(int(units))],
             n_params=2,
@@ -285,7 +291,7 @@ class Newport2936R:
         return status
 
     def get_units(self) -> int:
-        result, final_args, sig = self._invoke(
+        result, final_args, _ = self._invoke(
             "CmdGetUnits",
             [self.device_key, Int32(0)],
             n_params=2,
@@ -306,7 +312,7 @@ class Newport2936R:
         Use set_channel(1) or set_channel(2) first.
         """
 
-        result, final_args, sig = self._invoke(
+        result, final_args, _ = self._invoke(
             "CmdGetPower",
             [self.device_key, Single(0.0)],
             n_params=2,
@@ -317,7 +323,7 @@ class Newport2936R:
 
         return float(final_args[1])
 
-    def read_all_power_with_status(self) -> PowerWithStatus:
+    def read_all_power_with_status(self) -> PowerSnapshot:
         """
         Reads all channels using CmdGetPowerWithStatus.
 
@@ -334,7 +340,7 @@ class Newport2936R:
         powers = Array[Double]([0.0] * n)
         statuses = Array[Int32]([0] * n)
 
-        result, final_args, sig = self._invoke(
+        result, final_args, _ = self._invoke(
             "CmdGetPowerWithStatus",
             [self.device_key, powers, statuses],
             n_params=3,
@@ -346,14 +352,14 @@ class Newport2936R:
         powers_w = [float(x) for x in final_args[1]]
         pm_status = [int(x) for x in final_args[2]]
 
-        return PowerWithStatus(
+        return PowerSnapshot(
             powers_w=powers_w,
             pm_status=pm_status,
             command_status=command_status,
         )
 
     def get_power_strings(self) -> list[str]:
-        result, final_args, sig = self._invoke(
+        result, _, _ = self._invoke(
             "GetPower",
             [self.device_key],
             n_params=1,
@@ -365,7 +371,7 @@ class Newport2936R:
         return [str(x) for x in result]
 
     def get_error_number(self) -> int:
-        result, final_args, sig = self._invoke(
+        _, final_args, _ = self._invoke(
             "CmdGetErrorNumber",
             [self.device_key, Int32(0)],
             n_params=2,
@@ -374,7 +380,7 @@ class Newport2936R:
         return int(final_args[1])
 
     def get_error_string(self) -> str:
-        result, final_args, sig = self._invoke(
+        _, final_args, _ = self._invoke(
             "CmdGetErrorString",
             [self.device_key, ""],
             n_params=2,
@@ -385,7 +391,7 @@ class Newport2936R:
     def set_wavelength_nm(self, wavelength_nm: int) -> int:
         wavelength_nm = int(round(wavelength_nm))
 
-        result, final_args, sig = self._invoke(
+        result, _, _ = self._invoke(
             "CmdSetWavelength",
             [self.device_key, Int32(wavelength_nm)],
             n_params=2,
@@ -396,7 +402,7 @@ class Newport2936R:
         return status
 
     def get_wavelength_nm(self) -> int:
-        result, final_args, sig = self._invoke(
+        result, final_args, _ = self._invoke(
             "CmdGetWavelength",
             [self.device_key, Int32(0)],
             n_params=2,
@@ -430,10 +436,16 @@ class Newport2936R:
         return self.set_wavelength_nm(wavelength_int)
 
     def close(self) -> None:
-        # PowerMeterCommands does not appear to expose a required Close/Dispose
-        # method in your method list. Clearing references is sufficient here.
+        # PowerMeterCommands does not expose a required Close/Dispose method in
+        # the observed DLL. Release Python references and the temporary DLL
+        # search-directory handle.
         self.obj = None
         self.assembly = None
+        if self._dll_directory_handle is not None:
+            try:
+                self._dll_directory_handle.close()
+            finally:
+                self._dll_directory_handle = None
 
     def __enter__(self) -> Newport2936R:
         return self

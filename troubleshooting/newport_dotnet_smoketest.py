@@ -6,18 +6,24 @@ import os
 import sys
 from pathlib import Path
 
-from pythonnet import load
-
-# For Newport's older .NET Framework DLLs, load netfx before importing clr/System.
+_IMPORT_ERROR: Exception | None = None
 try:
-    load("netfx")
-except RuntimeError:
-    pass
+    from pythonnet import load
 
-import clr
-import System
-from System import Array, Object
-from System.Reflection import Assembly
+    # Newport's older DLLs target .NET Framework.
+    try:
+        load("netfx")
+    except RuntimeError:
+        pass
+
+    import clr  # noqa: F401
+    import System
+    from System import Array, Object
+    from System.Reflection import Assembly
+except Exception as exc:  # Report the optional bench dependency from main().
+    _IMPORT_ERROR = exc
+    System = None
+    Array = Object = Assembly = None
 
 
 DLL_PATH = Path(
@@ -364,6 +370,10 @@ def main() -> int:
         print(DLL_PATH)
         print()
         print("Edit DLL_PATH at the top of this script.")
+        return 2
+
+    if _IMPORT_ERROR is not None:
+        print(f"Could not load pythonnet/.NET: {_IMPORT_ERROR}", file=sys.stderr)
         return 2
 
     add_dll_search_path(DLL_PATH)

@@ -1,0 +1,17 @@
+Probing Andor capabilities...
+Root: C:\Program Files\Andor SOLIS
+Probing camera...
+Camera probe complete.
+Probing spectrograph...
+GetNumberDevices [<class 'ctypes.LP_c_long'>]
+Spectrograph initialized...
+Spectrograph device index: 0
+Serial Number: CallResult(function='ATSpectrographGetSerialNumber', available=True, code=20202, code_name='ATSPECTROGRAPH_SUCCESS', success=True, value='KY-4444', error='')
+Grating Count: CallResult(function='ATSpectrographGetNumberGratings', available=True, code=20202, code_name='ATSPECTROGRAPH_SUCCESS', success=True, value=4, error='')
+Current Grating: CallResult(function='ATSpectrographGetGrating', available=True, code=20202, code_name='ATSPECTROGRAPH_SUCCESS', success=True, value=2, error='')
+Wavelength: CallResult(function='ATSpectrographGetWavelength', available=True, code=20202, code_name='ATSPECTROGRAPH_SUCCESS', success=True, value=650.0, error='')
+Turret: CallResult(function='ATSpectrographGetTurret', available=True, code=20202, code_name='ATSPECTROGRAPH_SUCCESS', success=True, value=1, error='')
+Optical Parameters: CallResult(function='ATSpectrographEepromGetOpticalParams', available=True, code=20202, code_name='ATSPECTROGRAPH_SUCCESS', success=True, value={'focal_length_mm': 0.328000009059906, 'angular_deviation': -11.699999809265137, 'focal_tilt': 0.0}, error='')
+ATSpectrographGetGratingInfo <_FuncPtr object at 0x00000220D2EE4500>
+Limits: ATSpectrographGetWavelengthLimits <_FuncPtr object at 0x00000220D2EE4690>
+Number of Gratings: 4

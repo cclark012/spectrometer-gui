@@ -20,7 +20,6 @@ def compact_float_token(value: float, precision: int = 6) -> str:
 
     text = f"{value:.{precision}g}"
     text = text.replace("+", "")
-    # text = text.replace("-", "m")
     text = text.replace(".", "-")
 
     return text
@@ -51,22 +50,42 @@ def power_token(power_w: float) -> str:
     return f"{compact_float_token(value)}{unit}"
 
 
-def format_power_w(power_w: float) -> str:
-    if not math.isfinite(power_w):
+def format_power_w(
+    power_w: float,
+    significant_digits: int = 6,
+) -> str:
+    """Format power using compact SI units."""
+
+    power = float(power_w)
+    digits = max(1, int(significant_digits))
+
+    if not math.isfinite(power):
         return "--"
 
-    abs_p = abs(power_w)
+    absolute = abs(power)
 
-    if abs_p >= 1.0:
-        return f"{power_w:.6g} W"
-    if abs_p >= 1e-3:
-        return f"{power_w * 1e3:.6g} mW"
-    if abs_p >= 1e-6:
-        return f"{power_w * 1e6:.6g} uW"
-    if abs_p >= 1e-9:
-        return f"{power_w * 1e9:.6g} nW"
+    if absolute == 0.0:
+        return "0 W"
 
-    return f"{power_w:.6e} W"
+    if absolute >= 1.0:
+        return f"{power:.{digits}g} W"
+
+    if absolute >= 1e-3:
+        return f"{power * 1e3:.{digits}g} mW"
+
+    if absolute >= 1e-6:
+        return f"{power * 1e6:.{digits}g} μW"
+
+    if absolute >= 1e-9:
+        return f"{power * 1e9:.{digits}g} nW"
+
+    if absolute >= 1e-12:
+        return f"{power * 1e12:.{digits}g} pW"
+
+    if absolute >= 1e-15:
+        return f"{power * 1e15:.{digits}g} fW"
+
+    return f"{power:.{digits}g} W"
 
 
 def field_token(field_mT: float) -> str:

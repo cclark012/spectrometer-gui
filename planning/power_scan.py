@@ -65,9 +65,15 @@ class CalibrationCurve:
         if not np.all(np.diff(setpoint) > 0):
             raise ValueError("Calibration setpoints must be strictly increasing")
 
-        # For inverse targeting, measured power should be monotonic.
+        # For inverse targeting, measured power should be monotonic. Plateaus
+        # are accepted, but the curve must span at least two distinct measured
+        # powers so that an inverse mapping exists.
         if not np.all(np.diff(measured) >= 0):
             raise ValueError("Measured calibration power must be monotonic increasing")
+        if np.unique(measured).size < 2:
+            raise ValueError(
+                "Calibration must contain at least two distinct measured powers"
+            )
 
         object.__setattr__(self, "setpoint_w", setpoint)
         object.__setattr__(self, "measured_power_w", measured)
@@ -110,13 +116,26 @@ class CalibrationCurve:
             if effective_requested < p_min or effective_requested > p_max:
                 return float("nan")
 
+        # np.interp expects an increasing x-axis. Collapse measured-power
+        # plateaus by averaging their corresponding setpoints, which makes the
+        # inverse deterministic without rejecting otherwise usable calibration
+        # data.
+        unique_measured = np.unique(self.measured_power_w)
+        inverse_setpoints = np.asarray(
+            [
+                np.mean(self.setpoint_w[self.measured_power_w == value])
+                for value in unique_measured
+            ],
+            dtype=float,
+        )
         return float(
             np.interp(
                 effective_requested,
-                self.measured_power_w,
-                self.setpoint_w,
+                unique_measured,
+                inverse_setpoints,
             )
         )
+
 
 def make_requested_powers_w(
     *,
@@ -278,28 +297,3 @@ def make_power_scan_plan(
         )
 
     return ScanPlan(points=points, warnings=warnings)
-
-
-def make_power_scan_points(
-    *,
-    requested_powers_w: list[float],
-    basis: PowerBasis,
-    laser_min_setpoint_w: float,
-    laser_max_setpoint_w: float,
-    calibration: CalibrationCurve | None = None,
-    transmission: float = 1.0,
-    filter_state: str = "none",
-    allow_clipping: bool = True,
-) -> list[PowerScanPoint]:
-
-    plan = make_power_scan_plan(
-        requested_powers_w=requested_powers_w,
-        basis=basis,
-        laser_min_setpoint_w=laser_min_setpoint_w,
-        laser_max_setpoint_w=laser_max_setpoint_w,
-        calibration=calibration,
-        transmission=transmission,
-        filter_state=filter_state,
-        allow_clipping=allow_clipping,
-    )
-    return plan.points

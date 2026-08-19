@@ -1,10 +1,9 @@
-# panels/filter_wheel_panel.py
-
 from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Slot
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -50,8 +49,6 @@ DEFAULT_WHEELS = [
 
 
 class FilterWheelPanel(QWidget):
-    changed = Signal()
-
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
@@ -61,7 +58,6 @@ class FilterWheelPanel(QWidget):
 
         self.enable_planner_check = QCheckBox("Use ND filter planner")
         self.enable_planner_check.setChecked(False)
-        self.enable_planner_check.toggled.connect(self._on_enable_planner_toggled)
         layout.addWidget(self.enable_planner_check)
 
         top = QHBoxLayout()
@@ -96,6 +92,11 @@ class FilterWheelPanel(QWidget):
         self.position_table.cellChanged.connect(self._on_position_table_cell_changed)
         layout.addWidget(self.position_table, stretch=1)
 
+        self.validation_label = QLabel("")
+        self.validation_label.setWordWrap(True)
+        self.validation_label.setStyleSheet("color: #b00020;")
+        layout.addWidget(self.validation_label)
+
         row_buttons = QHBoxLayout()
 
         self.add_position_button = QPushButton("+ Position")
@@ -118,10 +119,6 @@ class FilterWheelPanel(QWidget):
         self._load_selected_wheel()
         self._update_states_table()
 
-    @Slot(bool)
-    def _on_enable_planner_toggled(self, checked: bool) -> None:
-        self.changed.emit()
-
     @Slot(int)
     def _on_wheel_index_changed(self, index: int) -> None:
         self._load_selected_wheel()
@@ -135,31 +132,51 @@ class FilterWheelPanel(QWidget):
 
     def filter_wheels(self) -> list[FilterWheel]:
         wheels: list[FilterWheel] = []
+        wheel_names: set[str] = set()
 
         for wheel in self._wheel_dicts:
             name = str(wheel.get("name", "")).strip()
-
             if not name:
-                continue
+                raise ValueError("Every filter wheel must have a name.")
+            if name in wheel_names:
+                raise ValueError(f"Duplicate filter-wheel name: {name!r}.")
+            wheel_names.add(name)
 
-            positions = []
-
-            for pos in wheel.get("positions", []):
-                label = str(pos.get("label", "")).strip()
-
+            positions: list[FilterPosition] = []
+            labels: set[str] = set()
+            for position in wheel.get("positions", []):
+                label = str(position.get("label", "")).strip()
                 if not label:
-                    continue
+                    raise ValueError(f"Wheel {name!r} contains an unnamed position.")
+                if label in labels:
+                    raise ValueError(
+                        f"Wheel {name!r} contains duplicate position {label!r}."
+                    )
+                labels.add(label)
 
                 try:
-                    od = float(pos.get("od", 0.0))
-                except Exception:
-                    od = 0.0
+                    optical_density = float(position.get("od", 0.0))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Wheel {name!r}, position {label!r} has an invalid OD."
+                    ) from exc
+                if optical_density < 0:
+                    raise ValueError(
+                        f"Wheel {name!r}, position {label!r} has a negative OD."
+                    )
+                positions.append(
+                    FilterPosition(
+                        label=label,
+                        optical_density=optical_density,
+                    )
+                )
 
-                positions.append(FilterPosition(label=label, optical_density=od))
+            if not positions:
+                raise ValueError(f"Wheel {name!r} has no positions.")
+            wheels.append(FilterWheel(name=name, positions=tuple(positions)))
 
-            if positions:
-                wheels.append(FilterWheel(name=name, positions=tuple(positions)))
-
+        if not wheels:
+            raise ValueError("At least one filter wheel is required.")
         return wheels
 
     def serialize(self) -> str:
@@ -173,19 +190,21 @@ class FilterWheelPanel(QWidget):
 
     def deserialize(self, text: str) -> None:
         data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("Filter configuration must be a JSON object.")
 
         wheels = data.get("wheels", DEFAULT_WHEELS)
-
         if not isinstance(wheels, list) or not wheels:
             wheels = DEFAULT_WHEELS
 
-        self._wheel_dicts = wheels
+        # Copy the decoded structure so edits cannot mutate DEFAULT_WHEELS or a
+        # caller-owned object. Validation occurs when states are rebuilt.
+        self._wheel_dicts = json.loads(json.dumps(wheels))
         self.enable_planner_check.setChecked(bool(data.get("planner_enabled", False)))
 
         self._reload_wheel_combo()
         self._load_selected_wheel()
         self._update_states_table()
-        self.changed.emit()
 
     def _reload_wheel_combo(self) -> None:
         current = self.wheel_combo.currentIndex()
@@ -229,7 +248,11 @@ class FilterWheelPanel(QWidget):
 
         for row, pos in enumerate(positions):
             self.position_table.setItem(row, 0, QTableWidgetItem(str(pos.get("label", ""))))
-            self.position_table.setItem(row, 1, QTableWidgetItem(f"{float(pos.get('od', 0.0)):.6g}")) # noqa
+            self.position_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(f"{float(pos.get('od', 0.0)):.6g}"),
+            )
 
         self.position_table.blockSignals(False)
         self.position_table.resizeColumnsToContents()
@@ -245,35 +268,56 @@ class FilterWheelPanel(QWidget):
 
         self._reload_wheel_combo()
         self._update_states_table()
-        self.changed.emit()
 
     def _store_position_table(self) -> None:
         wheel = self._selected_wheel_dict()
-
         if wheel is None:
             return
 
-        positions = []
+        positions: list[dict[str, object]] = []
+        labels: set[str] = set()
+        error = ""
 
         for row in range(self.position_table.rowCount()):
             label_item = self.position_table.item(row, 0)
             od_item = self.position_table.item(row, 1)
-
             label = label_item.text().strip() if label_item else ""
+            od_text = od_item.text().strip() if od_item else ""
+
+            for item in (label_item, od_item):
+                if item is not None:
+                    item.setBackground(QColor())
+                    item.setToolTip("")
 
             if not label:
-                continue
+                error = f"Position {row + 1} must have a label."
+            elif label in labels:
+                error = f"Position label {label!r} is duplicated."
+            else:
+                try:
+                    optical_density = float(od_text)
+                    if optical_density < 0:
+                        raise ValueError("OD must be non-negative")
+                except ValueError:
+                    error = f"Position {label!r} has invalid OD {od_text!r}."
+                else:
+                    labels.add(label)
+                    positions.append({"label": label, "od": optical_density})
+                    continue
 
-            try:
-                od = float(od_item.text()) if od_item else 0.0
-            except Exception:
-                od = 0.0
+            invalid_item = od_item if label else label_item
+            if invalid_item is not None:
+                invalid_item.setBackground(QColor(255, 210, 210))
+                invalid_item.setToolTip(error)
+            break
 
-            positions.append({"label": label, "od": od})
+        if error:
+            self.validation_label.setText(error)
+            return
 
+        self.validation_label.clear()
         wheel["positions"] = positions
         self._update_states_table()
-        self.changed.emit()
 
     def add_wheel(self) -> None:
         self._wheel_dicts.append(
@@ -286,7 +330,6 @@ class FilterWheelPanel(QWidget):
         self.wheel_combo.setCurrentIndex(len(self._wheel_dicts) - 1)
         self._load_selected_wheel()
         self._update_states_table()
-        self.changed.emit()
 
     def remove_selected_wheel(self) -> None:
         idx = self._selected_wheel_index()
@@ -302,7 +345,6 @@ class FilterWheelPanel(QWidget):
         self._reload_wheel_combo()
         self._load_selected_wheel()
         self._update_states_table()
-        self.changed.emit()
 
     def add_position(self) -> None:
         wheel = self._selected_wheel_dict()
@@ -313,7 +355,6 @@ class FilterWheelPanel(QWidget):
         wheel.setdefault("positions", []).append({"label": "new", "od": 0.0})
         self._load_selected_wheel()
         self._update_states_table()
-        self.changed.emit()
 
     def remove_selected_position(self) -> None:
         wheel = self._selected_wheel_dict()
@@ -340,13 +381,15 @@ class FilterWheelPanel(QWidget):
         wheel["positions"] = positions
         self._load_selected_wheel()
         self._update_states_table()
-        self.changed.emit()
 
     def _update_states_table(self) -> None:
         try:
             states = enumerate_filter_states(self.filter_wheels())
-        except Exception:
+        except ValueError as exc:
             states = []
+            self.validation_label.setText(str(exc))
+        else:
+            self.validation_label.clear()
 
         self.states_table.setRowCount(len(states))
 

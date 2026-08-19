@@ -1,11 +1,10 @@
-# panels/laser_panel.py
-
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
-from PySide6.QtCore import QSettings, Qt, Signal, Slot
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QSettings, QSize, Qt, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -22,16 +21,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.colors import wavelength_to_rgb
 from core.laser_models import LaserChannelInfo, LaserEmissionState
 from core.preferences import get_bool, get_str
-
-_POWER_FACTORS = {
-    "W": 1.0,
-    "mW": 1e-3,
-    "uW": 1e-6,
-    "μW": 1e-6,
-    "nW": 1e-9,
-}
+from core.units import format_power_w
 
 
 def _finite(value: float) -> bool:
@@ -39,152 +32,48 @@ def _finite(value: float) -> bool:
 
 
 def _sort_wavelength_key(laser: LaserChannelInfo) -> tuple[float, str, int]:
-    wl = float(laser.wavelength_nm)
-
-    if not math.isfinite(wl):
-        wl = 1.0e99
-
-    return wl, str(laser.port), int(laser.channel)
-
-
-def _fmt_float(value: float, digits: int = 5) -> str:
-    if not _finite(value):
-        return "--"
-
-    return f"{float(value):.{digits}g}"
+    wavelength = float(laser.wavelength_nm)
+    return (
+        wavelength if math.isfinite(wavelength) else float("inf"),
+        str(laser.port),
+        int(laser.channel),
+    )
 
 
-def _fmt_wavelength_nm(wavelength_nm: float) -> str:
-    if not _finite(wavelength_nm):
-        return "--"
-
-    return f"{float(wavelength_nm):.1f} nm"
+def _format_wavelength(wavelength_nm: float) -> str:
+    return f"{float(wavelength_nm):.1f} nm" if _finite(wavelength_nm) else "--"
 
 
-def _fmt_power_w(power_w: float) -> str:
-    if not _finite(power_w):
-        return "--"
-
-    p = float(power_w)
-    ap = abs(p)
-
-    if ap >= 1.0:
-        return f"{p:.4g} W"
-    if ap >= 1e-3:
-        return f"{p * 1e3:.4g} mW"
-    if ap >= 1e-6:
-        return f"{p * 1e6:.4g} uW"
-    if ap >= 1e-9:
-        return f"{p * 1e9:.4g} nW"
-
-    return f"{p:.3e} W"
+def _format_laser_power(power_w: float) -> str:
+    return format_power_w(power_w, significant_digits=4)
 
 
-def _enabled_bool(state: LaserEmissionState) -> bool:
-    return state == LaserEmissionState.ON
+def _row_color(wavelength_nm: float) -> QColor:
+    red, green, blue = wavelength_to_rgb(float(wavelength_nm))
+    return QColor(red, green, blue, 55)
 
 
-def gaussian(x, amp, mu, s):
-    return (amp) * math.exp(-(x - mu) ** 2 / (2 * s ** 2))
+def _wavelength_swatch_icon(
+    wavelength_nm: float,
+) -> QIcon:
+    red, green, blue = wavelength_to_rgb(
+        float(wavelength_nm)
+    )
 
+    # Blend toward white for a pastel swatch.
+    red = int(round(0.60 * red + 0.40 * 255))
+    green = int(round(0.60 * green + 0.40 * 255))
+    blue = int(round(0.60 * blue + 0.40 * 255))
 
-def wl_color(wl: float) -> tuple[int, int, int]:
-    # Bruton-style piecewise approximation
-    if 380 <= wl <= 440:
-        r = -(wl - 440) / (440 - 380)
-        g = 0.0
-        b = 1.0
-    elif 440 <= wl <= 490:
-        r = 0.0
-        g = (wl - 440) / (490 - 440)
-        b = 1.0
-    elif 490 <= wl <= 510:
-        r = 0.0
-        g = 1.0
-        b = -(wl - 510) / (510 - 490)
-    elif 510 <= wl <= 580:
-        r = (wl - 510) / (580 - 510)
-        g = 1.0
-        b = 0.0
-    elif 580 <= wl <= 645:
-        r = 1.0
-        g = -(wl - 645) / (645 - 580)
-        b = 0.0
-    elif 645 <= wl <= 780:
-        r = 1.0
-        g = 0.0
-        b = 0.0
-    else:
-        r = 0.0
-        g = 0.0
-        b = 0.0
+    pixmap = QPixmap(12, 12)
+    pixmap.fill(QColor(red, green, blue))
 
-    # Factor to simulate low sensitivity near ends
-    if 380 <= wl <= 420:
-        factor = 0.3 + 0.7 * (wl - 380) / (420 - 380)
-    elif 420 <= wl <= 700:
-        factor = 1.0
-    elif 700 <= wl <= 780:
-        factor = 0.3 + 0.7 * (780 - wl) / (780 - 700)
-    else:
-        factor = 0.0
-    
-    r *= factor
-    g *= factor
-    b *= factor
-    # Gamma correction
-    for c in [r, g, b]:
-        if c <= 0.0031308:
-            c *= 12.92
-        else:
-            c = 1.055 * c ** (1 / 2.4) - 0.055
-    r *= 255
-    g *= 255
-    b *= 255
-    return int(r), int(g), int(b)
-
-
-def _wavelength_pastel_color(wavelength_nm: float) -> QColor:
-    """
-    Returns a subtle, low-alpha color associated with the laser wavelength.
-
-    The exact color is only a visual cue, not a calibrated wavelength-to-RGB map.
-    Alpha=55/255 is intentionally mild so the table remains readable.
-    """
-
-    if not _finite(wavelength_nm):
-        return QColor(230, 230, 230, 35)
-
-    wl = float(wavelength_nm)
-    # r = int(gaussian(wl, 255, 575, 38.89))
-    # g = int(gaussian(wl, 255, 545, 31.82))
-    # b = int(gaussian(wl, 255, 445, 24.75))
-    r, g, b = wl_color(wl)
-    return QColor(r, g, b, 55)
-    
-    if wl < 420:
-        return QColor(185, 160, 255, 55)   # violet
-    elif wl < 460:
-        return QColor(145, 190, 255, 55)   # blue
-    elif wl < 500:
-        return QColor(0, 250, 255, 64)     # cyan, close to your 488 nm example
-    elif wl < 540:
-        return QColor(140, 255, 210, 55)   # blue-green
-    elif wl < 570:
-        return QColor(170, 255, 145, 55)   # green
-    elif wl < 590:
-        return QColor(245, 255, 130, 55)   # yellow-green
-    elif wl < 620:
-        return QColor(255, 210, 125, 55)   # orange
-    elif wl < 690:
-        return QColor(255, 145, 145, 55)   # red
-    elif wl < 780:
-        return QColor(255, 130, 185, 50)   # deep red / near-IR cue
-
-    return QColor(210, 210, 210, 40)
+    return QIcon(pixmap)
 
 
 class LaserPanel(QWidget):
+    """Compact table and controls for available OBIS laser channels."""
+
     refresh_requested = Signal()
     set_power_requested = Signal(str, int, float)
     set_enabled_requested = Signal(str, int, bool)
@@ -206,265 +95,311 @@ class LaserPanel(QWidget):
 
         self._lasers: list[LaserChannelInfo] = []
         self._laser_by_key: dict[tuple[str, int], LaserChannelInfo] = {}
+        self._sequence_busy = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.addLayout(self._build_toolbar())
 
-        top = QHBoxLayout()
+        self.table = self._build_table()
+        layout.addWidget(self.table, stretch=1)
+        layout.addLayout(self._build_power_controls())
 
-        self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.clicked.connect(self.refresh_requested.emit)
+        self.selected_detail_label = QLabel("Selected: --")
+        self.selected_detail_label.setWordWrap(True)
+        layout.addWidget(self.selected_detail_label)
 
-        self.disable_all_button = QPushButton("Disable All")
-        self.disable_all_button.clicked.connect(self.disable_all_requested.emit)
-
-        self.show_details_check = QCheckBox("Details")
-        self.show_details_check.setChecked(False)
-        self.show_details_check.toggled.connect(self._apply_detail_column_visibility)
-
-        top.addWidget(self.refresh_button)
-        top.addWidget(self.disable_all_button)
-        top.addStretch(1)
-        top.addWidget(self.show_details_check)
-
-        layout.addLayout(top)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(9)
-        self.table.setHorizontalHeaderLabels(
-            [
-                "λ",
-                "Set",
-                "Min",
-                "Max",
-                "Nom",
-                "On",
-                "Ch",
-                "Box",
-                "Port",
-            ]
+        self.cdrh_delay_check = QCheckBox("CDRH delay")
+        self.cdrh_delay_check.setToolTip(
+            "Enable or disable the emission delay for the selected laser."
         )
+        self.cdrh_delay_check.toggled.connect(self._on_cdrh_delay_toggled)
+        layout.addWidget(self.cdrh_delay_check)
 
-        self.setMinimumWidth(260)
+        self._apply_detail_column_visibility(False)
+        self._apply_manual_control_state()
 
-        self.table.setMinimumWidth(250)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(22)
+    def _build_toolbar(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.clicked.connect(lambda _checked=False: self.refresh_requested.emit())
+        self.disable_all_button = QPushButton("Disable All")
+        self.disable_all_button.clicked.connect(
+            lambda _checked=False: self.disable_all_requested.emit()
+        )
+        self.show_details_check = QCheckBox("Details")
+        self.show_details_check.toggled.connect(self._apply_detail_column_visibility)
+        row.addWidget(self.refresh_button)
+        row.addWidget(self.disable_all_button)
+        row.addStretch(1)
+        row.addWidget(self.show_details_check)
+        return row
 
-        header = self.table.horizontalHeader()
+    def _build_table(self) -> QTableWidget:
+        table = QTableWidget()
+        table.setColumnCount(9)
+        table.setIconSize(QSize(12, 12))
+        table.setHorizontalHeaderLabels(
+            ["λ", "Set", "Min", "Max", "Nom", "On", "Ch", "Box", "Port"]
+        )
+        table.setMinimumWidth(250)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(22)
+        header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(False)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        table.setAlternatingRowColors(False)
+        table.setWordWrap(False)
+        table.itemSelectionChanged.connect(self._on_selection_changed)
+        return table
 
-        self.table.setColumnWidth(self.COL_WAVELENGTH, 62)
-        self.table.setColumnWidth(self.COL_SETPOINT, 70)
-        self.table.setColumnWidth(self.COL_MIN, 62)
-        self.table.setColumnWidth(self.COL_MAX, 62)
-        self.table.setColumnWidth(self.COL_NOMINAL, 62)
-        self.table.setColumnWidth(self.COL_EMISSION, 48)
-
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.table.setAlternatingRowColors(False)
-        self.table.setWordWrap(False)
-        self.table.itemSelectionChanged.connect(self._on_selection_changed)
-
-        layout.addWidget(self.table, stretch=1)
-
-        power_row = QHBoxLayout()
-
-        power_row.addWidget(QLabel("Set power"))
+    def _build_power_controls(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Set power"))
 
         self.power_spin = QDoubleSpinBox()
         self.power_spin.setRange(0.0, 1.0e9)
         self.power_spin.setDecimals(2)
         self.power_spin.setSingleStep(0.1)
-        self.power_spin.setValue(1.00)
+        self.power_spin.setValue(1.0)
         self.power_spin.setMaximumWidth(90)
         self.power_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
 
         self.power_units = QComboBox()
-        self.power_units.addItems(["W", "mW", "μW", "nW"])
+        self.power_units.addItem("W", 1.0)
+        self.power_units.addItem("mW", 1e-3)
+        self.power_units.addItem("μW", 1e-6)
+        self.power_units.addItem("nW", 1e-9)
         self.power_units.setMaximumWidth(72)
-        self.power_units.currentTextChanged.connect(self._on_power_units_changed)
+        self.power_units.currentIndexChanged.connect(
+            lambda _index: self._load_selected_setpoint_into_spinbox()
+        )
 
         self.set_power_button = QPushButton("Set")
         self.set_power_button.setMaximumWidth(48)
         self.set_power_button.clicked.connect(self._on_set_power)
 
-        power_row.addWidget(self.power_spin)
-        power_row.addWidget(self.power_units)
-        power_row.addWidget(self.set_power_button)
-
-        layout.addLayout(power_row)
-
-        self.selected_detail_label = QLabel("Selected: --")
-        self.selected_detail_label.setWordWrap(True)
-        layout.addWidget(self.selected_detail_label)
-        
-        self.cdrh_delay_check = QCheckBox("CDRH delay")
-        self.cdrh_delay_check.setToolTip(
-            "Enable/disable the laser emission delay for the selected laser."
-        )
-        self.cdrh_delay_check.toggled.connect(self._on_cdrh_delay_toggled)
-
-        layout.addWidget(self.cdrh_delay_check)
-
-        self._apply_detail_column_visibility(False)
+        row.addWidget(self.power_spin)
+        row.addWidget(self.power_units)
+        row.addWidget(self.set_power_button)
+        return row
 
     @Slot(object)
     def set_lasers(self, lasers: object) -> None:
-        # print("LaserPanel.set_lasers received", len(list(lasers)), "lasers")
-        # for laser in lasers:
-        #     print(
-        #         "  ",
-        #         laser.port,
-        #         laser.channel,
-        #         laser.wavelength_nm,
-        #         laser.setpoint_w,
-        #         laser.box_id,
-        #     )
-
+        selected_key = self.selected_laser_key()
         self._lasers = sorted(list(lasers), key=_sort_wavelength_key)
         self._laser_by_key = {
-            (str(laser.port), int(laser.channel)): laser
-            for laser in self._lasers
+            (str(laser.port), int(laser.channel)): laser for laser in self._lasers
         }
 
         self.table.clearContents()
         self.table.setRowCount(len(self._lasers))
-
-        if not self._lasers:
-            self.selected_detail_label.setText("Selected: no lasers found")
-            return
-
         for row, laser in enumerate(self._lasers):
             self._populate_row(row, laser)
 
         self._apply_detail_column_visibility(self.show_details_check.isChecked())
         self.table.resizeColumnsToContents()
-        self._on_selection_changed()
+
+        if selected_key is not None:
+            self._select_key(*selected_key)
+        elif self._lasers:
+            self.table.selectRow(0)
+        else:
+            self.selected_detail_label.setText("Selected: no lasers found")
+            self.cdrh_delay_check.setEnabled(False)
+        self._apply_manual_control_state()
 
     def _populate_row(self, row: int, laser: LaserChannelInfo) -> None:
-        bg = _wavelength_pastel_color(float(laser.wavelength_nm))
-        brush = QBrush(bg)
-
-        key = {
-            "port": str(laser.port),
-            "channel": int(laser.channel),
-        }
-
+        brush = QBrush(_row_color(laser.wavelength_nm))
+        key = (str(laser.port), int(laser.channel))
         values = [
-            _fmt_wavelength_nm(laser.wavelength_nm),
-            _fmt_power_w(laser.setpoint_w),
-            _fmt_power_w(laser.min_setpoint_w),
-            _fmt_power_w(laser.max_setpoint_w),
-            _fmt_power_w(laser.nominal_power_w),
-            "",  # cell widget goes here
+            _format_wavelength(laser.wavelength_nm),
+            _format_laser_power(laser.setpoint_w),
+            _format_laser_power(laser.min_setpoint_w),
+            _format_laser_power(laser.max_setpoint_w),
+            _format_laser_power(laser.nominal_power_w),
+            "",
             str(laser.channel),
             str(laser.box_id),
             str(laser.port),
         ]
 
-        for col, value in enumerate(values):
+        tooltip = (
+            f"Port: {laser.port}\n"
+            f"Box: {laser.box_id}\n"
+            f"Channel: {laser.channel}\n"
+            f"IDN: {laser.idn}\n"
+            f"Wavelength: {_format_wavelength(laser.wavelength_nm)}\n"
+            f"Setpoint: {_format_laser_power(laser.setpoint_w)}\n"
+            f"Range: {_format_laser_power(laser.min_setpoint_w)} to "
+            f"{_format_laser_power(laser.max_setpoint_w)}"
+        )
+
+        for column, value in enumerate(values):
             item = QTableWidgetItem(value)
-            item.setBackground(brush)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if column == self.COL_WAVELENGTH:
+                item.setIcon(_wavelength_swatch_icon(laser.wavelength_nm))
 
-            tooltip = (
-                f"Port: {laser.port}\n"
-                f"Box: {laser.box_id}\n"
-                f"Channel: {laser.channel}\n"
-                f"IDN: {laser.idn}\n"
-                f"Wavelength: {_fmt_wavelength_nm(laser.wavelength_nm)}\n"
-                f"Setpoint: {_fmt_power_w(laser.setpoint_w)}\n"
-                f"Range: {_fmt_power_w(laser.min_setpoint_w)} to {_fmt_power_w(laser.max_setpoint_w)}" # noqa
-            )
+                # Optional subtle background only in the wavelength cell.
+                item.setBackground(brush)
+
             item.setToolTip(tooltip)
-
-            if col == self.COL_WAVELENGTH:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if column == self.COL_WAVELENGTH:
                 item.setData(Qt.ItemDataRole.UserRole, key)
+            self.table.setItem(row, column, item)
 
-            self.table.setItem(row, col, item)
-
-        enabled = _enabled_bool(laser.enabled)
-
+        enabled = laser.enabled == LaserEmissionState.ON
         button = QPushButton("ON" if enabled else "OFF")
         button.setCheckable(True)
         button.setChecked(enabled)
+        button.setEnabled(not self._sequence_busy)
         button.setMinimumWidth(46)
         button.setMaximumWidth(58)
-
-        if enabled:
-            button.setToolTip("Click to disable this laser.")
-        else:
-            button.setToolTip("Click to enable this laser.")
-
+        button.setToolTip(
+            "Click to disable this laser." if enabled else "Click to enable this laser."
+        )
         button.toggled.connect(
             lambda checked, b=button: b.setText("ON" if checked else "OFF")
         )
         button.toggled.connect(
-            lambda checked, port=str(laser.port), channel=int(laser.channel): (
-                self.set_enabled_requested.emit(port, channel, bool(checked))
+            lambda checked, port=key[0], channel=key[1]: self.set_enabled_requested.emit(
+                port,
+                channel,
+                bool(checked),
             )
         )
-
         self.table.setCellWidget(row, self.COL_EMISSION, button)
 
-    def _apply_detail_column_visibility(self, show: bool) -> None:
-        show = bool(show)
+    def _row_for_key(self, port: str, channel: int) -> int | None:
+        target = (str(port), int(channel))
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, self.COL_WAVELENGTH)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == target:
+                return row
+        return None
 
-        for col in [self.COL_CHANNEL, self.COL_BOX, self.COL_PORT]:
-            self.table.setColumnHidden(col, not show)
+    def _select_key(self, port: str, channel: int) -> None:
+        row = self._row_for_key(port, channel)
+        if row is not None:
+            self.table.selectRow(row)
+
+    def update_setpoint(self, port: str, channel: int, power_w: float) -> None:
+        key = (str(port), int(channel))
+        laser = self._laser_by_key.get(key)
+        if laser is None:
+            return
+        updated = replace(laser, setpoint_w=float(power_w))
+        self._laser_by_key[key] = updated
+        self._lasers = [updated if item == laser else item for item in self._lasers]
+        row = self._row_for_key(*key)
+        if row is not None:
+            self.table.item(row, self.COL_SETPOINT).setText(_format_laser_power(power_w))
+        self._on_selection_changed()
+
+    def _set_enabled_button(self, port: str, channel: int, enabled: bool) -> None:
+        row = self._row_for_key(port, channel)
+        if row is None:
+            return
+        button = self.table.cellWidget(row, self.COL_EMISSION)
+        if not isinstance(button, QPushButton):
+            return
+
+        button.blockSignals(True)
+        button.setChecked(bool(enabled))
+        button.setText("ON" if enabled else "OFF")
+        button.setToolTip(
+            "Click to disable this laser."
+            if enabled
+            else "Click to enable this laser."
+        )
+        button.blockSignals(False)
+
+    def update_enabled(self, port: str, channel: int, enabled: bool) -> None:
+        key = (str(port), int(channel))
+        laser = self._laser_by_key.get(key)
+        if laser is None:
+            return
+        state = LaserEmissionState.ON if enabled else LaserEmissionState.OFF
+        updated = replace(laser, enabled=state)
+        self._laser_by_key[key] = updated
+        self._lasers = [updated if item == laser else item for item in self._lasers]
+        self._set_enabled_button(*key, enabled=bool(enabled))
+
+    @Slot(str, int, str)
+    def restore_enabled_after_failure(
+        self,
+        port: str,
+        channel: int,
+        _message: str,
+    ) -> None:
+        laser = self._laser_by_key.get((str(port), int(channel)))
+        if laser is not None:
+            self._set_enabled_button(
+                str(port),
+                int(channel),
+                enabled=laser.enabled == LaserEmissionState.ON,
+            )
+
+    def update_cdrh(self, port: str, channel: int, enabled: bool) -> None:
+        key = (str(port), int(channel))
+        laser = self._laser_by_key.get(key)
+        if laser is None:
+            return
+        updated = replace(laser, cdrh_delay_enabled=bool(enabled))
+        self._laser_by_key[key] = updated
+        self._lasers = [updated if item == laser else item for item in self._lasers]
+        self._on_selection_changed()
+
+    @Slot(str, int, str)
+    def restore_cdrh_after_failure(
+        self,
+        port: str,
+        channel: int,
+        _message: str,
+    ) -> None:
+        selected = self.selected_laser_key()
+        if selected == (str(port), int(channel)):
+            self._on_selection_changed()
+
+    def _apply_detail_column_visibility(self, show: bool) -> None:
+        for column in (self.COL_CHANNEL, self.COL_BOX, self.COL_PORT):
+            self.table.setColumnHidden(column, not bool(show))
 
     def selected_laser_key(self) -> tuple[str, int] | None:
         row = self.table.currentRow()
-
         if row < 0:
             return None
-
         item = self.table.item(row, self.COL_WAVELENGTH)
-
         if item is None:
             return None
-
         data = item.data(Qt.ItemDataRole.UserRole)
-
-        if not data:
+        if not isinstance(data, tuple) or len(data) != 2:
             return None
-
-        return str(data["port"]), int(data["channel"])
+        return str(data[0]), int(data[1])
 
     def selected_laser(self) -> LaserChannelInfo | None:
         key = self.selected_laser_key()
-
-        if key is None:
-            return None
-
-        return self._laser_by_key.get(key)
+        return self._laser_by_key.get(key) if key is not None else None
 
     def laser_by_key(self, port: str, channel: int) -> LaserChannelInfo | None:
         return self._laser_by_key.get((str(port), int(channel)))
 
     def _selected_or_warn(self) -> LaserChannelInfo | None:
         laser = self.selected_laser()
-
         if laser is None:
             QMessageBox.information(self, "No laser selected", "Select a laser channel first.")
-            return None
-
         return laser
 
     def _current_power_w(self) -> float:
-        units = self.power_units.currentText()
-        factor = _POWER_FACTORS[units]
-        return float(self.power_spin.value()) * factor
+        return float(self.power_spin.value()) * float(self.power_units.currentData())
 
     def _on_set_power(self) -> None:
         laser = self._selected_or_warn()
-
         if laser is None:
             return
-
         self.set_power_requested.emit(
             str(laser.port),
             int(laser.channel),
@@ -473,60 +408,70 @@ class LaserPanel(QWidget):
 
     def _on_selection_changed(self) -> None:
         laser = self.selected_laser()
-
         if laser is None:
             self.selected_detail_label.setText("Selected: --")
             self.cdrh_delay_check.setEnabled(False)
+            self._apply_manual_control_state()
             return
 
         self.selected_detail_label.setText(
             "Selected: "
-            f"{_fmt_wavelength_nm(laser.wavelength_nm)}, "
-            f"{_fmt_power_w(laser.setpoint_w)} set, "
+            f"{_format_wavelength(laser.wavelength_nm)}, "
+            f"{_format_laser_power(laser.setpoint_w)} set, "
             f"{laser.port} ch{laser.channel}"
         )
-
-        self._load_selected_setpoint_into_spinbox(laser)
-
-        cdrh_value = getattr(laser, "cdrh_delay_enabled", None)
+        self._load_selected_setpoint_into_spinbox()
 
         self.cdrh_delay_check.blockSignals(True)
-
-        if cdrh_value is None:
+        if laser.cdrh_delay_enabled is None:
             self.cdrh_delay_check.setEnabled(False)
             self.cdrh_delay_check.setChecked(False)
         else:
             self.cdrh_delay_check.setEnabled(True)
-            self.cdrh_delay_check.setChecked(bool(cdrh_value))
-
+            self.cdrh_delay_check.setChecked(bool(laser.cdrh_delay_enabled))
         self.cdrh_delay_check.blockSignals(False)
+        self._apply_manual_control_state()
 
-    def _on_power_units_changed(self) -> None:
+    def set_sequence_busy(self, busy: bool) -> None:
+        self._sequence_busy = bool(busy)
+        self._apply_manual_control_state()
+
+    def _apply_manual_control_state(self) -> None:
+        editable = not self._sequence_busy
+        selected = self.selected_laser()
+        self.refresh_button.setEnabled(editable)
+        self.power_spin.setEnabled(editable and selected is not None)
+        self.power_units.setEnabled(editable and selected is not None)
+        self.set_power_button.setEnabled(editable and selected is not None)
+        self.cdrh_delay_check.setEnabled(
+            editable
+            and selected is not None
+            and selected.cdrh_delay_enabled is not None
+        )
+
+        for row in range(self.table.rowCount()):
+            button = self.table.cellWidget(row, self.COL_EMISSION)
+            if isinstance(button, QPushButton):
+                button.setEnabled(editable)
+
+        # Emergency stop stays available while a sequence owns the controls.
+        self.disable_all_button.setEnabled(bool(self._lasers))
+
+    def _load_selected_setpoint_into_spinbox(self) -> None:
         laser = self.selected_laser()
-
-        if laser is not None:
-            self._load_selected_setpoint_into_spinbox(laser)
-
-    def _load_selected_setpoint_into_spinbox(self, laser: LaserChannelInfo) -> None:
-        if not _finite(laser.setpoint_w):
+        if laser is None or not _finite(laser.setpoint_w):
             return
-
-        units = self.power_units.currentText()
-        factor = _POWER_FACTORS[units]
-
+        factor = float(self.power_units.currentData())
         if factor <= 0:
             return
-
         self.power_spin.blockSignals(True)
         self.power_spin.setValue(float(laser.setpoint_w) / factor)
         self.power_spin.blockSignals(False)
 
     def _on_cdrh_delay_toggled(self, enabled: bool) -> None:
         laser = self.selected_laser()
-
         if laser is None:
             return
-
         self.set_cdrh_delay_requested.emit(
             str(laser.port),
             int(laser.channel),
@@ -537,13 +482,10 @@ class LaserPanel(QWidget):
         self.show_details_check.setChecked(
             get_bool(settings, "laser/show_details", self.show_details_check.isChecked())
         )
-
         units = get_str(settings, "laser/power_units", self.power_units.currentText())
         index = self.power_units.findText(units)
-
         if index >= 0:
             self.power_units.setCurrentIndex(index)
-
 
     def save_preferences(self, settings: QSettings) -> None:
         settings.setValue("laser/show_details", self.show_details_check.isChecked())

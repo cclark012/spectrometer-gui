@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from typing import Iterable
 
 TERM_BYTES = {
     "CR": b"\r",
@@ -167,7 +166,7 @@ def run_serial(args: args.Namespace) -> int:
                 continue
 
             print(f"  raw bytes: {raw!r}")
-            
+
             if raw:
                 try:
                     print(f"  text: {raw.decode('ascii', errors='replace')!r}")
@@ -214,10 +213,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--command", default="*IDN?")
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--timeout-s", type=float, default=2.0)
-    parser.add_argument("--terminator", choices=list(TERM_BYTES), default="CR", help="Serial write terminator")
-    parser.add_argument("--try-terminators", action="store_true", help="Try CR, CRLF, LF, and no terminator for serial probing")
-    parser.add_argument("--write-terminator", choices=list(TERM_TEXT), default="CR", help="VISA write terminator")
-    parser.add_argument("--read-terminator", choices=list(TERM_TEXT), default="LF", help="VISA read terminator")
+    parser.add_argument(
+        "--terminator",
+        choices=list(TERM_BYTES),
+        default="CR",
+        help="Serial write terminator",
+    )
+    parser.add_argument(
+        "--try-terminators",
+        action="store_true",
+        help="Try CR, CRLF, LF, and no terminator for serial probing",
+    )
+    parser.add_argument(
+        "--write-terminator",
+        choices=list(TERM_TEXT),
+        default="CR",
+        help="VISA write terminator",
+    )
+    parser.add_argument(
+        "--read-terminator",
+        choices=list(TERM_TEXT),
+        default="LF",
+        help="VISA read terminator",
+    )
 
     return parser
 
