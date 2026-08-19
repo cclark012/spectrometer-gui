@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from core.filter_models import (  # pyright: ignore[reportMissingImports]
+from core.filter_models import (
     FilterPlanStep,
     FilterState,
     FilterWheel,
@@ -22,7 +22,7 @@ def enumerate_filter_states(wheels: list[FilterWheel]) -> list[FilterState]:
 
         positions = tuple(
             (wheel.name, position.label)
-            for wheel, position in zip(wheels, combo) # noqa
+            for wheel, position in zip(wheels, combo, strict=True)
         )
 
         states.append(
@@ -105,6 +105,9 @@ def feasible_state_indices(
             calibration=calibration,
         )
 
+        if not math.isfinite(expected):
+            continue
+
         feasible.append((j, float(setpoint), float(expected)))
 
     return feasible
@@ -155,7 +158,10 @@ def plan_min_filter_changes(
         expected_table[0, j] = expected
 
     for i in range(1, n):
-        feasible_indices = {j: (setpoint, expected) for j, setpoint, expected in feasible_by_point[i]} # noqa
+        feasible_indices = {
+            j: (setpoint, expected)
+            for j, setpoint, expected in feasible_by_point[i]
+        }
 
         for j, (setpoint, expected) in feasible_indices.items():
             best_cost = inf

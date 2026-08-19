@@ -92,25 +92,21 @@ def main() -> int:
     obis = ObisSerial(args.port)
 
     try:
-        commands = ["*IDN?", "*IDN0?", "*IDN1?", "*IDN2?", "*IDN3?", "*IDN4?", "*IDN5?"]
+        print("Controller:")
+        for command in ["*IDN?", "*IDN0?"]:
+            print("TX:", command)
+            print("RX:", obis.query(command))
 
-        for cmd in commands:
-            try:
-                print()
-                print("TX:", cmd)
-                print("RX:", obis.query(cmd))
-            except Exception as exc:
-                print("ERROR:", type(exc).__name__, exc)
+        print("\nLaser Channels:")
 
-        print()
-        print("Channel discovery:")
-
-        for ch in range(0, 6):
+        for ch in range(1, 6):
             for cmd in [
+                f"*IDN{ch}?",
                 f"SYSTem{ch}:INFormation:WAVelength?",
                 f"SYSTem{ch}:INFormation:TYPe?",
                 f"SYSTem{ch}:INFormation:POWer?",
                 f"SOURce{ch}:POWer:LIMit:LOW?",
+                f"SOURce{ch}:POWer:LIMit:HIGH?",
                 f"SOURce{ch}:POWer:LEVel:IMMediate:AMPLitude?",
                 f"SOURce{ch}:AM:STATe?",
             ]:

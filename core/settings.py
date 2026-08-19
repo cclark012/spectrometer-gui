@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.gated_acquisition import GatedFrameMetadata
+
 
 @dataclass
 class AcquisitionSettings:
@@ -17,6 +19,7 @@ class AcquisitionSettings:
 
     averaging_mode: str = "software"  # "software" or "device"
     subtract_background: bool = False
+    gated: GatedFrameMetadata | None = None
 
     scan_active: bool = False
     scan_index: int = -1
@@ -44,6 +47,19 @@ class DeviceConfig:
     emulate_lasers: bool = False
     laser_fallback_emulator: bool = False
     obis_ports: list[str] | None = None
+
+
+@dataclass
+class DisplaySettings:
+    live_acquisition_gap_ms: int = 0
+    spectrum_redraw_interval_ms: int = 200
+    monitor_redraw_interval_ms: int = 200
+    power_redraw_interval_ms: int = 200
+    performance_enabled: bool = True
+    performance_report_interval_ms: int = 1000
+    event_loop_probe_interval_ms: int = 250
+    performance_rate_window_s: float = 5.0
+    theme_name: str = "visual_studio_dark"
 
 
 @dataclass
@@ -99,16 +115,19 @@ class PlotStyleSettings:
 
 @dataclass
 class PowerMonitorSettings:
-    mode: str = "live" # "live" or "spectra_only"
+    mode: str = "live"  # "live" or "spectra_only"
 
-    polling_enabled: bool = True
+    @property
+    def live_polling_enabled(self) -> bool:
+        return self.mode == "live"
+
     append_spectrum_power: bool = True
 
     max_points: int = 600
     interval_ms: int = 1000
 
     validation_enabled: bool = True
-    max_valid_power_w: float = 0.200  # 100 mW
+    max_valid_power_w: float = 0.200  # 200 mW
     reject_negative_power: bool = False
     invalid_power_retries: int = 3
     invalid_power_retry_delay_s: float = 0.10
@@ -132,3 +151,33 @@ class SignalWarningSettings:
 
     popup_enabled: bool = True
     popup_cooldown_s: float = 30.0
+
+
+@dataclass
+class SNRSettings:
+    enabled: bool = False
+    signal_start_nm: float = 400.0
+    signal_stop_nm: float = 750.0
+    noise1_start_nm: float = 900.0
+    noise1_stop_nm: float = 1100.0
+
+    use_noise2: bool = False
+    noise2_start_nm: float = 360.0
+    noise2_stop_nm: float = 420.0
+
+    baseline_order: int = 1
+    minimum_noise_pixels: int = 20
+    peak_percentile: float = 99.5
+    update_every_n_spectra: int = 1
+
+    target_snr: float = 100.0
+    target_peak_fraction: float = 0.75
+    recommendation_metric: str = "integrated"
+
+    auto_suggest_enabled: bool = False
+    auto_adjust_max_iterations: int = 3
+    auto_adjust_tolerance_fraction: float = 0.10
+
+    maximum_integration_ms: int = 60_000
+    maximum_averages: int = 100
+    maximum_total_acquisition_s: float = 60.0

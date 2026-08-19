@@ -72,34 +72,6 @@ def unwrap_exception(exc: Exception) -> str:
     return "\n".join(parts)
 
 
-def get_method(obj, name: str, n_params: int | None = None):
-    matches = []
-
-    for m in obj.GetType().GetMethods():
-        if not m.IsPublic:
-            continue
-        if m.Name != name:
-            continue
-        if n_params is not None and len(m.GetParameters()) != n_params:
-            continue
-
-        matches.append(m)
-
-    if not matches:
-        all_matching_names = [
-            method_signature(m)
-            for m in obj.GetType().GetMethods()
-            if m.IsPublic and m.Name == name
-        ]
-
-        raise RuntimeError(
-            f"No method matched {name} with n_params={n_params}. "
-            f"Available overloads:\n" + "\n".join(all_matching_names)
-        )
-
-    return matches[0]
-
-
 def invoke_method(obj, name: str, values: list[object], n_params: int | None = None):
     methods = []
 
@@ -169,7 +141,9 @@ def construct_with_device_key(assembly):
             break
 
     if target_ctor is None:
-        raise RuntimeError("Could not find .ctor(System.Boolean logging, ref System.String deviceKey).")
+        raise RuntimeError(
+            "Could not find .ctor(System.Boolean logging, ref System.String deviceKey)."
+        )
 
     print()
     print("Forcing constructor:")
@@ -307,7 +281,11 @@ def cmd_get_power(obj, device_key: str) -> tuple[int, float]:
     return status, power
 
 
-def cmd_get_power_with_status(obj, device_key: str, n_channels: int) -> tuple[int, list[float], list[int]]:
+def cmd_get_power_with_status(
+    obj,
+    device_key: str,
+    n_channels: int,
+) -> tuple[int, list[float], list[int]]:
     n = max(1, int(n_channels))
 
     powers = Array[Double]([0.0] * n)

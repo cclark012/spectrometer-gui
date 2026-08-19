@@ -1,5 +1,3 @@
-# panels/power_panel.py
-
 from __future__ import annotations
 
 import math
@@ -31,6 +29,7 @@ class PowerPanel(QWidget):
     mode_changed = Signal(str)
     wavelength_set_requested = Signal(int)
     auto_wavelength_changed = Signal(bool)
+    redrawn = Signal()
 
     def __init__(self, *, max_points: int = 600, parent=None) -> None:
         super().__init__(parent)
@@ -76,15 +75,15 @@ class PowerPanel(QWidget):
         layout.addWidget(self.power_plot)
 
         self.clear_button = QPushButton("Clear Power Trace")
-        self.clear_button.clicked.connect(self.clear_requested.emit)
+        self.clear_button.clicked.connect(lambda _checked=False: self.clear_requested.emit())
         layout.addWidget(self.clear_button)
 
         self.save_button = QPushButton("Save Power Trace")
-        self.save_button.clicked.connect(self.save_requested.emit)
+        self.save_button.clicked.connect(lambda _checked=False: self.save_requested.emit())
         layout.addWidget(self.save_button)
 
         self.details_button = QPushButton("Details")
-        self.details_button.clicked.connect(self.details_requested.emit)
+        self.details_button.clicked.connect(lambda _checked=False: self.details_requested.emit())
         layout.addWidget(self.details_button)
 
         wavelength_row = QHBoxLayout()
@@ -108,13 +107,12 @@ class PowerPanel(QWidget):
         wavelength_row.addWidget(self.set_pm_wavelength_button)
 
         layout.addLayout(wavelength_row)
-        
-        self._plot_old = False
+
+        self._plot_dirty = False
         self._redraw_timer = QTimer(self)
         self._redraw_timer.setInterval(200)
-        self._redraw_timer.timeout.connect(self._redraw_if_old)
+        self._redraw_timer.timeout.connect(self._redraw_if_dirty)
         self._redraw_timer.start()
-
 
     def set_max_points(self, max_points: int) -> None:
         max_points = int(max_points)
@@ -137,17 +135,22 @@ class PowerPanel(QWidget):
 
     def append_point(self, point: PowerTracePoint) -> None:
         self.power_trace.append(point)
-        self._plot_old = True
+        self._plot_dirty = True
 
-    def _redraw_if_old(self) -> None:
-        if not self._plot_old:
+    def _redraw_if_dirty(self) -> None:
+        if not self._plot_dirty:
             return
-        self._plot_old = False
+        self._plot_dirty = False
         self.redraw()
+        self.redrawn.emit()
 
     def clear(self) -> None:
         self.power_trace.clear()
+        self._plot_dirty = False
         self.redraw()
+
+    def set_redraw_interval_ms(self, interval_ms: int) -> None:
+        self._redraw_timer.setInterval(max(20, int(interval_ms)))
 
     def points(self) -> list[PowerTracePoint]:
         return list(self.power_trace)
@@ -271,6 +274,8 @@ class PowerPanel(QWidget):
 
         if settings.power_auto_range:
             self.power_plot.enableAutoRange()
+        else:
+            self.power_plot.disableAutoRange()
 
     def load_preferences(self, settings: QSettings) -> None:
         self.set_mode(get_str(settings, "power/mode", "live"))

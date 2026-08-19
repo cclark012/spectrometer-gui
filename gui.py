@@ -1,56 +1,49 @@
-# spectroscopy_gui.py
-
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
-from core.settings import DeviceConfig
+from core.configuration import (
+    ConfigurationError,
+    build_device_config,
+    load_json_defaults,
+)
+from core.restart import RESTART_EXIT_CODE, launch_replacement_process
 from panels.main_window import MainWindow
-
-
-def load_json_defaults(path: str | None) -> dict:
-    if not path:
-        return {}
-
-    p = Path(path)
-
-    if not p.exists():
-        return {}
-
-    with p.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def value_from_args_or_config(args, config: dict, key: str, fallback):
-    value = getattr(args, key, None)
-
-    if value is not None:
-        return value
-
-    return config.get(key, fallback)
+from ui.theme import (
+    LEGACY_THEME_SETTINGS_KEY,
+    THEME_SETTINGS_KEY,
+    VISUAL_STUDIO_DARK,
+    ThemeManager,
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Magneto-PL acquisition GUI")
 
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--emulate", action="store_true", help="Use spectrometer and power-meter emulators") # noqa
+    mode.add_argument(
+        "--emulate",
+        action="store_true",
+        help="Use spectrometer and power-meter emulators",
+    )
     mode.add_argument("--real", action="store_true", help="Use real QE-PRO and Newport 2936-R")
 
     parser.add_argument(
         "--config",
-        default="config/lab_defaults.json"
+        default=str(Path(__file__).resolve().parent / "config" / "lab_defaults.json"),
+        help="Path to a JSON file containing lab defaults.",
     )
 
     parser.add_argument(
         "--fallback-emulator",
-        action="store_true",
-        help="Fall back to emulators if real-device connection fails",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Fall back to emulators if real-device connection fails.",
     )
 
     parser.add_argument(
@@ -62,7 +55,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--power-channel",
         type=int,
-        default=1,
+        default=None,
         help="Newport active channel for CmdGetPower; all-channel reads are still logged",
     )
 
@@ -88,61 +81,86 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    config_json = load_json_defaults(args.config)
+    try:
+        config_json = load_json_defaults(args.config)
+        config = build_device_config(args, config_json)
+    except ConfigurationError as exc:
+        parser.error(str(exc))
+
+    app = QApplication([sys.argv[0], *argv])
     
-    newport_dll = value_from_args_or_config(
-        args,
-        config_json,
-        "newport_dll",
-        r"C:\Program Files\Newport\Newport Power Meter Application\Samples\PowerMeterCommands.dll",
-    )
-
-    power_channel = int(
-        value_from_args_or_config(args, config_json, "power_channel", 1)
-    )
-    
-    laser_mode = str(
-        value_from_args_or_config(args, config_json, "laser_mode", "auto")
-    )
-    
-    obis_ports = value_from_args_or_config(args, config_json, "obis_ports", None)
-    
-    fallback_emulator = bool(
-        value_from_args_or_config(args, config_json, "fallback_emulator", False)
-    )
-
-    emulate_main_devices = True
-
-    if args.real:
-        emulate_main_devices = False
-    elif args.emulate:
-        emulate_main_devices = True
-
-    dll_path = Path(newport_dll) if newport_dll else None
-
-    config = DeviceConfig(
-        emulate=emulate_main_devices,
-        fallback_emulator=bool(fallback_emulator),
-        newport_dll=dll_path,
-        power_channel=int(power_channel),
-
-        emulate_lasers=(laser_mode == "emulated"),
-        laser_fallback_emulator=(laser_mode == "auto"),
-        obis_ports=obis_ports,
-    )
-
-    app = QApplication(sys.argv)
     QApplication.setOrganizationName("YourLab")
     QApplication.setApplicationName("MagnetoPLAcquisition")
     QApplication.setApplicationVersion("0.1")
-    window = MainWindow(config)
+
+    manager = ThemeManager(app)
+    settings = QSettings()
+
+    theme_name = settings.value(
+        THEME_SETTINGS_KEY,
+        "",
+        type=str,
+    )
+
+    # Migrate the earlier key if it exists.
+    if not theme_name:
+        theme_name = settings.value(
+            LEGACY_THEME_SETTINGS_KEY,
+            VISUAL_STUDIO_DARK,
+            type=str,
+        )
+
+        settings.setValue(
+            THEME_SETTINGS_KEY,
+            theme_name,
+        )
+        settings.sync()
+
+    applied_theme = manager.apply(
+        app,
+        theme_name,
+    )
+
+    # Normalize an invalid or obsolete stored value.
+    if applied_theme != theme_name:
+        settings.setValue(
+            THEME_SETTINGS_KEY,
+            applied_theme,
+        )
+        settings.sync()
+
+    app.setQuitOnLastWindowClosed(False)
+
+    theme_manager = ThemeManager(app)
+    theme_manager.apply(app, theme_name)
+    window = MainWindow(config, theme_manager=theme_manager)
     window.show()
 
-    return app.exec()
+    exit_code = app.exec()
+
+    if exit_code == RESTART_EXIT_CODE:
+        success, pid = launch_replacement_process()
+
+        if not success:
+            print(
+                "Failed to restart the application.",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(f"Restarted application as PID {pid}.")
+        return 0
+
+    return int(exit_code)
+
+
+def cli() -> None:
+    raise SystemExit(main())
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    cli()

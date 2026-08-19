@@ -1,0 +1,80 @@
+QWidget {
+    background-color: #1E1E1E;
+    color: #D4D4D4;
+    selection-background-color: #264F78;
+    selection-color: #FFFFFF;
+}
+QMainWindow, QDialog { background-color: #1E1E1E; }
+QMenuBar, QMenu, QStatusBar, QToolBar {
+    background-color: #252526;
+    color: #D4D4D4;
+}
+QMenuBar::item:selected, QMenu::item:selected { background-color: #094771; }
+QDockWidget::title, QHeaderView::section {
+    background-color: #252526;
+    color: #D4D4D4;
+    padding: 4px;
+    border: 1px solid #3F3F46;
+}
+QPushButton, QToolButton {
+    background-color: #2D2D30;
+    border: 1px solid #3F3F46;
+    border-radius: 2px;
+    padding: 4px 8px;
+}
+QPushButton:hover, QToolButton:hover { background-color: #3E3E42; }
+QPushButton:pressed, QToolButton:pressed { background-color: #094771; }
+QPushButton:disabled, QToolButton:disabled { color: #6A6A6A; }
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    background-color: #252526;
+    color: #D4D4D4;
+    border: 1px solid #3F3F46;
+    padding: 3px;
+}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
+QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
+    border: 1px solid #007ACC;
+}
+QCheckBox { spacing: 7px; }
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #9D9D9D;
+    border-radius: 2px;
+    background-color: #252526;
+}
+QCheckBox::indicator:hover {
+    border-color: #D4D4D4;
+    background-color: #2D2D30;
+}
+QCheckBox::indicator:checked {
+    image: url("__CHECKMARK_URL__");
+}
+QCheckBox::indicator:disabled {
+    border-color: #5A5A5A;
+    background-color: #252526;
+}
+QTableView, QTreeView, QListView {
+    background-color: #1E1E1E;
+    alternate-background-color: #252526;
+    gridline-color: #3F3F46;
+    border: 1px solid #3F3F46;
+}
+QTabWidget::pane { border: 1px solid #3F3F46; }
+QTabBar::tab {
+    background-color: #2D2D30;
+    padding: 6px 10px;
+    border: 1px solid #3F3F46;
+}
+QTabBar::tab:selected { background-color: #1E1E1E; border-top: 2px solid #007ACC; }
+QScrollBar:vertical, QScrollBar:horizontal { background: #1E1E1E; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background: #424242;
+    min-width: 20px;
+    min-height: 20px;
+}
+QToolTip {
+    background-color: #252526;
+    color: #D4D4D4;
+    border: 1px solid #3F3F46;
+}

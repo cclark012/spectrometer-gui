@@ -1,13 +1,14 @@
-# io_utils/calibration_io.py
-
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 
 import numpy as np
 
+from core.laser_models import LaserCalibrationPoint
 from core.time_utils import utc_now_iso
+from io_utils.atomic import atomic_text_writer
 from planning.power_scan import CalibrationCurve
 
 
@@ -15,22 +16,21 @@ def save_calibration_csv(
     path: Path,
     *,
     calibration: CalibrationCurve,
-    rows: list[dict] | None = None,
-    metadata: dict | None = None,
+    points: list[LaserCalibrationPoint] | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Save a calibration curve and, when available, its acquisition details."""
 
-    metadata = dict(metadata or {})
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    with path.open("w", newline="") as f:
-        writer = csv.writer(f)
-
+    with atomic_text_writer(output) as file:
+        writer = csv.writer(file)
         writer.writerow(["# file_type", "laser_power_calibration"])
         writer.writerow(["# saved_utc", utc_now_iso()])
         writer.writerow(["# filter_state", calibration.filter_state])
 
-        for key, value in metadata.items():
+        for key, value in dict(metadata or {}).items():
             writer.writerow([f"# {key}", value])
 
         writer.writerow(
@@ -48,98 +48,127 @@ def save_calibration_csv(
             ]
         )
 
-        if rows:
-            for row in rows:
+        if points:
+            for point in points:
                 writer.writerow(
                     [
-                        f"{float(row.get('setpoint_w', float('nan'))):.12e}",
-                        f"{float(row.get('measured_power_mean_w', float('nan'))):.12e}",
-                        f"{float(row.get('measured_power_std_w', float('nan'))):.12e}",
-                        int(row.get("n_reads", 0)),
-                        row.get("timestamp_utc", ""),
-                        row.get("port", ""),
-                        row.get("box_id", ""),
-                        row.get("channel", ""),
-                        row.get("wavelength_nm", ""),
-                        row.get("filter_state", calibration.filter_state),
+                        f"{point.setpoint_w:.12e}",
+                        f"{point.measured_power_mean_w:.12e}",
+                        f"{point.measured_power_std_w:.12e}",
+                        int(point.n_reads),
+                        point.timestamp_utc,
+                        point.port,
+                        point.box_id,
+                        int(point.channel),
+                        f"{point.wavelength_nm:.12e}",
+                        point.filter_state,
                     ]
                 )
-        else:
-            for setpoint, measured in zip(calibration.setpoint_w, calibration.measured_power_w): # noqa
-                writer.writerow(
-                    [
-                        f"{float(setpoint):.12e}",
-                        f"{float(measured):.12e}",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        calibration.filter_state,
-                    ]
-                )
+            return
+
+        for setpoint, measured in zip(
+            calibration.setpoint_w,
+            calibration.measured_power_w,
+            strict=True,
+        ):
+            writer.writerow(
+                [
+                    f"{float(setpoint):.12e}",
+                    f"{float(measured):.12e}",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    calibration.filter_state,
+                ]
+            )
 
 
-def load_calibration_csv(path: Path) -> tuple[CalibrationCurve, list[dict]]:
-    path = Path(path)
+def _float_or_nan(value: str | None) -> float:
+    try:
+        return float(value or "nan")
+    except (TypeError, ValueError):
+        return float("nan")
 
-    rows: list[dict] = []
-    setpoints = []
-    measured = []
+
+def _int_or_default(value: str | None, default: int) -> int:
+    try:
+        return int(float(value or str(default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def load_calibration_csv(
+    path: Path,
+) -> tuple[CalibrationCurve, list[LaserCalibrationPoint]]:
+    """Load a calibration curve and any per-point acquisition metadata."""
+
+    input_path = Path(path)
+    points: list[LaserCalibrationPoint] = []
+    setpoints: list[float] = []
+    measured_powers: list[float] = []
     filter_state = "none"
 
-    with path.open("r", newline="") as f:
-        reader = csv.reader(f)
-
-        header = None
+    with input_path.open("r", newline="", encoding="utf-8") as file:
+        reader = csv.reader(file)
+        header: list[str] | None = None
 
         for row in reader:
             if not row:
                 continue
 
             first = row[0].strip()
-
             if first.startswith("#"):
                 key = first.lstrip("#").strip()
-
                 if key == "filter_state" and len(row) > 1:
                     filter_state = row[1].strip() or "none"
-
                 continue
 
             if header is None:
-                header = [x.strip() for x in row]
+                header = [value.strip() for value in row]
                 continue
 
-            values = {header[i]: row[i] for i in range(min(len(header), len(row)))}
-
-            setpoint = float(values.get("setpoint_W", "nan"))
-            measured_power = float(values.get("measured_power_W", "nan"))
-
+            values = {
+                header[index]: row[index]
+                for index in range(min(len(header), len(row)))
+            }
+            setpoint = _float_or_nan(values.get("setpoint_W"))
+            measured = _float_or_nan(values.get("measured_power_W"))
             setpoints.append(setpoint)
-            measured.append(measured_power)
+            measured_powers.append(measured)
 
-            rows.append(
-                {
-                    "setpoint_w": setpoint,
-                    "measured_power_mean_w": measured_power,
-                    "measured_power_std_w": float(values.get("measured_power_std_W", "nan") or "nan"), # noqa
-                    "n_reads": int(float(values.get("n_reads", "0") or "0")),
-                    "timestamp_utc": values.get("timestamp_utc", ""),
-                    "port": values.get("port", ""),
-                    "box_id": values.get("box_id", ""),
-                    "channel": values.get("channel", ""),
-                    "wavelength_nm": values.get("wavelength_nm", ""),
-                    "filter_state": values.get("filter_state", filter_state),
-                }
+            point_filter_state = values.get("filter_state", filter_state) or filter_state
+            points.append(
+                LaserCalibrationPoint(
+                    timestamp_utc=values.get("timestamp_utc", ""),
+                    port=values.get("port", ""),
+                    box_id=values.get("box_id", ""),
+                    channel=_int_or_default(values.get("channel"), -1),
+                    wavelength_nm=_float_or_nan(values.get("wavelength_nm")),
+                    setpoint_w=setpoint,
+                    measured_power_mean_w=measured,
+                    measured_power_std_w=_float_or_nan(
+                        values.get("measured_power_std_W")
+                    ),
+                    n_reads=_int_or_default(values.get("n_reads"), 0),
+                    filter_state=point_filter_state,
+                )
             )
 
     calibration = CalibrationCurve(
         setpoint_w=np.asarray(setpoints, dtype=float),
-        measured_power_w=np.asarray(measured, dtype=float),
+        measured_power_w=np.asarray(measured_powers, dtype=float),
         filter_state=filter_state,
     )
 
-    return calibration, rows
+    # Preserve metadata-only rows only when they describe finite calibration data.
+    points = [
+        point
+        for point in points
+        if math.isfinite(point.setpoint_w)
+        and math.isfinite(point.measured_power_mean_w)
+    ]
+    return calibration, points

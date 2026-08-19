@@ -10,11 +10,11 @@ from core.time_utils import utc_now_iso
 
 
 class FullPowerLogger:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.file = self.path.open("w", newline="")
+        self.file = self.path.open("w", newline="", encoding="utf-8")
         self.writer = csv.writer(self.file)
         self.closed = False
 

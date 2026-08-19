@@ -52,7 +52,9 @@ class SpectrometerDetailsDialog(QDialog):
 
         self.refresh_temp_button = QPushButton("Read CCD Temperature")
         self.refresh_temp_button.setEnabled(bool(capabilities.tec_supported))
-        self.refresh_temp_button.clicked.connect(self.temperature_refresh_requested.emit)
+        self.refresh_temp_button.clicked.connect(
+            lambda _checked=False: self.temperature_refresh_requested.emit()
+        )
 
         form.addRow("TEC supported", QLabel("Yes" if capabilities.tec_supported else "No"))
         form.addRow("TEC enabled", self.tec_enabled_check)
@@ -61,7 +63,7 @@ class SpectrometerDetailsDialog(QDialog):
         form.addRow("", self.refresh_temp_button)
 
         form.addRow(
-            "Device averaging supported", 
+            "Device averaging supported",
             QLabel("Yes" if capabilities.device_averaging_supported else "No"),
         )
 

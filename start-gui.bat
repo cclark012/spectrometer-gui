@@ -11,6 +11,8 @@ set "ROOT=%~dp0"
 set "PYTHON=%ROOT%..\WinPython\python\python.exe"
 set "GUI=%ROOT%gui.py"
 set "CONFIG=%ROOT%config\lab_defaults.json"
+set "LOCAL_CONFIG=%ROOT%config\lab_defaults.local.json"
+if exist "%LOCAL_CONFIG%" set "CONFIG=%LOCAL_CONFIG%"
 
 if not exist "%PYTHON%" (
     echo Python executable not found:
