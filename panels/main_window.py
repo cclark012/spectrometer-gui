@@ -316,6 +316,7 @@ class MainWindow(QMainWindow):
         self.scan_timing_action = actions.scan_timing
         self.acquisition_toolbar = actions.toolbar
         self.power_label = actions.power_label
+        self.power_label_action = actions.power_label_action
 
     def _build_timers(self) -> None:
         self.live_next_timer = QTimer(self)
@@ -1604,12 +1605,15 @@ class MainWindow(QMainWindow):
         # Newport controls.
         self.power_dock.setVisible(power_meter)
         self.power_label.setVisible(power_meter)
+        self.power_label_action.setVisible(power_meter)
 
         if not power_meter:
             self.power_timer.stop()
             self.last_power_meter_wavelength_nm = None
+            self.power_label.setText("")
         else:
             self._apply_power_monitor_settings()
+            self.power_label.setText("Power: --")
 
         # OBIS controls.
         self.lower_tabs.setTabVisible(
