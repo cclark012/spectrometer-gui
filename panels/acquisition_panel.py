@@ -65,6 +65,10 @@ class AcquisitionPanel(QWidget):
             lambda _checked=False: self.background_clear_requested.emit()
         )
 
+        background_row = QHBoxLayout()
+        background_row.addWidget(self.take_background_button, stretch=1)
+        background_row.addWidget(self.clear_background_button, stretch=1)
+
         self.averages = QSpinBox()
         self.averages.setRange(1, 1000)
         self.averages.setValue(5)
@@ -115,14 +119,10 @@ class AcquisitionPanel(QWidget):
         recommendation_row.addWidget(self.recommend_button)
         recommendation_row.addWidget(self.auto_tune_button)
 
-        live_label = QLabel()
-        live_label.setText("Live")
-        electric_dark_label = QLabel()
-        electric_dark_label.setText("Electric Dark")
-        nonlinearity_label = QLabel()
-        nonlinearity_label.setText("Nonlinearity")
-        sub_background_label = QLabel()
-        sub_background_label.setText("Subtract Background")
+        live_label = QLabel("Live")
+        electric_dark_label = QLabel("Electric Dark")
+        nonlinearity_label = QLabel("Nonlinearity")
+        sub_background_label = QLabel("Subtract Background")
         labels = [
             live_label, electric_dark_label, nonlinearity_label, sub_background_label
         ]
@@ -137,13 +137,28 @@ class AcquisitionPanel(QWidget):
             options.addWidget(label)
             options.addWidget(check)
 
+        # average_mode_label = QLabel("Averaging mode")
+        averages_label = QLabel("Averages")
+        boxcar_label = QLabel("Boxcar width")
+        
+        smoothing_labels = [averages_label, boxcar_label]
+        smoothing_values = [self.averages, self.boxcar_width]
+        smoothing_options = QHBoxLayout()
+
+        for label, value in zip(smoothing_labels, smoothing_values, strict=True):
+            smoothing_options.addWidget(label)
+            smoothing_options.addWidget(value)
+        
+
         form.addRow(options)
-        form.addRow("Background", self.take_background_button)
-        form.addRow("", self.clear_background_button)
+        # form.addRow("Background", self.take_background_button)
+        # form.addRow("", self.clear_background_button)
+        form.addRow(background_row)
         form.addRow("Integration time", self.integration_ms)
         form.addRow("Averaging mode", self.averaging_mode_combo)
         form.addRow("Averages", self.averages)
         form.addRow("Boxcar width", self.boxcar_width)
+        # form.addRow(smoothing_options)
         form.addRow("Magnetic field", self.field_input)
         form.addRow("SNR", self.snr_label)
         form.addRow("Acquisition tuning", recommendation_row)
