@@ -78,18 +78,25 @@ class ScanPanel(QWidget):
 
         self.start_power = self._make_power_spin(1.0)
         self.stop_power = self._make_power_spin(10.0)
-        self.power_units = QComboBox()
-        self.power_units.addItem("W", 1.0)
-        self.power_units.addItem("mW", 1e-3)
-        self.power_units.addItem("μW", 1e-6)
-        self.power_units.addItem("nW", 1e-9)
-        self.power_units.setMaximumWidth(72)
+
+        units = ["W", "mW", "μW", "nW"]
+        factors = [1.0, 1.0e-3, 1.0e-6, 1.0e-9]
+        
+        self.low_power_units = QComboBox()
+        self.high_power_units = QComboBox()
+        for unit, factor in zip(units, factors, strict=True):
+            self.low_power_units.addItem(unit, factor)
+            self.high_power_units.addItem(unit, factor)
+
+        self.low_power_units.setMaximumWidth(72)
+        self.high_power_units.setMaximumWidth(72)
 
         power_row = QHBoxLayout()
         power_row.addWidget(self.start_power)
+        power_row.addWidget(self.low_power_units)
         power_row.addWidget(QLabel("to"))
         power_row.addWidget(self.stop_power)
-        power_row.addWidget(self.power_units)
+        power_row.addWidget(self.high_power_units)
 
         self.n_points = QSpinBox()
         self.n_points.setRange(1, 10_000)
@@ -209,8 +216,13 @@ class ScanPanel(QWidget):
     def calibration_reads_per_point(self) -> int:
         return int(self.calibration_reads.value())
 
-    def power_factor(self) -> float:
-        return float(self.power_units.currentData())
+    def power_factor(self, side: str = "high") -> float:
+        if side == "high":
+            return float(self.high_power_units.currentData())
+        elif side == "low":
+            return float(self.low_power_units.currentData())
+        else:
+            raise ValueError("side must be 'high' or 'low'")
 
     def scan_basis(self) -> str:
         return str(self.basis_combo.currentData())
@@ -236,8 +248,8 @@ class ScanPanel(QWidget):
     def requested_powers_w(self) -> list[float]:
         spacing = self.spacing()
         return make_requested_powers_w(
-            start_w=float(self.start_power.value()) * self.power_factor(),
-            stop_w=float(self.stop_power.value()) * self.power_factor(),
+            start_w=float(self.start_power.value()) * self.power_factor("low"),
+            stop_w=float(self.stop_power.value()) * self.power_factor("high"),
             n_points=int(self.n_points.value()),
             spacing=spacing,
             custom_values_w=self.custom_powers_w() if spacing == "custom" else None,
@@ -383,7 +395,8 @@ class ScanPanel(QWidget):
             self.calibration_reads,
             self.start_power,
             self.stop_power,
-            self.power_units,
+            self.low_power_units,
+            self.high_power_units,
             self.n_points,
             self.repeats_per_point,
             self.settling_time_s,
@@ -416,8 +429,12 @@ class ScanPanel(QWidget):
             get_str(settings, "scan/spacing", self.spacing()),
         )
         self._set_combo_text(
-            self.power_units,
-            get_str(settings, "scan/power_units", self.power_units.currentText()),
+            self.low_power_units,
+            get_str(settings, "scan/power_units", self.high_power_units.currentText())
+        )
+        self._set_combo_text(
+            self.high_power_units,
+            get_str(settings, "scan/power_units", self.high_power_units.currentText()),
         )
         self.start_power.setValue(
             get_float(settings, "scan/start_power", self.start_power.value())
@@ -452,7 +469,7 @@ class ScanPanel(QWidget):
     def save_preferences(self, settings: QSettings) -> None:
         settings.setValue("scan/basis", self.scan_basis())
         settings.setValue("scan/spacing", self.spacing())
-        settings.setValue("scan/power_units", self.power_units.currentText())
+        settings.setValue("scan/power_units", self.high_power_units.currentText())
         settings.setValue("scan/start_power", self.start_power.value())
         settings.setValue("scan/stop_power", self.stop_power.value())
         settings.setValue("scan/n_points", self.n_points.value())
