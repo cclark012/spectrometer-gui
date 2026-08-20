@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -66,6 +67,9 @@ def build_spectrum_path(
     timestamp = parse_timestamp(record.timestamp_utc)
     parts = [sanitize_component(settings.base_name)]
 
+    field_value = float(record.field_value)
+    power_w = float(record.mean_power_w(0))
+
     if settings.include_run_identifier and settings.run_identifier.strip():
         parts.append(sanitize_component(settings.run_identifier))
     if settings.include_date:
@@ -74,10 +78,10 @@ def build_spectrum_path(
         parts.append(
             timestamp.strftime("%H%M%S") + f"{timestamp.microsecond // 1000:03d}"
         )
-    if settings.include_field:
-        parts.append(field_token(float(record.field_value)))
-    if settings.include_power:
-        parts.append(power_token(float(record.mean_power_w(0))))
+    if settings.include_field and math.isfinite(field_value):
+        parts.append(field_token(field_value))
+    if settings.include_power and math.isfinite(power_w):
+        parts.append(power_token(power_w))
 
     return _finalize_path(
         directory=directory,
