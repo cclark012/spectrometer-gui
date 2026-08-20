@@ -34,6 +34,10 @@ class ObisError(RuntimeError):
     pass
 
 
+class ObisDisconnectedError(ObisError):
+    pass
+
+
 def _first_float(text: str, default: float = float("nan")) -> float:
     match = _FLOAT_RE.search(str(text))
     if not match:
