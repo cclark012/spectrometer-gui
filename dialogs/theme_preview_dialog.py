@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
+    QStackedWidget,
     QVBoxLayout,
 )
 
-from ui.theme import ThemeManager
+from ui.theme import SYSTEM_THEME, ThemeManager
 from ui.theme_preview import ThemePreviewWidget
 
 
@@ -44,8 +46,14 @@ class ThemePreviewDialog(QDialog):
         form.addRow("Theme", self.theme_combo)
         layout.addLayout(form)
 
-        self.preview = ThemePreviewWidget(self)
-        layout.addWidget(self.preview, stretch=1)
+        self.preview_stack = QStackedWidget(self)
+        self.preview = ThemePreviewWidget(self.preview_stack)
+        self.system_preview = QLabel(self.preview_stack)
+        self.system_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.system_preview.setPixmap(manager.system_preview_pixmap())
+        self.preview_stack.addWidget(self.preview)
+        self.preview_stack.addWidget(self.system_preview)
+        layout.addWidget(self.preview_stack, stretch=1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel
@@ -62,6 +70,11 @@ class ThemePreviewDialog(QDialog):
 
     def _update_preview(self) -> None:
         key = str(self.theme_combo.currentData())
+        if key == SYSTEM_THEME:
+            self.system_preview.setPixmap(self.manager.system_preview_pixmap())
+            self.preview_stack.setCurrentWidget(self.system_preview)
+            return
+        self.preview_stack.setCurrentWidget(self.preview)
         from PySide6.QtWidgets import QApplication
 
         application = QApplication.instance()

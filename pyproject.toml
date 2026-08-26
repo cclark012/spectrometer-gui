@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spectrometer-gui"
 version = "0.1.0"
-description = "PySide6 spectroscopy acquisition GUI for QEPro, Newport 2936-R, and Coherent OBIS laser boxes."
+description = "PySide6 spectroscopy GUI for QEPro/Andor, Newport 2936-R, and OBIS laser boxes."
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [

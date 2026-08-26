@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from dataclasses import replace
@@ -16,6 +17,7 @@ from core.laser_models import LaserChannelInfo
 from core.records import SpectrumRecord
 from core.settings import AcquisitionSettings
 from planning.gated_sequence import build_gated_plan
+from processing.gated_averaging import GatedSeriesAccumulator
 
 
 class GatedAcquisitionCoordinator(QObject):
@@ -30,6 +32,8 @@ class GatedAcquisitionCoordinator(QObject):
     laser_set_enabled_requested = Signal(str, int, bool)
     spectrum_requested = Signal()
     autosave_requested = Signal(object)
+    series_ready = Signal(object)
+    autosave_series_requested = Signal(object)
     status_requested = Signal(str, int)
     active_changed = Signal(bool)
     plan_ready = Signal(object)
@@ -50,6 +54,7 @@ class GatedAcquisitionCoordinator(QObject):
         self._pending_frame: GatedFrameMetadata | None = None
         self._transition_time_s: float | None = None
         self._sequence_id = ""
+        self._accumulator: GatedSeriesAccumulator | None = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timer_timeout)
@@ -93,6 +98,11 @@ class GatedAcquisitionCoordinator(QObject):
             ),
             "",
         )
+        self._accumulator = (
+            GatedSeriesAccumulator()
+            if settings.output_mode == "averaged_series"
+            else None
+        )
         self._set_active(True)
         self.plan_ready.emit(plan)
         self.status_requested.emit(
@@ -116,6 +126,16 @@ class GatedAcquisitionCoordinator(QObject):
                 "instrument operation to finish.",
                 10_000,
             )
+
+    def fail_for_instrument_disconnect(
+        self,
+        message: str,
+        *,
+        disable_laser: bool,
+    ) -> None:
+        if not self._active:
+            return
+        self._fail(str(message), disable_laser=disable_laser)
 
     def apply_metadata(self, settings: AcquisitionSettings) -> AcquisitionSettings:
         if not self._active or self._pending_frame is None:
@@ -151,7 +171,42 @@ class GatedAcquisitionCoordinator(QObject):
             return False
 
         self._awaiting_spectrum = False
-        if self._settings.autosave_frames:
+        if (
+            record.gated is not None
+            and record.gated.laser_state == "off"
+            and self._transition_time_s is not None
+        ):
+            start_ms = (
+                1000.0 * (record.acquisition_started_s - self._transition_time_s)
+                if math.isfinite(record.acquisition_started_s)
+                else float("nan")
+            )
+            end_ms = (
+                1000.0 * (record.acquisition_finished_s - self._transition_time_s)
+                if math.isfinite(record.acquisition_finished_s)
+                else float("nan")
+            )
+            midpoint_ms = (
+                0.5 * (start_ms + end_ms)
+                if math.isfinite(start_ms) and math.isfinite(end_ms)
+                else float("nan")
+            )
+            record.gated = replace(
+                record.gated,
+                acquisition_call_start_elapsed_ms=start_ms,
+                acquisition_call_midpoint_elapsed_ms=midpoint_ms,
+                acquisition_call_end_elapsed_ms=end_ms,
+            )
+
+        if self._settings.output_mode == "averaged_series":
+            try:
+                if self._accumulator is None:
+                    raise RuntimeError("The gated-series accumulator is unavailable.")
+                self._accumulator.add(record)
+            except Exception as exc:
+                self._fail(f"Could not average gated frame: {exc}")
+                return True
+        elif self._settings.autosave_frames:
             self.autosave_requested.emit(record)
         self._pending_frame = None
 
@@ -176,7 +231,6 @@ class GatedAcquisitionCoordinator(QObject):
     def handle_acquisition_failed(self, message: str) -> None:
         if self._active and self._awaiting_spectrum:
             self._fail(f"Gated spectrum acquisition failed: {self._last_line(message)}")
-
 
     def _schedule(self, delay_ms: int, callback) -> None:
         self._timer.stop()
@@ -262,6 +316,16 @@ class GatedAcquisitionCoordinator(QObject):
         self.spectrum_requested.emit()
 
     def _finish_complete(self) -> None:
+        series = None
+        if self._settings.output_mode == "averaged_series":
+            try:
+                if self._accumulator is None:
+                    raise RuntimeError("The gated-series accumulator is unavailable.")
+                series = self._accumulator.finish()
+            except Exception as exc:
+                self._fail(f"Could not finalize averaged gated series: {exc}")
+                return
+
         if self._settings.disable_after_finish and self._laser is not None:
             # Fire-and-forget final disable. The sequence is already complete, so
             # do not keep the coordinator active waiting for acknowledgement.
@@ -272,6 +336,10 @@ class GatedAcquisitionCoordinator(QObject):
         self._set_active(False)
         message = "Gated acquisition complete."
         self.status_requested.emit(message, 15_000)
+        if series is not None:
+            self.series_ready.emit(series)
+            if self._settings.autosave_frames:
+                self.autosave_series_requested.emit(series)
         self.completed.emit(sequence_id)
 
     def _finish_aborted(self) -> None:
@@ -283,8 +351,8 @@ class GatedAcquisitionCoordinator(QObject):
         self.status_requested.emit("Gated acquisition aborted.", 10_000)
         self.aborted.emit()
 
-    def _fail(self, message: str) -> None:
-        if self._laser is not None:
+    def _fail(self, message: str, *, disable_laser: bool = True) -> None:
+        if disable_laser and self._laser is not None:
             self.laser_set_enabled_requested.emit(
                 str(self._laser.port), int(self._laser.channel), False
             )
@@ -304,6 +372,7 @@ class GatedAcquisitionCoordinator(QObject):
             self._pending_frame = None
             self._transition_time_s = None
             self._sequence_id = ""
+            self._accumulator = None
             self._abort_requested = False
         self.active_changed.emit(self._active)
 

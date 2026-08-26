@@ -94,6 +94,10 @@ class SpectrometerCapabilities:
     feature_methods: dict[str, list[str]] = field(default_factory=dict)
     tec_supported: bool = False
     device_averaging_supported: bool = False
+    electric_dark_correction_supported: bool = True
+    nonlinearity_correction_supported: bool = True
+    backend: str = ""
+    control_schema: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -118,6 +122,8 @@ class SpectrumRecord:
     correct_dark: bool
     correct_nonlinearity: bool
     field_value: float
+    acquisition_started_s: float = float("nan")
+    acquisition_finished_s: float = float("nan")
     signal_max_counts: float = float("nan")
     spectrometer_max_intensity: float = float("nan")
     snr: SNRMetrics | None = None

@@ -67,9 +67,6 @@ def build_spectrum_path(
     timestamp = parse_timestamp(record.timestamp_utc)
     parts = [sanitize_component(settings.base_name)]
 
-    field_value = float(record.field_value)
-    power_w = float(record.mean_power_w(0))
-
     if settings.include_run_identifier and settings.run_identifier.strip():
         parts.append(sanitize_component(settings.run_identifier))
     if settings.include_date:
@@ -78,10 +75,11 @@ def build_spectrum_path(
         parts.append(
             timestamp.strftime("%H%M%S") + f"{timestamp.microsecond // 1000:03d}"
         )
-    if settings.include_field and math.isfinite(field_value):
-        parts.append(field_token(field_value))
-    if settings.include_power and math.isfinite(power_w):
-        parts.append(power_token(power_w))
+    if settings.include_field and math.isfinite(float(record.field_value)):
+        parts.append(field_token(float(record.field_value)))
+    mean_power_w = float(record.mean_power_w(0))
+    if settings.include_power and math.isfinite(mean_power_w):
+        parts.append(power_token(mean_power_w))
 
     return _finalize_path(
         directory=directory,
@@ -108,6 +106,34 @@ def build_power_trace_path(
         parts.append(
             timestamp.strftime("%H%M%S") + f"{timestamp.microsecond // 1000:03d}"
         )
+
+    return _finalize_path(
+        directory=directory,
+        stem=sanitize_component("_".join(parts)),
+        extension=_extension(settings),
+        enumerate_names=settings.include_enumeration,
+        protect_existing=protect_existing,
+    )
+
+
+def build_gated_series_path(
+    settings: FileNameSettings,
+    series,
+    *,
+    protect_existing: bool = True,
+) -> Path:
+    directory = Path(settings.save_directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    timestamp = parse_timestamp(str(series.timestamp_utc))
+    parts = [sanitize_component(settings.base_name), "gated", sanitize_component(series.mode)]
+    if settings.include_run_identifier and settings.run_identifier.strip():
+        parts.append(sanitize_component(settings.run_identifier))
+    if settings.include_date:
+        parts.append(timestamp.strftime("%Y%m%d"))
+    if settings.include_time:
+        parts.append(timestamp.strftime("%H%M%S") + f"{timestamp.microsecond // 1000:03d}")
+    if settings.include_field and math.isfinite(float(series.field_value_mT)):
+        parts.append(field_token(float(series.field_value_mT)))
 
     return _finalize_path(
         directory=directory,

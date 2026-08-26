@@ -8,7 +8,12 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QWidget
 
 from core.records import PowerTracePoint, SpectrumRecord
 from core.settings import FileNameSettings, PowerMonitorSettings
-from io_utils.file_naming import build_power_trace_path, build_spectrum_path
+from io_utils.file_naming import (
+    build_gated_series_path,
+    build_power_trace_path,
+    build_spectrum_path,
+)
+from io_utils.gated_series_io import save_gated_series_csv
 from io_utils.power_logging import FullPowerLogger
 from io_utils.power_trace_io import save_power_trace_csv
 from io_utils.spectrum_io import load_spectrum_record, save_spectrum_record
@@ -122,6 +127,21 @@ class FileIOController(QObject):
         path = self._run_file_operation("Autosave failed", operation)
         if path is not _FAILED:
             self.status_requested.emit(f"Autosaved {path}", 10_000)
+
+    @Slot(object)
+    def autosave_gated_series(self, series) -> None:
+        def operation() -> Path:
+            path = build_gated_series_path(
+                self.file_settings,
+                series,
+                protect_existing=True,
+            )
+            save_gated_series_csv(path, series)
+            return path
+
+        path = self._run_file_operation("Gated-series autosave failed", operation)
+        if path is not _FAILED:
+            self.status_requested.emit(f"Autosaved averaged gated series {path}", 15_000)
 
     @Slot()
     def open_spectrum(self) -> None:

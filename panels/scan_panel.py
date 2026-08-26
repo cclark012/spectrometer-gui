@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -46,7 +46,8 @@ class ScanPanel(QWidget):
 
         self.custom_values = QTextEdit()
         self.custom_values.setPlaceholderText(
-            "Custom powers, one per line, using selected units.\nExample:\n1\n2\n5\n10"
+            "Custom powers, one per line, using the ending-power units."
+            "\nExample:\n1\n2\n5\n10"
         )
         self.custom_values.setFixedHeight(90)
         self.custom_values.setVisible(False)
@@ -65,58 +66,42 @@ class ScanPanel(QWidget):
         self.basis_combo = QComboBox()
         self.basis_combo.addItem("Laser setpoint", "setpoint")
         self.basis_combo.addItem("Expected actual power", "expected_actual")
-        # self.align_combo(self.basis_combo)
 
-        spacing_label = QLabel("Spacing")
         self.spacing_combo = QComboBox()
         self.spacing_combo.addItem("Linear", "linear")
         self.spacing_combo.addItem("Logarithmic", "logarithmic")
         self.spacing_combo.addItem("Custom", "custom")
         self.spacing_combo.currentIndexChanged.connect(self._on_spacing_changed)
-        # self.align_combo(self.spacing_combo)
-        
-        arrange = QHBoxLayout()
-        arrange.addWidget(self.basis_combo, stretch=2)
-        arrange.addWidget(spacing_label, stretch=1, alignment=Qt.AlignmentFlag.AlignCenter)
-        arrange.addWidget(self.spacing_combo, stretch=2)
+
+        self.calibration_reads = QSpinBox()
+        self.calibration_reads.setRange(1, 1000)
+        self.calibration_reads.setValue(3)
 
         self.start_power = self._make_power_spin(1.0)
         self.stop_power = self._make_power_spin(10.0)
-
-        units = ["W", "mW", "μW", "nW"]
-        factors = [1.0, 1.0e-3, 1.0e-6, 1.0e-9]
-        
-        self.low_power_units = QComboBox()
-        self.high_power_units = QComboBox()
-        for unit, factor in zip(units, factors, strict=True):
-            self.low_power_units.addItem(unit, factor)
-            self.high_power_units.addItem(unit, factor)
-
-        self.low_power_units.setMaximumWidth(72)
-        # self.align_combo(self.low_power_units, align_dropdown=True)
-        self.high_power_units.setMaximumWidth(72)
-        # self.align_combo(self.high_power_units, align_dropdown=True)
+        self.start_power_units = self._make_power_units()
+        self.stop_power_units = self._make_power_units()
+        # Compatibility alias for extensions written against the earlier
+        # single-unit control. Custom values intentionally use the stop unit.
+        self.power_units = self.stop_power_units
 
         power_row = QHBoxLayout()
-        power_row.addWidget(self.start_power, stretch=1)
-        power_row.addWidget(self.low_power_units, stretch=1)
-        power_row.addWidget(QLabel("to"), alignment=Qt.AlignmentFlag.AlignCenter)
-        power_row.addWidget(self.stop_power, stretch=1)
-        power_row.addWidget(self.high_power_units, stretch=1)
+        power_row.addWidget(self.start_power)
+        power_row.addWidget(self.start_power_units)
+        power_row.addWidget(QLabel("to"))
+        power_row.addWidget(self.stop_power)
+        power_row.addWidget(self.stop_power_units)
 
-        point_label = QLabel("Points")
         self.n_points = QSpinBox()
         self.n_points.setRange(1, 10_000)
         self.n_points.setValue(5)
         self.n_points.setMaximumWidth(78)
 
-        repetitions_label = QLabel("Replicates")
         self.repeats_per_point = QSpinBox()
         self.repeats_per_point.setRange(1, 1000)
         self.repeats_per_point.setValue(1)
         self.repeats_per_point.setMaximumWidth(78)
 
-        settling_label = QLabel("Settling")
         self.settling_time_s = QDoubleSpinBox()
         self.settling_time_s.setRange(0.0, 3600.0)
         self.settling_time_s.setDecimals(2)
@@ -124,35 +109,32 @@ class ScanPanel(QWidget):
         self.settling_time_s.setSuffix(" s")
         self.settling_time_s.setMaximumWidth(100)
 
-        # TODO - Decide whether to keep/use this or not
-        scan_labels = [point_label, repetitions_label, settling_label]
-        scan_values = [self.n_points, self.repeats_per_point, self.settling_time_s]
-
-        scan_options = QHBoxLayout()
-        for label, value in zip(scan_labels, scan_values, strict=True):
-            scan_options.addWidget(label, stretch=2)
-            scan_options.addWidget(value)
-
-        self.enable_label = QLabel("Enable before scan")
+        self.enable_label = QLabel()
+        self.enable_label.setText("Enable before scan")
         self.enable_before_scan = QCheckBox()
         self.enable_before_scan.setChecked(True)
-        self.disable_label = QLabel("Disable after scan")
+        self.disable_label = QLabel()
+        self.disable_label.setText("Disable after scan")
         self.disable_after_scan = QCheckBox()
-        self.auto_label = QLabel("Autosave spectra")
+        self.auto_label = QLabel()
+        self.auto_label.setText("Autosave spectra")
         self.autosave_scan_spectra = QCheckBox()
         self.autosave_scan_spectra.setChecked(True)
-        option_labels = [self.enable_label, self.disable_label, self.auto_label]
-        option_checks = [self.enable_before_scan, self.disable_after_scan, self.autosave_scan_spectra] # noqa
 
-        form.addRow("Basis", arrange)
+        form.addRow("Basis", self.basis_combo)
+        form.addRow("Spacing", self.spacing_combo)
+        form.addRow("Calibration reads/point", self.calibration_reads)
         form.addRow("Power range", power_row)
-        # form.addRow(scan_options)
         form.addRow("Points", self.n_points)
         form.addRow("Repeats/point", self.repeats_per_point)
         form.addRow("Settling", self.settling_time_s)
 
         options = QHBoxLayout()
-        for label, check in zip(option_labels, option_checks, strict=True):
+        for label, check in zip(
+                [self.enable_label, self.disable_label, self.auto_label],
+                [self.enable_before_scan, self.disable_after_scan, self.autosave_scan_spectra],
+                strict=True
+            ):
             options.addWidget(label)
             options.addWidget(check)
 
@@ -170,17 +152,14 @@ class ScanPanel(QWidget):
         return spin
 
     @staticmethod
-    def align_combo(
-            combo: QComboBox, 
-            alignment = Qt.AlignmentFlag.AlignCenter, 
-            align_dropdown: bool = False
-        ) -> None:
-        combo.setEditable(True)
-        combo.lineEdit().setReadOnly(True)
-        combo.lineEdit().setAlignment(alignment)
-        if align_dropdown:
-            for i in range(combo.count()):
-                combo.setItemData(i, alignment, Qt.ItemDataRole.TextAlignmentRole)
+    def _make_power_units() -> QComboBox:
+        units = QComboBox()
+        units.addItem("W", 1.0)
+        units.addItem("mW", 1e-3)
+        units.addItem("μW", 1e-6)
+        units.addItem("nW", 1e-9)
+        units.setMaximumWidth(72)
+        return units
 
     def _build_buttons(self) -> QHBoxLayout:
         buttons = QHBoxLayout()
@@ -239,15 +218,17 @@ class ScanPanel(QWidget):
         self.custom_values.setVisible(self.spacing() == "custom")
 
     def calibration_reads_per_point(self) -> int:
-        return int(self.repeats_per_point.value())
+        return int(self.calibration_reads.value())
 
-    def power_factor(self, side: str = "high") -> float:
-        if side == "high":
-            return float(self.high_power_units.currentData())
-        elif side == "low":
-            return float(self.low_power_units.currentData())
-        else:
-            raise ValueError("side must be 'high' or 'low'")
+    def power_factor(self) -> float:
+        """Return the stop/custom-value factor retained by the legacy API."""
+        return float(self.stop_power_units.currentData())
+
+    def start_power_factor(self) -> float:
+        return float(self.start_power_units.currentData())
+
+    def stop_power_factor(self) -> float:
+        return float(self.stop_power_units.currentData())
 
     def scan_basis(self) -> str:
         return str(self.basis_combo.currentData())
@@ -273,8 +254,8 @@ class ScanPanel(QWidget):
     def requested_powers_w(self) -> list[float]:
         spacing = self.spacing()
         return make_requested_powers_w(
-            start_w=float(self.start_power.value()) * self.power_factor("low"),
-            stop_w=float(self.stop_power.value()) * self.power_factor("high"),
+            start_w=float(self.start_power.value()) * self.start_power_factor(),
+            stop_w=float(self.stop_power.value()) * self.stop_power_factor(),
             n_points=int(self.n_points.value()),
             spacing=spacing,
             custom_values_w=self.custom_powers_w() if spacing == "custom" else None,
@@ -417,10 +398,11 @@ class ScanPanel(QWidget):
         for widget in (
             self.basis_combo,
             self.spacing_combo,
+            self.calibration_reads,
             self.start_power,
             self.stop_power,
-            self.low_power_units,
-            self.high_power_units,
+            self.start_power_units,
+            self.stop_power_units,
             self.n_points,
             self.repeats_per_point,
             self.settling_time_s,
@@ -452,13 +434,18 @@ class ScanPanel(QWidget):
             self.spacing_combo,
             get_str(settings, "scan/spacing", self.spacing()),
         )
-        self._set_combo_text(
-            self.low_power_units,
-            get_str(settings, "scan/power_units", self.high_power_units.currentText())
+        legacy_units = get_str(
+            settings,
+            "scan/power_units",
+            self.stop_power_units.currentText(),
         )
         self._set_combo_text(
-            self.high_power_units,
-            get_str(settings, "scan/power_units", self.high_power_units.currentText()),
+            self.start_power_units,
+            get_str(settings, "scan/start_power_units", legacy_units),
+        )
+        self._set_combo_text(
+            self.stop_power_units,
+            get_str(settings, "scan/stop_power_units", legacy_units),
         )
         self.start_power.setValue(
             get_float(settings, "scan/start_power", self.start_power.value())
@@ -469,6 +456,9 @@ class ScanPanel(QWidget):
         self.n_points.setValue(get_int(settings, "scan/n_points", self.n_points.value()))
         self.repeats_per_point.setValue(
             get_int(settings, "scan/repeats_per_point", self.repeats_per_point.value())
+        )
+        self.calibration_reads.setValue(
+            get_int(settings, "scan/calibration_reads", self.calibration_reads.value())
         )
         self.settling_time_s.setValue(
             get_float(settings, "scan/settling_time_s", self.settling_time_s.value())
@@ -490,11 +480,13 @@ class ScanPanel(QWidget):
     def save_preferences(self, settings: QSettings) -> None:
         settings.setValue("scan/basis", self.scan_basis())
         settings.setValue("scan/spacing", self.spacing())
-        settings.setValue("scan/power_units", self.high_power_units.currentText())
+        settings.setValue("scan/start_power_units", self.start_power_units.currentText())
+        settings.setValue("scan/stop_power_units", self.stop_power_units.currentText())
         settings.setValue("scan/start_power", self.start_power.value())
         settings.setValue("scan/stop_power", self.stop_power.value())
         settings.setValue("scan/n_points", self.n_points.value())
         settings.setValue("scan/repeats_per_point", self.repeats_per_point.value())
+        settings.setValue("scan/calibration_reads", self.calibration_reads.value())
         settings.setValue("scan/settling_time_s", self.settling_time_s.value())
         settings.setValue("scan/enable_before", self.enable_before_scan.isChecked())
         settings.setValue("scan/disable_after", self.disable_after_scan.isChecked())

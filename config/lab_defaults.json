@@ -1,7 +1,7 @@
 {
   "newport_dll": "C:/Program Files/Newport/Newport Power Meter Application/Samples/PowerMeterCommands.dll",
   "power_channel": 1,
-  "obis_ports": ["COM3", "COM5"],
-  "laser_mode": "auto",
+  "obis_ports": ["COM8", "COM9"],
+  "laser_mode": "real",
   "fallback_emulator": false
 }

@@ -64,6 +64,7 @@ class InstrumentRuntime(QObject):
     _snr_settings_requested = Signal(object)
     _spectrometer_temperature_requested = Signal()
     _spectrometer_capabilities_requested = Signal()
+    _spectrometer_configuration_requested = Signal(object)
     _connect_spectrometer_requested = Signal()
     _disconnect_spectrometer_requested = Signal()
 
@@ -119,13 +120,19 @@ class InstrumentRuntime(QObject):
             controller.query_spectrometer_capabilities,
             queued,
         )
+        self._spectrometer_configuration_requested.connect(
+            controller.configure_spectrometer,
+            queued,
+        )
         self._connect_spectrometer_requested.connect(controller.connect_spectrometer, queued)
         self._disconnect_spectrometer_requested.connect(controller.disconnect_spectrometer, queued)
 
         self._connect_power_meter_requested.connect(controller.connect_power_meter, queued)
         self._disconnect_power_meter_requested.connect(controller.disconnect_power_meter, queued)
 
-        controller.spectrometer_connection_changed.connect(self.spectrometer_connection_changed.emit)
+        controller.spectrometer_connection_changed.connect(
+            self.spectrometer_connection_changed.emit
+        )
         controller.power_meter_connection_changed.connect(self.power_meter_connection_changed.emit)
 
         controller.connected.connect(self.connected.emit)
@@ -240,6 +247,10 @@ class InstrumentRuntime(QObject):
     @Slot()
     def query_spectrometer_capabilities(self) -> None:
         self._spectrometer_capabilities_requested.emit()
+
+    @Slot(object)
+    def configure_spectrometer(self, values: object) -> None:
+        self._spectrometer_configuration_requested.emit(values)
 
     @Slot()
     def connect_spectrometer(self) -> None:

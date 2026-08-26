@@ -20,6 +20,7 @@ camera at a time.
 
 import argparse
 import ctypes
+import faulthandler
 import json
 import os
 import platform
@@ -809,16 +810,25 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
             _debug(f"Spectrograph device index: {device_index}")
             queries = device["queries"]
 
-            function_name, function = optional(
-                "GetSerialNumber", [ctypes.c_int, ctypes.c_char_p]
-            )
-            serial = ctypes.create_string_buffer(256)
+            serial_buffer_bytes = 256
+            serial_argtypes: list[Any] = [
+                ctypes.c_int,
+                ctypes.POINTER(ctypes.c_char),
+            ]
+            if prefix == "ATSpectrograph":
+                # ATSpectrograph adds maxSerialStrLen after the output buffer;
+                # the legacy Shamrock ABI does not include that parameter.
+                serial_argtypes.append(ctypes.c_int)
+            function_name, function = optional("GetSerialNumber", serial_argtypes)
+            serial = ctypes.create_string_buffer(serial_buffer_bytes)
+            serial_args: list[Any] = [ctypes.c_int(device_index), serial]
+            if prefix == "ATSpectrograph":
+                serial_args.append(ctypes.c_int(serial_buffer_bytes))
 
             queries["serial_number"] = recorder.record(
                 function_name,
                 function,
-                ctypes.c_int(device_index),
-                serial,
+                *serial_args,
                 value=lambda: _buffer_text(serial),
             )
             _debug("Serial Number:", queries["serial_number"])
@@ -901,7 +911,8 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(angular_deviation),
                 ctypes.byref(focal_tilt),
                 value=lambda: {
-                    "focal_length_mm": float(focal_length.value),
+                    "focal_length_m": float(focal_length.value),
+                    "focal_length_mm": 1000.0 * float(focal_length.value),
                     "angular_deviation": float(angular_deviation.value),
                     "focal_tilt": float(focal_tilt.value),
                 },
@@ -909,16 +920,26 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
             _debug("Optical Parameters:", queries["optical_parameters"])
 
             gratings: list[dict[str, Any]] = []
+            blaze_buffer_bytes = 256
+            grating_info_argtypes: list[Any] = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_char),
+            ]
+            if prefix == "ATSpectrograph":
+                # ATSpectrograph adds maxBlazeStrLen after the output buffer;
+                # the legacy Shamrock ABI does not include that parameter.
+                grating_info_argtypes.append(ctypes.c_int)
+            grating_info_argtypes.extend(
+                [
+                    ctypes.POINTER(ctypes.c_int),
+                    ctypes.POINTER(ctypes.c_int),
+                ]
+            )
             get_info_name, get_info = optional(
                 "GetGratingInfo",
-                [
-                    ctypes.c_int,
-                    ctypes.c_int,
-                    ctypes.POINTER(ctypes.c_float),
-                    ctypes.c_char_p,
-                    ctypes.POINTER(ctypes.c_int),
-                    ctypes.POINTER(ctypes.c_int),
-                ],
+                grating_info_argtypes,
             )
             _debug(get_info_name, get_info)
             limits_name, get_limits = optional(
@@ -930,22 +951,30 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     ctypes.POINTER(ctypes.c_float),
                 ],
             )
-            _debug("Limits:", limits_name, get_limits)
-            _debug(f"Number of Gratings: {grating_count.value}")
+            _debug(limits_name, get_limits)
             for grating_index in range(1, max(0, int(grating_count.value)) + 1):
                 lines = ctypes.c_float()
-                blaze = ctypes.create_string_buffer(256)
+                blaze = ctypes.create_string_buffer(blaze_buffer_bytes)
                 home = ctypes.c_int()
                 offset = ctypes.c_int()
-                info_result = recorder.record(
-                    get_info_name,
-                    get_info,
+                grating_info_args: list[Any] = [
                     ctypes.c_int(device_index),
                     ctypes.c_int(grating_index),
                     ctypes.byref(lines),
                     blaze,
-                    ctypes.byref(home),
-                    ctypes.byref(offset),
+                ]
+                if prefix == "ATSpectrograph":
+                    grating_info_args.append(ctypes.c_int(blaze_buffer_bytes))
+                grating_info_args.extend(
+                    [
+                        ctypes.byref(home),
+                        ctypes.byref(offset),
+                    ]
+                )
+                info_result = recorder.record(
+                    get_info_name,
+                    get_info,
+                    *grating_info_args,
                     value=lambda lines=lines, blaze=blaze, home=home, offset=offset: {
                         "lines_per_mm": float(lines.value),
                         "blaze": _buffer_text(blaze),
@@ -953,7 +982,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                         "offset": int(offset.value),
                     },
                 )
-                _debug(f"Grating {grating_index}: {info_result}")
                 minimum = ctypes.c_float()
                 maximum = ctypes.c_float()
                 limits_result = recorder.record(
@@ -968,7 +996,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                         "maximum_nm": float(maximum.value),
                     },
                 )
-                _debug(f"Wavelength limits: {minimum} - {maximum}")
                 gratings.append(
                     {
                         "index": grating_index,
@@ -979,12 +1006,18 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
             queries["gratings"] = gratings
 
             auto_slits: list[dict[str, Any]] = []
+            if prefix == "ATSpectrograph":
+                slit_present_suffix = "SlitIsPresent"
+                slit_width_suffix = "GetSlitWidth"
+            else:
+                slit_present_suffix = "AutoSlitIsPresent"
+                slit_width_suffix = "GetAutoSlitWidth"
             present_name, auto_slit_present = optional(
-                "AutoSlitIsPresent",
+                slit_present_suffix,
                 [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)],
             )
             width_name, get_auto_slit_width = optional(
-                "GetAutoSlitWidth",
+                slit_width_suffix,
                 [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_float)],
             )
             for slit_index in range(1, 5):
@@ -1015,7 +1048,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     )
                 auto_slits.append(slit)
             queries["auto_slits"] = auto_slits
-            _debug(f"Auto Slits: {auto_slits}")
 
             shutter_present_name, shutter_present_fn = optional(
                 "ShutterIsPresent", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -1041,7 +1073,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     ctypes.byref(shutter),
                     value=lambda: int(shutter.value),
                 )
-                _debug(f"Shutter: {queries["shutter_state"]}")
 
             flippers: list[dict[str, Any]] = []
             present_name, flipper_present_fn = optional(
@@ -1080,7 +1111,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     )
                 flippers.append(entry)
             queries["flipper_mirrors"] = flippers
-            _debug(f"Flipper Mirrors: {flippers}")
 
             focus_present_name, focus_present_fn = optional(
                 "FocusMirrorIsPresent",
@@ -1095,7 +1125,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 value=lambda: bool(focus_present.value),
             )
             queries["focus_mirror_present"] = focus_present_result
-            _debug(f"Focus Mirror Present: {focus_present_result}")
             if focus_present_result.code == ATSPECTROGRAPH_SUCCESS and focus_present.value:
                 focus_name, get_focus = optional(
                     "GetFocusMirror", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -1141,7 +1170,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                         }
                     )
             queries["detector_offsets"] = detector_offsets
-            _debug(f"Detector Offsets: {detector_offsets}")
 
             pixel_width_name, get_pixel_width = optional(
                 "GetPixelWidth", [ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
@@ -1154,7 +1182,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 ctypes.byref(pixel_width),
                 value=lambda: float(pixel_width.value),
             )
-            _debug(f"Pixel Width (um): {queries["pixel_width_um"]}")
 
             pixel_count_name, get_pixel_count = optional(
                 "GetNumberPixels", [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
@@ -1168,7 +1195,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                 value=lambda: int(pixel_count.value),
             )
             queries["pixel_count"] = pixel_count_result
-            _debug(f"Pixel Count: {pixel_count_result}")
 
             calibration_name, get_calibration = optional(
                 "GetCalibration",
@@ -1193,7 +1219,6 @@ def _probe_spectrograph(root: Path, dll_path: Path) -> dict[str, Any]:
                     },
                 )
                 queries["calibration_summary"] = calibration_result
-                _debug(f"Calibration Summary: {calibration_result}")
 
             report["devices"].append(device)
     finally:
@@ -1231,6 +1256,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    try:
+        # This can capture a Python stack before a fatal native access
+        # violation terminates a Windows probe run.
+        faulthandler.enable(all_threads=True)
+    except Exception:
+        pass
     if os.name != "nt":
         print("This probe requires Windows.", file=sys.stderr)
         return 2

@@ -35,6 +35,8 @@ class AcquisitionPanel(QWidget):
 
         self._acquiring = False
         self._sequence_owner: str | None = None
+        self._dark_correction_supported = True
+        self._nonlinearity_correction_supported = True
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -55,6 +57,14 @@ class AcquisitionPanel(QWidget):
         self.subtract_background_check = QCheckBox()
         self.subtract_background_check.setChecked(False)
 
+        self.measure_power_check = QCheckBox()
+        self.measure_power_check.setChecked(True)
+        self.measure_power_check.setToolTip(
+            "Read the connected Newport immediately before and after each spectrum. "
+            "Turn this off for maximum spectrometer throughput while keeping the "
+            "power meter connected."
+        )
+
         self.take_background_button = QPushButton("Take Background")
         self.take_background_button.clicked.connect(
             lambda _checked=False: self.background_requested.emit()
@@ -64,10 +74,6 @@ class AcquisitionPanel(QWidget):
         self.clear_background_button.clicked.connect(
             lambda _checked=False: self.background_clear_requested.emit()
         )
-
-        background_row = QHBoxLayout()
-        background_row.addWidget(self.take_background_button, stretch=1)
-        background_row.addWidget(self.clear_background_button, stretch=1)
 
         self.averages = QSpinBox()
         self.averages.setRange(1, 1000)
@@ -119,10 +125,14 @@ class AcquisitionPanel(QWidget):
         recommendation_row.addWidget(self.recommend_button)
         recommendation_row.addWidget(self.auto_tune_button)
 
-        live_label = QLabel("Live")
-        electric_dark_label = QLabel("Electric Dark")
-        nonlinearity_label = QLabel("Nonlinearity")
-        sub_background_label = QLabel("Subtract Background")
+        live_label = QLabel()
+        live_label.setText("Live")
+        electric_dark_label = QLabel()
+        electric_dark_label.setText("Electric Dark")
+        nonlinearity_label = QLabel()
+        nonlinearity_label.setText("Nonlinearity")
+        sub_background_label = QLabel()
+        sub_background_label.setText("Subtract Background")
         labels = [
             live_label, electric_dark_label, nonlinearity_label, sub_background_label
         ]
@@ -137,29 +147,17 @@ class AcquisitionPanel(QWidget):
             options.addWidget(label)
             options.addWidget(check)
 
-        # average_mode_label = QLabel("Averaging mode")
-        averages_label = QLabel("Averages")
-        boxcar_label = QLabel("Boxcar width")
-        
-        smoothing_labels = [averages_label, boxcar_label]
-        smoothing_values = [self.averages, self.boxcar_width]
-        smoothing_options = QHBoxLayout()
-
-        for label, value in zip(smoothing_labels, smoothing_values, strict=True):
-            smoothing_options.addWidget(label)
-            smoothing_options.addWidget(value)
-        
-
         form.addRow(options)
-        # form.addRow("Background", self.take_background_button)
-        # form.addRow("", self.clear_background_button)
-        form.addRow(background_row)
+        background_row = QHBoxLayout()
+        background_row.addWidget(self.take_background_button)
+        background_row.addWidget(self.clear_background_button)
+        form.addRow("Background", background_row)
         form.addRow("Integration time", self.integration_ms)
         form.addRow("Averaging mode", self.averaging_mode_combo)
         form.addRow("Averages", self.averages)
         form.addRow("Boxcar width", self.boxcar_width)
-        # form.addRow(smoothing_options)
         form.addRow("Magnetic field", self.field_input)
+        form.addRow("Measure power", self.measure_power_check)
         form.addRow("SNR", self.snr_label)
         form.addRow("Acquisition tuning", recommendation_row)
 
@@ -191,6 +189,7 @@ class AcquisitionPanel(QWidget):
             notes=str(notes),
             averaging_mode=str(self.averaging_mode_combo.currentData()),
             subtract_background=bool(self.subtract_background_check.isChecked()),
+            measure_power=bool(self.measure_power_check.isChecked()),
         )
 
     def is_live_enabled(self) -> bool:
@@ -235,9 +234,40 @@ class AcquisitionPanel(QWidget):
             self.dark_check,
             self.nonlinearity_check,
             self.subtract_background_check,
+            self.measure_power_check,
             self.field_input,
         ):
             widget.setEnabled(parameters_enabled)
+        self.dark_check.setEnabled(
+            parameters_enabled and self._dark_correction_supported
+        )
+        self.nonlinearity_check.setEnabled(
+            parameters_enabled and self._nonlinearity_correction_supported
+        )
+
+    def set_correction_availability(
+        self,
+        *,
+        electric_dark: bool,
+        nonlinearity: bool,
+    ) -> None:
+        self._dark_correction_supported = bool(electric_dark)
+        self._nonlinearity_correction_supported = bool(nonlinearity)
+        if not self._dark_correction_supported:
+            self.dark_check.setChecked(False)
+            self.dark_check.setToolTip(
+                "This correction is not exposed by the connected spectrometer adapter."
+            )
+        else:
+            self.dark_check.setToolTip("")
+        if not self._nonlinearity_correction_supported:
+            self.nonlinearity_check.setChecked(False)
+            self.nonlinearity_check.setToolTip(
+                "This correction is not exposed by the connected spectrometer adapter."
+            )
+        else:
+            self.nonlinearity_check.setToolTip("")
+        self._apply_control_state()
 
     def set_integration_limits_us(self, min_us: int, max_us: int) -> None:
         min_us = int(min_us or 0)
@@ -361,6 +391,9 @@ class AcquisitionPanel(QWidget):
         self.subtract_background_check.setChecked(
             get_bool(settings, "acquisition/subtract_background", False)
         )
+        self.measure_power_check.setChecked(
+            get_bool(settings, "acquisition/measure_power", True)
+        )
 
     def save_preferences(self, settings: QSettings) -> None:
         settings.setValue("acquisition/live_enabled", self.live_check.isChecked())
@@ -380,4 +413,8 @@ class AcquisitionPanel(QWidget):
         settings.setValue(
             "acquisition/subtract_background",
             self.subtract_background_check.isChecked(),
+        )
+        settings.setValue(
+            "acquisition/measure_power",
+            self.measure_power_check.isChecked(),
         )

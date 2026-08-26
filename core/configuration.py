@@ -84,6 +84,23 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
     if power_channel < 1:
         raise ConfigurationError("'power_channel' must be at least 1.")
 
+    spectrometer_backend = str(
+        _value(args, defaults, "spectrometer_backend", "qepro")
+    ).strip().lower()
+    if spectrometer_backend not in {"qepro", "andor"}:
+        raise ConfigurationError(
+            "'spectrometer_backend' must be one of: qepro, andor."
+        )
+
+    def nonnegative_index(key: str) -> int:
+        try:
+            value = int(_value(args, defaults, key, 0))
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError(f"{key!r} must be an integer.") from exc
+        if value < 0:
+            raise ConfigurationError(f"{key!r} must not be negative.")
+        return value
+
     laser_mode = str(_value(args, defaults, "laser_mode", "auto")).strip().lower()
     if laser_mode not in {"real", "emulated", "auto"}:
         raise ConfigurationError(
@@ -101,6 +118,13 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
         r"C:\Program Files\Newport\Newport Power Meter Application\Samples\PowerMeterCommands.dll",
     )
     newport_dll = Path(str(newport_dll_value)) if newport_dll_value else None
+    andor_solis_value = _value(
+        args,
+        defaults,
+        "andor_solis_dir",
+        r"C:\Program Files\Andor SOLIS",
+    )
+    andor_solis_dir = Path(str(andor_solis_value)) if andor_solis_value else None
 
     emulate_main_devices = not bool(getattr(args, "real", False))
     if bool(getattr(args, "emulate", False)):
@@ -111,6 +135,10 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
         fallback_emulator=fallback_emulator,
         newport_dll=newport_dll,
         power_channel=power_channel,
+        spectrometer_backend=spectrometer_backend,
+        andor_solis_dir=andor_solis_dir,
+        andor_camera_index=nonnegative_index("andor_camera_index"),
+        andor_spectrograph_index=nonnegative_index("andor_spectrograph_index"),
         emulate_lasers=(laser_mode == "emulated"),
         laser_fallback_emulator=(laser_mode == "auto"),
         obis_ports=_obis_ports(_value(args, defaults, "obis_ports", None)),

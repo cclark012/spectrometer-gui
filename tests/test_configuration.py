@@ -37,6 +37,23 @@ def test_build_device_config_validates_and_normalizes_values() -> None:
     assert config.power_channel == 2
     assert config.laser_fallback_emulator
     assert config.obis_ports == ["COM8"]
+    assert config.spectrometer_backend == "qepro"
+
+
+def test_andor_backend_options_are_normalized() -> None:
+    config = build_device_config(
+        namespace(real=True),
+        {
+            "spectrometer_backend": "ANDOR",
+            "andor_solis_dir": "C:/Andor",
+            "andor_camera_index": 1,
+            "andor_spectrograph_index": 2,
+        },
+    )
+    assert config.spectrometer_backend == "andor"
+    assert config.andor_solis_dir == Path("C:/Andor")
+    assert config.andor_camera_index == 1
+    assert config.andor_spectrograph_index == 2
 
 
 def test_invalid_laser_mode_fails() -> None:

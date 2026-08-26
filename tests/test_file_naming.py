@@ -40,3 +40,22 @@ def test_build_spectrum_path_enumerates_existing_files(tmp_path: Path) -> None:
     second = build_spectrum_path(settings, _record())
     assert first.name == "sample_0001.csv"
     assert second.name == "sample_0002.csv"
+
+
+def test_nonfinite_optional_tokens_are_omitted(tmp_path: Path) -> None:
+    record = _record()
+    record.field_value = float("nan")
+    record.p_before = PowerSnapshot.missing()
+    record.p_after = PowerSnapshot.missing()
+    settings = FileNameSettings(
+        save_directory=tmp_path,
+        base_name="sample",
+        include_date=False,
+        include_time=False,
+        include_power=True,
+        include_field=True,
+        include_run_identifier=False,
+        include_enumeration=False,
+    )
+
+    assert build_spectrum_path(settings, record).name == "sample.csv"

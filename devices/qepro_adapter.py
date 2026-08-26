@@ -6,14 +6,7 @@ from typing import Any, NoReturn
 import numpy as np
 
 from core.records import SpectralAcquisition, SpectrometerCapabilities
-
-
-class SpectrometerCommunicationError(RuntimeError):
-    pass
-
-
-class SpectrometerCommandError(RuntimeError):
-    """A device command failed, but a follow-up query verified communication."""
+from devices.errors import SpectrometerCommandError, SpectrometerCommunicationError
 
 
 class QEProSpectrometer:
@@ -311,9 +304,7 @@ class QEProSpectrometer:
 
     @staticmethod
     def _read_tec_temperature_for_health_check(thermo: object) -> float:
-        temperature_c = float(
-            thermo.read_temperature_degrees_celsius()
-        )
+        temperature_c = float(thermo.read_temperature_degrees_celsius())
         if not np.isfinite(temperature_c):
             raise RuntimeError(
                 "QEPro returned a non-finite CCD temperature during health check."
@@ -329,9 +320,9 @@ class QEProSpectrometer:
             if not self._is_transport_error(exc):
                 raise
 
-            # A rejected TEC setpoint can surface through SeaBreeze as a data
-            # transfer error even when the QEPro remains available. Perform one
-            # read-only query before declaring the entire device disconnected.
+            # SeaBreeze can report a transfer failure for a rejected target
+            # while the QEPro remains reachable. One read-only health check
+            # distinguishes a command rejection from a lost USB connection.
             try:
                 readback_c = self._read_tec_temperature_for_health_check(thermo)
             except Exception as health_exc:
@@ -496,9 +487,8 @@ class QEProSpectrometer:
             and self._applied_device_averages != previous_device_averages
         )
         if integration_changed or device_averaging_changed:
-            # QEPro/SeaBreeze can return the most recently completed frame on
-            # the first read after a configuration change. Discard exactly one
-            # frame so the returned acquisition uses the requested settings.
+            # QEPro/SeaBreeze can return the previously completed frame on the
+            # first read after a configuration change. Discard exactly one.
             self._read_intensities(
                 correct_dark=correct_dark,
                 correct_nonlinearity=correct_nonlinearity,

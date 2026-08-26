@@ -19,6 +19,9 @@ class EmulatedPowerMeter:
         self.min_wavelength_nm = 190
         self.max_wavelength_nm = 1100
 
+    def identify(self) -> str:
+        return "EMULATED Newport 2936-R"
+
     def read_all_power_with_status(self) -> PowerSnapshot:
         elapsed_s = time.perf_counter() - self._t0
         base = 7.0e-6

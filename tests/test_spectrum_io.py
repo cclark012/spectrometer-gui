@@ -44,6 +44,11 @@ def _record() -> SpectrumRecord:
             laser_state="off",
             requested_delay_ms=50,
             request_elapsed_since_transition_ms=52.25,
+            acquisition_call_start_elapsed_ms=53.0,
+            acquisition_call_midpoint_elapsed_ms=103.0,
+            acquisition_call_end_elapsed_ms=153.0,
+            phase_index=2,
+            repeat_index=1,
         ),
         snr=SNRMetrics(
             valid=True,
