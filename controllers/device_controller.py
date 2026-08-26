@@ -22,7 +22,11 @@ from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
 from devices.protocols import PowerMeterAdapter, SpectrometerAdapter
-from devices.qepro_adapter import QEProSpectrometer, SpectrometerCommunicationError
+from devices.qepro_adapter import (
+    QEProSpectrometer,
+    SpectrometerCommandError,
+    SpectrometerCommunicationError,
+)
 from processing.background import BackgroundCorrector
 from processing.smoothing import boxcar_smooth
 from processing.snr import estimate_snr
@@ -283,6 +287,10 @@ class DeviceController(QObject):
         try:
             self._require_spectrometer().set_tec_target_c(float(temperature_c))
             self.status.emit(f"TEC target set to {float(temperature_c):.2f} °C.")
+        except (SpectrometerCommandError, ValueError) as exc:
+            # A rejected/guarded target is an operation failure, not proof that
+            # the spectrometer disconnected.
+            self.error.emit(str(exc))
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
             self.error.emit(str(exc))
