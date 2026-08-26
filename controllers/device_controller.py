@@ -21,12 +21,9 @@ from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSetting
 from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
+from devices.errors import SpectrometerCommandError, SpectrometerCommunicationError
 from devices.protocols import PowerMeterAdapter, SpectrometerAdapter
-from devices.qepro_adapter import (
-    QEProSpectrometer,
-    SpectrometerCommandError,
-    SpectrometerCommunicationError,
-)
+from devices.qepro_adapter import QEProSpectrometer
 from processing.background import BackgroundCorrector
 from processing.smoothing import boxcar_smooth
 from processing.snr import estimate_snr
@@ -122,6 +119,20 @@ class DeviceController(QObject):
         try:
             if self.config.emulate:
                 return EmulatedSpectrometer(), "Spectrometer: emulator", ""
+            if self.config.spectrometer_backend == "andor":
+                from devices.andor_adapter import AndorKymeraSpectrometer
+
+                if self.config.andor_solis_dir is None:
+                    raise RuntimeError("Andor mode requires andor_solis_dir.")
+                return (
+                    AndorKymeraSpectrometer(
+                        self.config.andor_solis_dir,
+                        camera_index=self.config.andor_camera_index,
+                        spectrograph_index=self.config.andor_spectrograph_index,
+                    ),
+                    "Spectrometer: Andor iDus + Kymera",
+                    "",
+                )
             return QEProSpectrometer(), "Spectrometer: QEPro", ""
         except Exception:
             error = "Spectrometer connection failed:\n" + traceback.format_exc()
@@ -173,26 +184,39 @@ class DeviceController(QObject):
         return state
 
     def _connect_power_meter(self) -> tuple[PowerMeterAdapter | None, str, str]:
-        try:
-            if self.config.emulate:
-                return EmulatedPowerMeter(), "Power meter: emulator", ""
+        if self.config.emulate:
+            return EmulatedPowerMeter(), "Power meter: emulator", ""
 
-            from devices.newport_2936r_dotnet import Newport2936R
+        errors: list[str] = []
+        for attempt in range(1, 4):
+            try:
+                from devices.newport_2936r_dotnet import Newport2936R
 
-            if self.config.newport_dll is None:
-                raise RuntimeError("Real Newport mode requires newport_dll.")
+                if self.config.newport_dll is None:
+                    raise RuntimeError("Real Newport mode requires newport_dll.")
 
-            return (
-                Newport2936R(
+                meter = Newport2936R(
                     self.config.newport_dll,
                     channel=self.config.power_channel,
                     units=2,
-                ),
-                "Power meter: Newport 2936-R",
-                "",
-            )
-        except Exception:
-            error = "Power meter connection failed:\n" + traceback.format_exc()
+                )
+                if errors:
+                    self.status.emit(
+                        f"Newport connected on attempt {attempt}/3 after hot-plug retry."
+                    )
+                return meter, "Power meter: Newport 2936-R", ""
+            except Exception:
+                errors.append(
+                    f"Power meter connection attempt {attempt}/3 failed:\n"
+                    + traceback.format_exc()
+                )
+                if attempt < 3:
+                    # This runs in the instrument worker, never the GUI thread.
+                    # A short bounded pause lets Windows finish re-enumerating a
+                    # meter that has just been power-cycled.
+                    time.sleep(0.5 * attempt)
+
+        error = "\n".join(errors)
 
         if self.config.fallback_emulator:
             try:
@@ -328,12 +352,13 @@ class DeviceController(QObject):
         self,
         exc: SpectrometerCommunicationError,
     ) -> None:
+        instrument_name = str(getattr(self.spec, "name", "spectrometer"))
         self._close_spectrometer()
         state = InstrumentConnectionState(
             key="spectrometer",
             connected=False,
             emulated=False,
-            description="QEPro connection lost.",
+            description=f"{instrument_name} connection lost.",
             error=str(exc),
         )
         self.spectrometer_connection_changed.emit(state)
@@ -343,6 +368,51 @@ class DeviceController(QObject):
         if not self.power_available or self.pm is None:
             raise RuntimeError("Power meter is not connected.")
         return self.pm
+
+    def _power_meter_health_check(self) -> tuple[bool, str]:
+        """Perform one query after an operation error; never poll continuously."""
+
+        meter = self.pm
+        if not self.power_available or meter is None:
+            return False, "the power meter is no longer registered"
+        try:
+            identify = getattr(meter, "identify", None)
+            if callable(identify):
+                response = str(identify()).strip()
+                if response:
+                    return True, response
+            # Older test/fallback adapters may not expose IDN but should expose
+            # their wavelength getter.
+            meter.get_wavelength_nm()
+            return True, "wavelength query succeeded"
+        except Exception as exc:
+            return False, str(exc)
+
+    def _handle_power_meter_operation_error(
+        self,
+        operation: str,
+        exc: Exception,
+    ) -> RuntimeError:
+        alive, detail = self._power_meter_health_check()
+        if alive:
+            # A command/range/validation failure is not evidence of disconnect.
+            return RuntimeError(f"Newport {operation} failed: {exc}")
+
+        self._close_power_meter()
+        message = (
+            f"Newport connection lost during {operation}: {exc}. "
+            f"Follow-up health check failed: {detail}"
+        )
+        state = InstrumentConnectionState(
+            key="power_meter",
+            connected=False,
+            emulated=False,
+            description="Newport power-meter connection lost.",
+            error=message,
+        )
+        self.power_meter_connection_changed.emit(state)
+        self.status.emit(state.description)
+        return RuntimeError(message)
 
     def _emit_spectrometer_info(self) -> None:
         if self.spec is None:
@@ -394,7 +464,13 @@ class DeviceController(QObject):
         last_snapshot: PowerSnapshot | None = None
 
         for attempt in range(attempts):
-            snapshot = self.pm.read_all_power_with_status()
+            try:
+                snapshot = self.pm.read_all_power_with_status()
+            except Exception as exc:
+                raise self._handle_power_meter_operation_error(
+                    "power read",
+                    exc,
+                ) from exc
             last_snapshot = snapshot
             valid, reason = power_snapshot_valid(snapshot, self.power_monitor_settings)
             if valid:
@@ -431,16 +507,16 @@ class DeviceController(QObject):
             snapshot = self._read_power_validated(required=False)
             if snapshot is not None:
                 self.power_ready.emit(snapshot)
-        except Exception:
-            self.error.emit(traceback.format_exc())
+        except Exception as exc:
+            self.error.emit(str(exc))
 
     @Slot(str)
     def read_power_once(self, tag: str) -> None:
         try:
             snapshot = self._read_power_validated(required=True)
             self.power_read_complete.emit(str(tag), snapshot)
-        except Exception:
-            message = traceback.format_exc()
+        except Exception as exc:
+            message = str(exc)
             self.power_read_failed.emit(str(tag), message)
             self.error.emit(message)
 
@@ -467,7 +543,13 @@ class DeviceController(QObject):
                 actual = int(
                     self.pm.get_wavelength_nm()
                 )
-            except Exception:
+            except Exception as readback_exc:
+                normalized = self._handle_power_meter_operation_error(
+                    "wavelength readback",
+                    readback_exc,
+                )
+                if not self.power_available:
+                    raise normalized from readback_exc
                 actual = requested
 
             self.power_meter_wavelength_ready.emit(
@@ -478,13 +560,22 @@ class DeviceController(QObject):
                 f"Newport wavelength set to {actual} nm."
             )
 
-        except Exception:
-            self.error.emit(traceback.format_exc())
+        except Exception as exc:
+            # A failed readback can already have closed the meter and emitted
+            # the disconnect state.  Do not perform a second health check (or
+            # emit a duplicate disconnect event) through the outer handler.
+            if not self.power_available or self.pm is None:
+                self.error.emit(str(exc))
+                return
+            normalized = self._handle_power_meter_operation_error(
+                "wavelength configuration",
+                exc,
+            )
+            self.error.emit(str(normalized))
 
     @Slot()
     def connect_power_meter(self) -> None:
         self._connect_power_meter_now()
-
 
     @Slot()
     def disconnect_power_meter(self) -> None:
@@ -522,10 +613,12 @@ class DeviceController(QObject):
             self._require_spectrometer()
             p_before = (
                 self._read_power_validated(required=True)
-                if self.power_available
+                if settings.measure_power and self.power_available
                 else PowerSnapshot.missing()
             )
+            acquisition_started_s = time.perf_counter()
             acquisition = self._acquire_spectrometer(settings)
+            acquisition_finished_s = time.perf_counter()
             intensities = np.asarray(acquisition.intensities_counts, dtype=float)
 
             background_subtracted = False
@@ -578,13 +671,13 @@ class DeviceController(QObject):
 
             p_after = (
                 self._read_power_validated(required=True)
-                if self.power_available
+                if settings.measure_power and self.power_available
                 else PowerSnapshot.missing()
             )
 
             record = SpectrumRecord(
                 timestamp_utc=utc_now_iso(),
-                timestamp_s=time.perf_counter(),
+                timestamp_s=acquisition_finished_s,
                 wavelengths_nm=np.asarray(acquisition.wavelengths_nm, dtype=float),
                 intensities_counts=intensities,
                 p_before=p_before,
@@ -595,6 +688,8 @@ class DeviceController(QObject):
                 correct_dark=bool(settings.correct_dark),
                 correct_nonlinearity=bool(settings.correct_nonlinearity),
                 field_value=float(settings.field_value),
+                acquisition_started_s=acquisition_started_s,
+                acquisition_finished_s=acquisition_finished_s,
                 snr=snr_metrics,
                 run_identifier=str(settings.run_identifier),
                 notes=str(settings.notes),
@@ -641,6 +736,25 @@ class DeviceController(QObject):
             else:
                 self.spectrometer_info_ready.emit(self._info)
                 self.spectrometer_capabilities_ready.emit(self._capabilities)
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.error.emit(str(exc))
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+    @Slot(object)
+    def configure_spectrometer(self, values: object) -> None:
+        try:
+            spectrometer = self._require_spectrometer()
+            apply_settings = getattr(spectrometer, "apply_user_settings", None)
+            if not callable(apply_settings):
+                raise RuntimeError(
+                    f"{type(spectrometer).__name__} has no advanced control interface."
+                )
+            apply_settings(values)
+            self._capabilities = None
+            self._emit_spectrometer_info()
+            self.status.emit("Advanced spectrometer settings applied and calibration refreshed.")
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
             self.error.emit(str(exc))

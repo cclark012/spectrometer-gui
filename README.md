@@ -4,6 +4,8 @@ Windows/PySide6 acquisition software for magneto-photoluminescence and
 power-dependent spectroscopy. The current hardware backends support:
 
 - Ocean Optics / Ocean Insight QEPro through `python-seabreeze`
+- Andor iDus SDK2 cameras with a Kymera 328i through the native Solis DLLs
+  (opt-in prototype; lab validation is still required)
 - Newport 2936-R through Newport `PowerMeterCommands.dll` and `pythonnet`
 - Coherent OBIS Laser Boxes through USB virtual COM ports
 - Emulated spectrometer, power meter, and laser boxes for development
@@ -27,7 +29,12 @@ meter does not prevent spectra from being acquired.
 - Spectrum, power-trace, monitor, and calibration CSV export
 - Background capture and optional integration-time-scaled subtraction
 - Bounded SNR recommendations and automatic verification-based tuning
-- Software-timed paired, delayed-after-off, and transition gated acquisition
+- Software-timed paired, delayed-after-off, transition, and interleaved-decay
+  acquisition
+- Incremental gated averaging into one mean/standard-deviation series CSV
+- Optional per-spectrum Newport reads for maximum-throughput gated acquisition
+- Capability-driven Andor grating, wavelength, filter, port, focus, readout,
+  gain, and binning controls
 - Live theme preview, built-in themes, and a semantic custom-theme editor
 - Emulated devices for offline testing
 
@@ -38,6 +45,7 @@ meter does not prevent spectra from being acquired.
 - Newport Power Meter Application/USB driver for a real 2936-R
 - Ocean Insight USB support configured for `seabreeze`
 - Coherent OBIS USB/serial driver for real laser boxes
+- Andor Solis/SDK2 and ATSpectrograph drivers for the Andor backend
 
 Install from the repository root:
 
@@ -92,6 +100,10 @@ Example:
 {
   "newport_dll": "C:/Program Files/Newport/Newport Power Meter Application/Samples/PowerMeterCommands.dll",
   "power_channel": 1,
+  "spectrometer_backend": "qepro",
+  "andor_solis_dir": "C:/Program Files/Andor SOLIS",
+  "andor_camera_index": 0,
+  "andor_spectrograph_index": 0,
   "obis_ports": ["COM3", "COM5"],
   "laser_mode": "auto",
   "fallback_emulator": false
@@ -120,6 +132,16 @@ Real QEPro/Newport and real OBIS boxes:
 python gui.py --real --laser-mode real --obis-ports COM3 COM5
 ```
 
+Opt-in Andor iDus/Kymera backend with the Newport and real OBIS boxes:
+
+```bash
+python gui.py --real --spectrometer-backend andor --andor-solis-dir "C:\Program Files\Andor SOLIS" --laser-mode real --obis-ports COM3 COM5
+```
+
+Camera and spectrograph indices default to zero. Select another enumerated iDus
+at startup with `--andor-camera-index`; live switching between two camera heads
+is intentionally deferred until both heads have been enumerated and tested.
+
 Real instruments with laser-emulator fallback:
 
 ```bash
@@ -137,7 +159,7 @@ python gui.py --emulate --laser-mode real --obis-ports COM3 COM5
 ```text
 gui.py                         application entry point and config resolution
 controllers/
-  device_controller.py         QEPro/Newport worker-thread operations
+  device_controller.py         spectrometer/Newport worker-thread operations
   laser_controller.py          OBIS worker-thread operations
   instrument_runtime.py        thread ownership and queued request routing
   scan_coordinator.py          power/calibration/filter scan state machine
@@ -146,8 +168,8 @@ controllers/
   file_io_controller.py        dialogs and data export orchestration
   preferences_controller.py    QSettings persistence
 core/                           records, settings, units, timing, sequence arbiter
-processing/                     background, smoothing, monitor calculations
-devices/                        real and emulated hardware adapters
+processing/                     background, gated averaging, smoothing, monitors
+devices/                        QEPro, Andor, Newport, OBIS, and emulated adapters
 dialogs/                        modal configuration/details dialogs
 panels/                         independent GUI panels and the top-level shell
 planning/                       power-scan and ND-filter planning
@@ -173,7 +195,13 @@ Spectrum CSV files preserve:
 - laser, scan, field, filter, and calibration metadata
 - background and averaging metadata
 - complete gated-frame and SNR metadata
+- acquisition-call start/midpoint/end timing for software-gated frames
 - run identifier and notes
+
+When **Averaged series** is selected on the Gated tab, repeated frames are
+combined incrementally and saved as one CSV containing a mean and sample
+standard deviation for every state/delay. This avoids retaining or writing every
+individual frame.
 
 Spectrum, calibration, and bounded power-trace exports use same-directory
 atomic temporary files so interrupted writes do not replace a valid target with
@@ -208,13 +236,19 @@ python -m benchmarks.oceandirect_averaging
 - Worker shutdown waits for an active blocking vendor call to return. A driver
   call that never returns cannot be cancelled cleanly by Qt alone.
 - Gated acquisition is software timed, not hardware triggered. Requested and
-  observed request delays are recorded, but Windows/serial/readout latency must
-  be characterized on the bench.
-- Andor support is currently limited to read-only diagnostic probes; production
-  Kymera/iDus control is not yet implemented.
-- The OBIS command adapter treats a write with no explicit error response as
-  successful. Confirm command acknowledgement behavior on the installed
-  firmware before making it stricter.
+  observed request and acquisition-call delays are recorded, but
+  Windows/serial/readout latency must be characterized on the bench. A 1 ms
+  delay grid does not imply 1 ms temporal resolution when the exposure/readout
+  window is longer.
+- The Andor adapter is an opt-in prototype. The supplied probe saw the Kymera but
+  no SDK2 camera, so camera acquisition, native setter signatures, calibration,
+  and cooler behavior still require a powered-camera bench test. Step-and-Glue
+  remains deferred as a software scan/overlap/merge workflow.
+- OBIS ON commands are acknowledged and read back. Only channels verified ON
+  receive a one-second safety check; there is no idle polling while all channels
+  are OFF. The physical-key test must confirm that the installed firmware's
+  emission-state query reflects the interlock rather than only the latched
+  command state.
 - GUI boxcar processing is currently applied to the stored spectrum, not only to
   the display. Changing that behavior would alter existing data semantics.
 - `QApplication` organization/application names are retained for compatibility

@@ -31,7 +31,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use spectrometer and power-meter emulators",
     )
-    mode.add_argument("--real", action="store_true", help="Use real QE-PRO and Newport 2936-R")
+    mode.add_argument(
+        "--real",
+        action="store_true",
+        help="Use the selected real spectrometer backend and Newport 2936-R",
+    )
+
+    parser.add_argument(
+        "--spectrometer-backend",
+        choices=["qepro", "andor"],
+        default=None,
+        help="Real spectrometer backend (default: qepro).",
+    )
+    parser.add_argument(
+        "--andor-solis-dir",
+        default=None,
+        help="Directory containing Andor SDK2 and ATSpectrograph DLLs.",
+    )
+    parser.add_argument("--andor-camera-index", type=int, default=None)
+    parser.add_argument("--andor-spectrograph-index", type=int, default=None)
 
     parser.add_argument(
         "--config",

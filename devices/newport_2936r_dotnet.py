@@ -16,13 +16,12 @@ except RuntimeError:
     # Runtime may already be loaded in an interactive session.
     pass
 
-from System import Array, Double, Int32, Object, Single  # pyright: ignore[reportMissingImports]
+from System import Array, Double, GC, Int32, Object, Single  # pyright: ignore[reportMissingImports]
 from System.Reflection import Assembly  # pyright: ignore[reportMissingImports]
 
 
 class NewportError(RuntimeError):
     pass
-
 
 
 class Newport2936R:
@@ -63,13 +62,20 @@ class Newport2936R:
         self.n_channels = 0
         self._dll_directory_handle = None
 
-        self._load_assembly()
-        self._construct_device()
+        try:
+            self._load_assembly()
+            self._construct_device()
 
-        self.n_channels = self.get_num_channels()
+            self.n_channels = self.get_num_channels()
 
-        if configure:
-            self.configure(channel=self.channel, units=self.units)
+            if configure:
+                self.configure(channel=self.channel, units=self.units)
+        except Exception:
+            # Constructor/configuration failures can otherwise leave the vendor
+            # wrapper holding the USB endpoint, preventing the next hot-plug
+            # attempt from opening a fresh device instance.
+            self.close()
+            raise
 
     def _load_assembly(self) -> None:
         if not self.dll_path.exists():
@@ -436,11 +442,22 @@ class Newport2936R:
         return self.set_wavelength_nm(wavelength_int)
 
     def close(self) -> None:
-        # PowerMeterCommands does not expose a required Close/Dispose method in
-        # the observed DLL. Release Python references and the temporary DLL
-        # search-directory handle.
+        # DLL revisions differ: some expose Dispose, some Close, and some only
+        # release the USB handle when the managed object is finalized.
+        if self.obj is not None:
+            for method_name in ("Dispose", "Close"):
+                try:
+                    self._invoke(method_name, [], n_params=0)
+                    break
+                except Exception:
+                    continue
         self.obj = None
         self.assembly = None
+        try:
+            GC.Collect()
+            GC.WaitForPendingFinalizers()
+        except Exception:
+            pass
         if self._dll_directory_handle is not None:
             try:
                 self._dll_directory_handle.close()

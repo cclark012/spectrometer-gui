@@ -290,6 +290,25 @@ class ScanCoordinator(QObject):
         self.power_scan_abort_requested = True
         self._status("Power scan abort requested.")
 
+    def fail_for_instrument_disconnect(
+        self,
+        message: str,
+        *,
+        disable_laser: bool,
+    ) -> None:
+        """Stop immediately when an awaited hardware callback cannot arrive."""
+
+        if self.power_scan_active:
+            self._finish_power_scan(
+                f"Power scan stopped: {message}",
+                disable_laser=disable_laser,
+            )
+        if self.calibration_active:
+            self._finish_calibration_scan(
+                f"Calibration stopped: {message}",
+                disable_laser=disable_laser,
+            )
+
     def _ensure_filter_state(self, point: PowerScanPoint) -> bool:
         state = str(point.filter_state or "none")
         if state == "none" or state == self.current_scan_filter_state:

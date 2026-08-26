@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from ui.theme_catalog import (
@@ -40,6 +41,40 @@ class ThemeManager:
         self._system_style_name = app.style().name()
         self._system_palette = QPalette(app.palette())
         self._system_stylesheet = app.styleSheet()
+        self._system_preview_pixmap = self._capture_system_preview(app)
+
+    def _capture_system_preview(self, app: QApplication) -> QPixmap:
+        """Render native widgets before the persisted application QSS is applied.
+
+        A child widget cannot opt out of an application-level stylesheet. A
+        cached native rendering is therefore the only faithful, side-effect-free
+        preview after another theme is active.
+        """
+
+        from ui.theme_preview import ThemePreviewWidget
+
+        preview = ThemePreviewWidget()
+        preview.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        preview.resize(720, 620)
+        preview.apply_preview(
+            palette=QPalette(self._system_palette),
+            stylesheet=self._system_stylesheet,
+            plot_background=self._system_palette.color(
+                QPalette.ColorRole.Base
+            ).name(),
+            plot_foreground=self._system_palette.color(
+                QPalette.ColorRole.Text
+            ).name(),
+        )
+        preview.ensurePolished()
+        if preview.layout() is not None:
+            preview.layout().activate()
+        pixmap = preview.grab()
+        preview.deleteLater()
+        return pixmap
+
+    def system_preview_pixmap(self) -> QPixmap:
+        return QPixmap(self._system_preview_pixmap)
 
     def available_themes(self) -> tuple[str, ...]:
         return tuple(key for key, _label in self.catalog.items())

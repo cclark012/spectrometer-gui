@@ -21,7 +21,6 @@ class MainWindowActions:
     scan_timing: QAction
     toolbar: QToolBar
     power_label: QLabel
-    power_label_action: QAction
 
 
 def _action(
@@ -264,7 +263,7 @@ def build_main_window_actions(window: QMainWindow) -> MainWindowActions:
     power_label.setAlignment(
         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
     )
-    power_label_action = toolbar.addWidget(power_label)
+    toolbar.addWidget(power_label)
 
     return MainWindowActions(
         open_spectrum=open_action,
@@ -278,5 +277,4 @@ def build_main_window_actions(window: QMainWindow) -> MainWindowActions:
         scan_timing=scan_timing_action,
         toolbar=toolbar,
         power_label=power_label,
-        power_label_action=power_label_action
     )

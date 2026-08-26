@@ -17,7 +17,8 @@ DEFAULT_LASER_CHANNEL_COUNT = 5
 
 
 def laser_channel_numbers(
-    max_channels: int = DEFAULT_LASER_CHANNEL_COUNT) -> range:
+    max_channels: int = DEFAULT_LASER_CHANNEL_COUNT,
+) -> range:
     return range(FIRST_LASER_CHANNEL, FIRST_LASER_CHANNEL + int(max_channels))
 
 
@@ -35,7 +36,11 @@ class ObisError(RuntimeError):
 
 
 class ObisDisconnectedError(ObisError):
-    pass
+    """The serial transport stopped responding."""
+
+
+class ObisInterlockError(ObisError):
+    """A requested emission state was not reflected by device readback."""
 
 
 def _first_float(text: str, default: float = float("nan")) -> float:
@@ -93,10 +98,10 @@ class ObisBox:
 
     def query_lines(self, command: str, *, timeout_s: float | None = None) -> list[str]:
         timeout = self.timeout_s if timeout_s is None else float(timeout_s)
-        old_timeout = self.ser.timeout
-        self.ser.timeout = timeout
-
+        old_timeout: float | None = None
         try:
+            old_timeout = self.ser.timeout
+            self.ser.timeout = timeout
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             self.ser.write(command.encode("ascii") + b"\r")
@@ -116,10 +121,17 @@ class ObisBox:
                 lines.append(text)
                 if text.upper() == "OK":
                     break
-
             return lines
+        except (serial.SerialException, OSError) as exc:
+            raise ObisDisconnectedError(
+                f"{self.port} communication failed for {command!r}: {exc}"
+            ) from exc
         finally:
-            self.ser.timeout = old_timeout
+            if old_timeout is not None:
+                try:
+                    self.ser.timeout = old_timeout
+                except (serial.SerialException, OSError):
+                    pass
 
     def query_value(
         self,
@@ -151,6 +163,10 @@ class ObisBox:
 
     def write_command(self, command: str) -> None:
         lines = self.query_lines(command)
+        if not lines:
+            raise ObisDisconnectedError(
+                f"{self.port}: no acknowledgement for {command!r}"
+            )
         for line in lines:
             if line.upper().startswith("ERR"):
                 raise ObisError(f"{self.port}: {command!r} returned {line!r}")
@@ -161,6 +177,8 @@ class ObisBox:
             try:
                 self.write_command(command)
                 return command
+            except ObisDisconnectedError:
+                raise
             except Exception as exc:
                 errors.append(f"{command!r}: {exc}")
         raise ObisError("All command variants failed:\n" + "\n".join(errors))
@@ -172,6 +190,8 @@ class ObisBox:
                 response = self.query_value(command, default="", timeout_s=0.5)
                 if response:
                     return response
+            except ObisDisconnectedError:
+                raise
             except Exception as exc:
                 errors.append(f"{command!r}: {exc}")
         raise ObisError("All query variants failed:\n" + "\n".join(errors))
@@ -205,10 +225,9 @@ class ObisBox:
         return False
 
     def discover_channels(
-            self,
-            max_channels: int = DEFAULT_LASER_CHANNEL_COUNT
-        ) -> list[LaserChannelInfo]:
-
+        self,
+        max_channels: int = DEFAULT_LASER_CHANNEL_COUNT,
+    ) -> list[LaserChannelInfo]:
         channels: list[LaserChannelInfo] = []
         for channel in laser_channel_numbers(max_channels):
             if not self.channel_present(channel):
@@ -223,7 +242,8 @@ class ObisBox:
 
     def read_channel_info(self, channel: int) -> LaserChannelInfo:
         channel = _laser_channel(channel)
-        query = lambda command: self.optional_query_value(command, timeout_s=0.3) # noqa
+        def query(command: str) -> str:
+            return self.optional_query_value(command, timeout_s=0.3)
 
         try:
             cdrh_enabled: bool | None = self.get_cdrh_delay(channel)
@@ -280,7 +300,12 @@ class ObisBox:
 
     def get_enabled(self, channel: int) -> LaserEmissionState:
         channel = _laser_channel(channel)
-        response = self.query_value(f"SOURce{channel}:AM:STATe?")
+        command = f"SOURce{channel}:AM:STATe?"
+        response = self.query_value(command)
+        if not response:
+            raise ObisDisconnectedError(
+                f"{self.port}: no emission-state response for channel {channel}"
+            )
         return _state_from_text(response)
 
     def set_cdrh_delay(self, channel: int, enabled: bool) -> str:

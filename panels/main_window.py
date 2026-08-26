@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
     tec_enabled_requested = Signal(bool)
     spectrometer_temperature_requested = Signal()
     spectrometer_capabilities_requested = Signal()
+    spectrometer_configuration_requested = Signal(object)
 
     def __init__(self, config: DeviceConfig, *, theme_manager: ThemeManager) -> None:
         super().__init__()
@@ -316,7 +317,6 @@ class MainWindow(QMainWindow):
         self.scan_timing_action = actions.scan_timing
         self.acquisition_toolbar = actions.toolbar
         self.power_label = actions.power_label
-        self.power_label_action = actions.power_label_action
 
     def _build_timers(self) -> None:
         self.live_next_timer = QTimer(self)
@@ -408,6 +408,15 @@ class MainWindow(QMainWindow):
             lambda: self._request_automated_spectrum("gated")
         )
         self.gated_coordinator.autosave_requested.connect(self._autosave_spectrum)
+        self.gated_coordinator.autosave_series_requested.connect(
+            self.file_io.autosave_gated_series
+        )
+        self.gated_coordinator.series_ready.connect(
+            lambda series: self._show_status_with_timeout(
+                f"Averaged gated series ready: {len(series.traces)} trace(s).",
+                15_000,
+            )
+        )
         self.gated_coordinator.status_requested.connect(self._show_status_with_timeout)
         self.gated_coordinator.active_changed.connect(
             self._on_gated_active_changed
@@ -475,6 +484,9 @@ class MainWindow(QMainWindow):
         )
         self.spectrometer_capabilities_requested.connect(
             self.runtime.query_spectrometer_capabilities
+        )
+        self.spectrometer_configuration_requested.connect(
+            self.runtime.configure_spectrometer
         )
         self.laser_set_power_requested.connect(self.runtime.set_laser_power_w)
         self.laser_set_enabled_requested.connect(self.runtime.set_laser_enabled)
@@ -777,6 +789,11 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_acquisition_failed(self, message: str) -> None:
+        if not self.acquiring and self._acquisition_owner is None:
+            # A connection-loss signal may have already unwound the UI before
+            # the worker's failure result reaches this queued slot.
+            print(message, file=sys.stderr)
+            return
         owner = self._acquisition_owner
         self._finish_acquisition_ui()
 
@@ -1019,11 +1036,22 @@ class MainWindow(QMainWindow):
 
     def preview_gated_acquisition(self) -> None:
         try:
-            plan = self.gated_coordinator.preview(self.gated_panel.settings())
+            plan = self.gated_coordinator.preview(self._gated_settings())
         except Exception as exc:
             QMessageBox.critical(self, "Gated Preview Failed", str(exc))
             return
         self.gated_panel.set_plan(plan)
+
+    def _gated_settings(self):
+        acquisition = self.acquisition_panel.settings()
+        # This lower-bound estimate intentionally excludes USB/readout and Qt
+        # scheduling overhead; observed call timing is recorded during the run.
+        frame_period_hint_ms = float(
+            max(1, acquisition.integration_ms) * max(1, acquisition.averages)
+        )
+        return self.gated_panel.settings(
+            frame_period_hint_ms=frame_period_hint_ms,
+        )
 
     def start_power_scan(self) -> None:
         if not self._instrument_connected("spectrometer") or not self._instrument_connected(
@@ -1091,7 +1119,7 @@ class MainWindow(QMainWindow):
             return
         try:
             plan = self.gated_coordinator.start(
-                settings=self.gated_panel.settings(),
+                settings=self._gated_settings(),
                 laser=laser,
             )
         except Exception as exc:
@@ -1363,6 +1391,10 @@ class MainWindow(QMainWindow):
             capabilities.integration_time_min_us,
             capabilities.integration_time_max_us,
         )
+        self.acquisition_panel.set_correction_availability(
+            electric_dark=capabilities.electric_dark_correction_supported,
+            nonlinearity=capabilities.nonlinearity_correction_supported,
+        )
 
     @Slot(object)
     def _on_background_ready(self, background: BackgroundSpectrum) -> None:
@@ -1380,6 +1412,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_background_failed(self, message: str) -> None:
+        if not self.acquiring and self._acquisition_owner != "background":
+            print(message, file=sys.stderr)
+            return
         self._finish_acquisition_ui()
         self._release_sequence("background")
         self.statusBar().showMessage("Background acquisition failed.", 15_000)
@@ -1407,6 +1442,8 @@ class MainWindow(QMainWindow):
         state: InstrumentConnectionState,
     ) -> None:
         self.instrument_states[state.key] = state
+        if not state.connected:
+            self._stop_work_for_disconnected_instrument(state)
         self._apply_instrument_visibility()
 
         dialog = getattr(
@@ -1422,6 +1459,60 @@ class MainWindow(QMainWindow):
             0,
             lambda: clamp_main_window_to_available_screen(self),
         )
+
+    def _stop_work_for_disconnected_instrument(
+        self,
+        state: InstrumentConnectionState,
+    ) -> None:
+        """Unwind only workflows that depend on the instrument that was lost."""
+
+        key = str(state.key)
+        summary = str(state.description or f"{key} disconnected").rstrip(".")
+
+        if key == "spectrometer":
+            self.acquisition_panel.set_live_enabled(False)
+            self.live_next_timer.stop()
+            if self.scan_coordinator.power_scan_active:
+                self.scan_coordinator.fail_for_instrument_disconnect(
+                    summary,
+                    disable_laser=True,
+                )
+            if self.gated_coordinator.active:
+                self.gated_coordinator.fail_for_instrument_disconnect(
+                    summary,
+                    disable_laser=True,
+                )
+            if self.auto_acquisition.active:
+                self.auto_acquisition.handle_acquisition_failed(summary)
+
+            owner = self._acquisition_owner
+            if self.acquiring:
+                self._finish_acquisition_ui()
+                if owner in {"manual", "live", "background"}:
+                    self._release_sequence(owner)
+
+        elif key == "power_meter":
+            self._display_power_snapshot(PowerSnapshot.missing())
+            if self.scan_coordinator.calibration_active:
+                self.scan_coordinator.fail_for_instrument_disconnect(
+                    summary,
+                    disable_laser=True,
+                )
+
+        elif key == "lasers":
+            self.laser_panel.set_lasers([])
+            if self.scan_coordinator.active:
+                self.scan_coordinator.fail_for_instrument_disconnect(
+                    summary,
+                    disable_laser=False,
+                )
+            if self.gated_coordinator.active:
+                self.gated_coordinator.fail_for_instrument_disconnect(
+                    summary,
+                    disable_laser=False,
+                )
+
+        self.statusBar().showMessage(summary + ". Associated controls were disabled.", 15_000)
 
     def _instrument_connected(
         self,
@@ -1605,15 +1696,12 @@ class MainWindow(QMainWindow):
         # Newport controls.
         self.power_dock.setVisible(power_meter)
         self.power_label.setVisible(power_meter)
-        self.power_label_action.setVisible(power_meter)
 
         if not power_meter:
             self.power_timer.stop()
             self.last_power_meter_wavelength_nm = None
-            self.power_label.setText("")
         else:
             self._apply_power_monitor_settings()
-            self.power_label.setText("Power: --")
 
         # OBIS controls.
         self.lower_tabs.setTabVisible(
@@ -1641,7 +1729,6 @@ class MainWindow(QMainWindow):
             spectrometer and lasers
         )
 
-        # Use your actual button names here.
         self.scan_panel.set_instrument_availability(
             spectrometer_available=spectrometer,
             power_meter_available=power_meter,
@@ -1861,6 +1948,9 @@ class MainWindow(QMainWindow):
         dialog.tec_enabled_requested.connect(self.tec_enabled_requested.emit)
         dialog.temperature_refresh_requested.connect(
             self.spectrometer_temperature_requested.emit
+        )
+        dialog.configuration_requested.connect(
+            self.spectrometer_configuration_requested.emit
         )
         dialog.exec()
 

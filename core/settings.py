@@ -19,6 +19,7 @@ class AcquisitionSettings:
 
     averaging_mode: str = "software"  # "software" or "device"
     subtract_background: bool = False
+    measure_power: bool = True
     gated: GatedFrameMetadata | None = None
 
     scan_active: bool = False
@@ -43,6 +44,11 @@ class DeviceConfig:
     fallback_emulator: bool
     newport_dll: Path | None
     power_channel: int
+
+    spectrometer_backend: str = "qepro"
+    andor_solis_dir: Path | None = None
+    andor_camera_index: int = 0
+    andor_spectrograph_index: int = 0
 
     emulate_lasers: bool = False
     laser_fallback_emulator: bool = False

@@ -25,6 +25,10 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
         writer.writerow(["# file_type", "spectrum"])
         writer.writerow(["# timestamp_utc", record.timestamp_utc])
         writer.writerow(["# integration_ms", record.integration_ms])
+        acquisition_duration_ms = 1000.0 * (
+            float(record.acquisition_finished_s) - float(record.acquisition_started_s)
+        )
+        writer.writerow(["# acquisition_call_duration_ms", f"{acquisition_duration_ms:.9f}"])
         writer.writerow(["# averages", record.averages])
         writer.writerow(["# boxcar_width", record.boxcar_width])
         writer.writerow(["# correct_dark", int(record.correct_dark)])
@@ -87,6 +91,20 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
                 "# gated_request_elapsed_since_transition_ms",
                 f"{record.gated.request_elapsed_since_transition_ms:.9f}",
             ])
+            writer.writerow([
+                "# gated_acquisition_call_start_elapsed_ms",
+                f"{record.gated.acquisition_call_start_elapsed_ms:.9f}",
+            ])
+            writer.writerow([
+                "# gated_acquisition_call_midpoint_elapsed_ms",
+                f"{record.gated.acquisition_call_midpoint_elapsed_ms:.9f}",
+            ])
+            writer.writerow([
+                "# gated_acquisition_call_end_elapsed_ms",
+                f"{record.gated.acquisition_call_end_elapsed_ms:.9f}",
+            ])
+            writer.writerow(["# gated_phase_index", record.gated.phase_index])
+            writer.writerow(["# gated_repeat_index", record.gated.repeat_index])
         else:
             writer.writerow(["# gated_active", 0])
 
@@ -318,6 +336,20 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
                 metadata,
                 "gated_request_elapsed_since_transition_ms",
             ),
+            acquisition_call_start_elapsed_ms=_float_value(
+                metadata,
+                "gated_acquisition_call_start_elapsed_ms",
+            ),
+            acquisition_call_midpoint_elapsed_ms=_float_value(
+                metadata,
+                "gated_acquisition_call_midpoint_elapsed_ms",
+            ),
+            acquisition_call_end_elapsed_ms=_float_value(
+                metadata,
+                "gated_acquisition_call_end_elapsed_ms",
+            ),
+            phase_index=_int_value(metadata, "gated_phase_index", -1),
+            repeat_index=_int_value(metadata, "gated_repeat_index", 0),
         )
 
     snr_metrics = None

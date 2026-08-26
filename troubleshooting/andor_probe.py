@@ -315,7 +315,10 @@ def probe_spectrograph(init_dir: str, dll_dir: str | None, list_methods: bool) -
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read-only capability probe for Andor SDK2 cameras and Kymera/Shamrock spectrographs." # noqa
+        description=(
+            "Read-only capability probe for Andor SDK2 cameras and "
+            "Kymera/Shamrock spectrographs."
+        ),
     )
     parser.add_argument(
         "--sdk-root",

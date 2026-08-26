@@ -36,5 +36,3 @@ Thumbs.db
 data/
 *.csv
 config/lab_defaults.local.json
-/andor_output*.txt
-/troubleshooting/output/
