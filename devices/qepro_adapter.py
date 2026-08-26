@@ -12,11 +12,17 @@ class SpectrometerCommunicationError(RuntimeError):
     pass
 
 
+class SpectrometerCommandError(RuntimeError):
+    """A device command failed, but a follow-up query verified communication."""
+
+
 class QEProSpectrometer:
     """Thin, validated adapter around python-seabreeze's Spectrometer API."""
 
     DEFAULT_MIN_INTEGRATION_US = 8_000
     DEFAULT_MAX_INTEGRATION_US = 60_000_000
+    DEFAULT_TEC_TARGET_MIN_C = -20.0
+    DEFAULT_TEC_TARGET_MAX_C = 40.0
     VALID_AVERAGING_MODES = {"software", "device"}
 
     def __init__(self) -> None:
@@ -43,6 +49,10 @@ class QEProSpectrometer:
         self._capabilities_cache: SpectrometerCapabilities | None = None
         self._hardware_average_method_checked = False
         self._hardware_average_method: Callable[[int], Any] | None = None
+        self._applied_integration_us: int | None = None
+        self._applied_device_averages: int | None = None
+        self.tec_target_min_c = self.DEFAULT_TEC_TARGET_MIN_C
+        self.tec_target_max_c = self.DEFAULT_TEC_TARGET_MAX_C
 
     def _read_attr_or_method(
         self,
@@ -268,17 +278,74 @@ class QEProSpectrometer:
 
     def get_ccd_temperature_c(self) -> float:
         try:
-            return float(self._thermo().read_temperature_degrees_celsius())
+            temperature_c = float(
+                self._thermo().read_temperature_degrees_celsius()
+            )
         except Exception as exc:
             self._raise_if_transport_error("CCD temperature readout", exc)
 
-    def set_tec_target_c(self, temperature_c: float) -> None:
-        try:
-            self._thermo().set_temperature_setpoint_degrees_celsius(
-                float(temperature_c)
+        if not np.isfinite(temperature_c):
+            raise RuntimeError("QEPro returned a non-finite CCD temperature.")
+        return temperature_c
+
+    def _validate_tec_target_c(self, temperature_c: float) -> float:
+        value = float(temperature_c)
+        if not np.isfinite(value):
+            raise ValueError("TEC target must be finite.")
+        minimum_c = float(
+            getattr(self, "tec_target_min_c", self.DEFAULT_TEC_TARGET_MIN_C)
+        )
+        maximum_c = float(
+            getattr(self, "tec_target_max_c", self.DEFAULT_TEC_TARGET_MAX_C)
+        )
+        if not np.isfinite(minimum_c) or not np.isfinite(maximum_c):
+            raise RuntimeError("QEPro TEC guard limits must be finite.")
+        if minimum_c > maximum_c:
+            raise RuntimeError("QEPro TEC guard minimum exceeds its maximum.")
+        if not minimum_c <= value <= maximum_c:
+            raise ValueError(
+                f"TEC target {value:.2f} °C is outside the configured QEPro "
+                f"guard range [{minimum_c:.2f}, {maximum_c:.2f}] °C."
             )
+        return value
+
+    @staticmethod
+    def _read_tec_temperature_for_health_check(thermo: object) -> float:
+        temperature_c = float(
+            thermo.read_temperature_degrees_celsius()
+        )
+        if not np.isfinite(temperature_c):
+            raise RuntimeError(
+                "QEPro returned a non-finite CCD temperature during health check."
+            )
+        return temperature_c
+
+    def set_tec_target_c(self, temperature_c: float) -> None:
+        target_c = self._validate_tec_target_c(temperature_c)
+        thermo = self._thermo()
+        try:
+            thermo.set_temperature_setpoint_degrees_celsius(target_c)
         except Exception as exc:
-            self._raise_if_transport_error("TEC setpoint configuration", exc)
+            if not self._is_transport_error(exc):
+                raise
+
+            # A rejected TEC setpoint can surface through SeaBreeze as a data
+            # transfer error even when the QEPro remains available. Perform one
+            # read-only query before declaring the entire device disconnected.
+            try:
+                readback_c = self._read_tec_temperature_for_health_check(thermo)
+            except Exception as health_exc:
+                raise SpectrometerCommunicationError(
+                    "QEPro communication failed during TEC setpoint "
+                    f"configuration: {exc}. Follow-up CCD temperature "
+                    f"readout also failed: {health_exc}"
+                ) from exc
+
+            raise SpectrometerCommandError(
+                f"QEPro rejected TEC target {target_c:.2f} °C, but CCD "
+                f"temperature readback succeeded at {readback_c:.2f} °C; "
+                f"the spectrometer remains connected. Original error: {exc}"
+            ) from exc
 
     def set_tec_enabled(self, enabled: bool) -> None:
         thermo = self._thermo()
@@ -295,10 +362,14 @@ class QEProSpectrometer:
         method = self._find_hardware_average_method()
         if method is None:
             return False
+        value = max(1, int(averages))
+        if self._applied_device_averages == value:
+            return True
         try:
-            method(max(1, int(averages)))
+            method(value)
         except Exception as exc:
             self._raise_if_transport_error("hardware averaging configuration", exc)
+        self._applied_device_averages = value
         return True
 
     def _integration_limits_us(self) -> tuple[int, int]:
@@ -324,6 +395,20 @@ class QEProSpectrometer:
                 f"[{min_us}, {max_us}] us"
             )
         return value
+
+    def _set_integration_time_us(self, integration_us: int) -> bool:
+        """Apply a changed integration time and report whether hardware changed."""
+        if self._applied_integration_us == integration_us:
+            return False
+        try:
+            self.spec.integration_time_micros(integration_us)
+        except Exception as exc:
+            self._raise_if_transport_error(
+                "integration-time configuration",
+                exc,
+            )
+        self._applied_integration_us = integration_us
+        return True
 
     def _read_intensities(
         self,
@@ -379,15 +464,8 @@ class QEProSpectrometer:
 
         averages = max(1, int(averages))
         integration_us = self._validate_integration_us(int(integration_ms) * 1000)
-        try:
-            self.spec.integration_time_micros(
-                integration_us
-            )
-        except Exception as exc:
-            self._raise_if_transport_error(
-                "integration-time configuration",
-                exc,
-            )
+        integration_changed = self._set_integration_time_us(integration_us)
+        previous_device_averages = self._applied_device_averages
 
         device_averaging_used = False
         if mode == "device":
@@ -412,6 +490,19 @@ class QEProSpectrometer:
                 raise
             except Exception:
                 pass
+
+        device_averaging_changed = (
+            self._applied_device_averages is not None
+            and self._applied_device_averages != previous_device_averages
+        )
+        if integration_changed or device_averaging_changed:
+            # QEPro/SeaBreeze can return the most recently completed frame on
+            # the first read after a configuration change. Discard exactly one
+            # frame so the returned acquisition uses the requested settings.
+            self._read_intensities(
+                correct_dark=correct_dark,
+                correct_nonlinearity=correct_nonlinearity,
+            )
 
         if device_averaging_used:
             values = self._read_intensities(
