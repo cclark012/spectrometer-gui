@@ -39,6 +39,7 @@ class DeviceController(QObject):
     background_cleared = Signal()
     background_failed = Signal(str)
     power_ready = Signal(object)
+    power_poll_finished = Signal()
     power_read_complete = Signal(str, object)
     power_read_failed = Signal(str, str)
     power_meter_wavelength_ready = Signal(int)
@@ -117,7 +118,9 @@ class DeviceController(QObject):
         self,
     ) -> tuple[SpectrometerAdapter | None, str, str]:
         try:
-            if self.config.emulate:
+            if self.config.spectrometer_mode == "disconnected":
+                return None, "Spectrometer: disconnected by configuration", ""
+            if self.config.spectrometer_mode == "emulated":
                 return EmulatedSpectrometer(), "Spectrometer: emulator", ""
             if self.config.spectrometer_backend == "andor":
                 from devices.andor_adapter import AndorKymeraSpectrometer
@@ -133,11 +136,16 @@ class DeviceController(QObject):
                     "Spectrometer: Andor iDus + Kymera",
                     "",
                 )
-            return QEProSpectrometer(), "Spectrometer: QEPro", ""
+            qepro = QEProSpectrometer(
+                serial_number=self.config.qepro_serial_number or None
+            )
+            serial = str(qepro.serial_number).strip()
+            description = "Spectrometer: QEPro" + (f" {serial}" if serial else "")
+            return qepro, description, ""
         except Exception:
             error = "Spectrometer connection failed:\n" + traceback.format_exc()
 
-        if self.config.fallback_emulator:
+        if self.config.spectrometer_fallback_emulator:
             try:
                 return (
                     EmulatedSpectrometer(),
@@ -176,19 +184,36 @@ class DeviceController(QObject):
                 spectrometer,
                 EmulatedSpectrometer,
             ),
-            description=message,
+            description=message or self._last_error_line(error),
             error=error,
+            mode=(
+                "emulated"
+                if isinstance(spectrometer, EmulatedSpectrometer)
+                else self.config.spectrometer_mode
+            ),
+            backend=self.config.spectrometer_backend,
         )
 
         self.spectrometer_connection_changed.emit(state)
         return state
 
     def _connect_power_meter(self) -> tuple[PowerMeterAdapter | None, str, str]:
-        if self.config.emulate:
+        if self.config.power_meter_mode == "disconnected":
+            return None, "Power meter: disconnected by configuration", ""
+        if self.config.power_meter_mode == "emulated":
             return EmulatedPowerMeter(), "Power meter: emulator", ""
 
         errors: list[str] = []
-        for attempt in range(1, 4):
+        retry_delays_s = (0.0, 0.75, 1.5, 3.0, 5.0)
+        total_attempts = len(retry_delays_s)
+        for attempt, delay_s in enumerate(retry_delays_s, start=1):
+            if delay_s > 0:
+                self.status.emit(
+                    f"Waiting {delay_s:g} s before Newport reconnect "
+                    f"attempt {attempt}/{total_attempts}."
+                )
+                time.sleep(delay_s)
+            meter: PowerMeterAdapter | None = None
             try:
                 from devices.newport_2936r_dotnet import Newport2936R
 
@@ -200,25 +225,32 @@ class DeviceController(QObject):
                     channel=self.config.power_channel,
                     units=2,
                 )
+                identity = str(meter.identify()).strip()
+                if not identity:
+                    meter.close()
+                    raise RuntimeError(
+                        "The Newport adapter opened but *IDN? returned an empty response."
+                    )
                 if errors:
                     self.status.emit(
-                        f"Newport connected on attempt {attempt}/3 after hot-plug retry."
+                        f"Newport connected on attempt {attempt}/{total_attempts} "
+                        "after complete hot-plug reinitialization."
                     )
                 return meter, "Power meter: Newport 2936-R", ""
             except Exception:
+                if meter is not None:
+                    try:
+                        meter.close()
+                    except Exception:
+                        pass
                 errors.append(
-                    f"Power meter connection attempt {attempt}/3 failed:\n"
+                    f"Power meter connection attempt {attempt}/{total_attempts} failed:\n"
                     + traceback.format_exc()
                 )
-                if attempt < 3:
-                    # This runs in the instrument worker, never the GUI thread.
-                    # A short bounded pause lets Windows finish re-enumerating a
-                    # meter that has just been power-cycled.
-                    time.sleep(0.5 * attempt)
 
         error = "\n".join(errors)
 
-        if self.config.fallback_emulator:
+        if self.config.power_meter_fallback_emulator:
             try:
                 return EmulatedPowerMeter(), "Power meter: emulator fallback", error
             except Exception:
@@ -245,15 +277,37 @@ class DeviceController(QObject):
                 meter,
                 EmulatedPowerMeter,
             ),
-            description=message,
+            description=message or self._last_error_line(error),
             error=error,
+            mode=(
+                "emulated"
+                if isinstance(meter, EmulatedPowerMeter)
+                else self.config.power_meter_mode
+            ),
+            backend="newport_2936r",
         )
 
         self.power_meter_connection_changed.emit(state)
         return state
 
+    @staticmethod
+    def _last_error_line(error: str) -> str:
+        return next(
+            (line.strip() for line in reversed(str(error).splitlines()) if line.strip()),
+            "",
+        )
+
     @Slot()
     def connect_spectrometer(self) -> None:
+        self._connect_spectrometer_now()
+
+    @Slot(str, str)
+    def connect_spectrometer_selection(self, mode: str, backend: str) -> None:
+        try:
+            self.config.select_spectrometer(str(mode), str(backend))
+        except ValueError as exc:
+            self.error.emit(str(exc))
+            return
         self._connect_spectrometer_now()
 
     @Slot()
@@ -265,6 +319,8 @@ class DeviceController(QObject):
                 key="spectrometer",
                 connected=False,
                 description="Spectrometer disconnected.",
+                mode="disconnected",
+                backend=self.config.spectrometer_backend,
             )
         )
 
@@ -360,6 +416,8 @@ class DeviceController(QObject):
             emulated=False,
             description=f"{instrument_name} connection lost.",
             error=str(exc),
+            mode=self.config.spectrometer_mode,
+            backend=self.config.spectrometer_backend,
         )
         self.spectrometer_connection_changed.emit(state)
         self.status.emit(state.description)
@@ -409,6 +467,8 @@ class DeviceController(QObject):
             emulated=False,
             description="Newport power-meter connection lost.",
             error=message,
+            mode=self.config.power_meter_mode,
+            backend="newport_2936r",
         )
         self.power_meter_connection_changed.emit(state)
         self.status.emit(state.description)
@@ -509,6 +569,8 @@ class DeviceController(QObject):
                 self.power_ready.emit(snapshot)
         except Exception as exc:
             self.error.emit(str(exc))
+        finally:
+            self.power_poll_finished.emit()
 
     @Slot(str)
     def read_power_once(self, tag: str) -> None:
@@ -577,6 +639,15 @@ class DeviceController(QObject):
     def connect_power_meter(self) -> None:
         self._connect_power_meter_now()
 
+    @Slot(str)
+    def connect_power_meter_selection(self, mode: str) -> None:
+        try:
+            self.config.select_power_meter(str(mode))
+        except ValueError as exc:
+            self.error.emit(str(exc))
+            return
+        self._connect_power_meter_now()
+
     @Slot()
     def disconnect_power_meter(self) -> None:
         self._close_power_meter()
@@ -586,6 +657,8 @@ class DeviceController(QObject):
                 key="power_meter",
                 connected=False,
                 description="Power meter disconnected.",
+                mode="disconnected",
+                backend="newport_2936r",
             )
         )
 
@@ -607,15 +680,11 @@ class DeviceController(QObject):
     @Slot(object)
     def acquire(self, settings: AcquisitionSettings) -> None:
         try:
-            # Fail before performing a power-meter read when no spectrometer is
-            # available. This keeps the two independently connected instruments
-            # responsive and avoids a pointless blocking USB request.
+            # This worker owns only the spectrum transaction. InstrumentRuntime
+            # coordinates optional before/after Newport samples across the
+            # independent worker queues and attaches them before GUI delivery.
             self._require_spectrometer()
-            p_before = (
-                self._read_power_validated(required=True)
-                if settings.measure_power and self.power_available
-                else PowerSnapshot.missing()
-            )
+            p_before = PowerSnapshot.missing()
             acquisition_started_s = time.perf_counter()
             acquisition = self._acquire_spectrometer(settings)
             acquisition_finished_s = time.perf_counter()
@@ -669,11 +738,7 @@ class DeviceController(QObject):
             if settings.boxcar_width > 1:
                 intensities = boxcar_smooth(intensities, settings.boxcar_width)
 
-            p_after = (
-                self._read_power_validated(required=True)
-                if settings.measure_power and self.power_available
-                else PowerSnapshot.missing()
-            )
+            p_after = PowerSnapshot.missing()
 
             record = SpectrumRecord(
                 timestamp_utc=utc_now_iso(),

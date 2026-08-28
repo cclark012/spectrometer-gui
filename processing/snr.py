@@ -48,9 +48,25 @@ def _robust_sigma(values: FloatArray) -> float:
         return float("nan")
     median = float(np.median(values))
     mad = float(np.median(np.abs(values - median)))
-    sigma = 1.4826 * mad
-    if not math.isfinite(sigma) or sigma <= 0:
-        sigma = float(np.std(values, ddof=1))
+    mad_sigma = 1.4826 * mad
+
+    # A dark-corrected detector can contain many identical values at its lower
+    # clipping boundary.  MAD then becomes zero (or numerically tiny), which
+    # makes an otherwise ordinary spectrum appear to have an arbitrarily large
+    # SNR.  The central 68.27 % interval is equally robust to isolated spikes
+    # but remains informative until more than ~84 % of the samples are tied.
+    lower, upper = np.percentile(values, [15.8655254, 84.1344746])
+    quantile_sigma = 0.5 * float(upper - lower)
+
+    candidates = [
+        value
+        for value in (mad_sigma, quantile_sigma)
+        if math.isfinite(value) and value > 0
+    ]
+    if candidates:
+        return max(candidates)
+
+    sigma = float(np.std(values, ddof=1))
     return sigma
 
 

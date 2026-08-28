@@ -314,6 +314,9 @@ def _camera_dll_path(root: Path) -> Path:
         "atmcd64d_legacy.dll",
         "atmcd32d.dll",
         "atmcd32d_legacy.dll",
+        "camera.dll",
+        "atusb_libusb10.dll",
+        "atusb_libusb.dll",
     )
     for name in names:
         candidate = root / name

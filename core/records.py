@@ -18,6 +18,8 @@ class InstrumentConnectionState:
     emulated: bool = False
     description: str = ""
     error: str = ""
+    mode: str = ""
+    backend: str = ""
 
 
 @dataclass(slots=True)
@@ -70,6 +72,11 @@ class PowerSnapshot:
     @classmethod
     def missing(cls) -> "PowerSnapshot": # noqa
         return cls(powers_w=[], pm_status=[], command_status=-1)
+
+    def has_finite_power(self) -> bool:
+        """Return whether the snapshot contains at least one usable reading."""
+
+        return any(np.isfinite(float(value)) for value in self.powers_w)
 
 
 @dataclass(frozen=True, slots=True)

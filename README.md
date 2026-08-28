@@ -10,9 +10,10 @@ power-dependent spectroscopy. The current hardware backends support:
 - Coherent OBIS Laser Boxes through USB virtual COM ports
 - Emulated spectrometer, power meter, and laser boxes for development
 
-The GUI is designed so the QEPro and Newport can connect independently. A
-missing spectrometer does not disable the power monitor, and a missing power
-meter does not prevent spectra from being acquired.
+The spectrometer, Newport, and laser boxes have independent real, emulated, and
+disconnected modes. They also own separate worker queues: a slow Newport call
+does not block the QEPro/Andor worker, and no device adapter calls another
+adapter directly. Cross-instrument sequencing is handled by the GUI runtime.
 
 ## Current capabilities
 
@@ -37,6 +38,10 @@ meter does not prevent spectra from being acquired.
   gain, and binning controls
 - Live theme preview, built-in themes, and a semantic custom-theme editor
 - Emulated devices for offline testing
+- Session-time source selection for QEPro, Andor, Newport, OBIS, emulated, and
+  disconnected combinations
+- Bounded rotating application logs for connection, workflow, file, and error
+  events
 
 ## Requirements
 
@@ -100,17 +105,27 @@ Example:
 {
   "newport_dll": "C:/Program Files/Newport/Newport Power Meter Application/Samples/PowerMeterCommands.dll",
   "power_channel": 1,
+  "spectrometer_mode": "real",
   "spectrometer_backend": "qepro",
+  "qepro_serial_number": "QEP05831",
+  "power_meter_mode": "real",
   "andor_solis_dir": "C:/Program Files/Andor SOLIS",
   "andor_camera_index": 0,
   "andor_spectrograph_index": 0,
   "obis_ports": ["COM3", "COM5"],
   "laser_mode": "auto",
-  "fallback_emulator": false
+  "fallback_emulator": false,
+  "spectrometer_fallback_emulator": false,
+  "power_meter_fallback_emulator": false
 }
 ```
 
-Command-line values override the JSON file.
+Command-line values override the JSON file. The legacy `--real` and `--emulate`
+flags remain presets for the spectrometer and power meter; explicit
+`--spectrometer-mode` or `--power-meter-mode` values take precedence. Use
+**Tools > Instrument Connections** to change any source for the current session.
+When more than one SeaBreeze device is present, set `qepro_serial_number` (or
+`--qepro-serial-number`) to bind the QEPro source to a specific instrument.
 
 ## Running
 
@@ -154,36 +169,16 @@ Emulated QEPro/Newport with real lasers:
 python gui.py --emulate --laser-mode real --obis-ports COM3 COM5
 ```
 
-## Architecture
+Real Andor with an emulated power meter and no lasers:
 
-```text
-gui.py                         application entry point and config resolution
-controllers/
-  device_controller.py         spectrometer/Newport worker-thread operations
-  laser_controller.py          OBIS worker-thread operations
-  instrument_runtime.py        thread ownership and queued request routing
-  scan_coordinator.py          power/calibration/filter scan state machine
-  gated_acquisition_coordinator.py software-timed laser/spectrum state machine
-  auto_acquisition_coordinator.py bounded SNR tuning state machine
-  file_io_controller.py        dialogs and data export orchestration
-  preferences_controller.py    QSettings persistence
-core/                           records, settings, units, timing, sequence arbiter
-processing/                     background, gated averaging, smoothing, monitors
-devices/                        QEPro, Andor, Newport, OBIS, and emulated adapters
-dialogs/                        modal configuration/details dialogs
-panels/                         independent GUI panels and the top-level shell
-planning/                       power-scan and ND-filter planning
-io_utils/                       CSV, naming, logging, and atomic file writes
-validation/                     Newport status and power validation
-tests/                          hardware-independent unit tests
-troubleshooting/                focused bench diagnostic scripts
-benchmarks/                     optional backend benchmarks
+```bash
+python gui.py --spectrometer-mode real --spectrometer-backend andor --power-meter-mode emulated --laser-mode disconnected
 ```
 
-`MainWindow` is the top-level UI coordinator. Blocking hardware calls are routed
-to worker objects, while scan, gated, and automatic-tuning state stays in their
-dedicated coordinators. `SequenceArbiter` grants exactly one workflow ownership
-of acquisition controls at a time.
+Application events are written to a 5 MiB rotating log with five backups. Open
+its location from **Tools > Open Application Log Folder**. `INFO` is the normal
+level; use `--log-level DEBUG` temporarily when diagnosing acquisition timing,
+because per-spectrum debug records add I/O at high frame rates.
 
 ## Data files
 
@@ -229,10 +224,10 @@ python -m benchmarks.oceandirect_averaging
 
 ## Known limitations
 
-- QEPro acquisition and Newport operations currently share one device worker
-  thread. Live power polling is suppressed during a blocking spectrum
-  acquisition to prevent stale queued requests. Power readings before and after
-  the spectrum are still collected.
+- Spectrum, Newport, and OBIS operations use separate workers. When **Measure
+  power** is enabled, the runtime deliberately waits for one Newport read before
+  and one after each spectrum; that synchronization still limits the requesting
+  acquisition's rate. Live Newport polls are coalesced so at most one is queued.
 - Worker shutdown waits for an active blocking vendor call to return. A driver
   call that never returns cannot be cancelled cleanly by Qt alone.
 - Gated acquisition is software timed, not hardware triggered. Requested and
@@ -256,5 +251,3 @@ python -m benchmarks.oceandirect_averaging
 - OpenGL plotting is optional; the field-power map remains available without
   `PyOpenGL`.
 
-See `AUDIT_REPORT.md` for the refactor scope, preserved design decisions, and
-hardware validation checklist.

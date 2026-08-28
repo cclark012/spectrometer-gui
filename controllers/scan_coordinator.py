@@ -684,8 +684,8 @@ class ScanCoordinator(QObject):
 
     def _calibration_power(self, snapshot: PowerSnapshot) -> float:
         if (
-            self.config.emulate
-            and self.config.emulate_lasers
+            self.config.power_meter_mode == "emulated"
+            and self.config.laser_mode == "emulated"
             and self.calibration_active
             and self.calibration_index < len(self.calibration_points)
         ):

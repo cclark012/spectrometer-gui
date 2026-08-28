@@ -1,6 +1,7 @@
 {
   "newport_dll": "C:/Program Files/Newport/Newport Power Meter Application/Samples/PowerMeterCommands.dll",
   "power_channel": 1,
+  "qepro_serial_number": "QEP05831",
   "obis_ports": ["COM8", "COM9"],
   "laser_mode": "real",
   "fallback_emulator": false

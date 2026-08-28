@@ -5,6 +5,20 @@ from pathlib import Path
 
 from core.gated_acquisition import GatedFrameMetadata
 
+DEVICE_MODES = frozenset({"real", "emulated", "disconnected"})
+LASER_MODES = frozenset({*DEVICE_MODES, "auto"})
+
+
+def _normalized_mode(value: str, *, laser: bool = False) -> str:
+    mode = str(value).strip().lower()
+    allowed = LASER_MODES if laser else DEVICE_MODES
+    if mode not in allowed:
+        raise ValueError(
+            f"Unknown {'laser' if laser else 'instrument'} mode {value!r}; "
+            f"expected one of {sorted(allowed)}."
+        )
+    return mode
+
 
 @dataclass
 class AcquisitionSettings:
@@ -46,6 +60,7 @@ class DeviceConfig:
     power_channel: int
 
     spectrometer_backend: str = "qepro"
+    qepro_serial_number: str = ""
     andor_solis_dir: Path | None = None
     andor_camera_index: int = 0
     andor_spectrograph_index: int = 0
@@ -53,6 +68,69 @@ class DeviceConfig:
     emulate_lasers: bool = False
     laser_fallback_emulator: bool = False
     obis_ports: list[str] | None = None
+
+    # Explicit per-instrument modes supersede the original shared ``emulate``
+    # switch while retaining it as a command-line compatibility preset.
+    spectrometer_mode: str = ""
+    power_meter_mode: str = ""
+    laser_mode: str = ""
+    spectrometer_fallback_emulator: bool | None = None
+    power_meter_fallback_emulator: bool | None = None
+
+    def __post_init__(self) -> None:
+        main_default = "emulated" if self.emulate else "real"
+        self.spectrometer_mode = _normalized_mode(
+            self.spectrometer_mode or main_default
+        )
+        self.power_meter_mode = _normalized_mode(
+            self.power_meter_mode or main_default
+        )
+        if self.emulate_lasers:
+            legacy_laser_mode = "emulated"
+        elif self.laser_fallback_emulator:
+            legacy_laser_mode = "auto"
+        else:
+            legacy_laser_mode = "real"
+        self.laser_mode = _normalized_mode(
+            self.laser_mode or legacy_laser_mode,
+            laser=True,
+        )
+        if self.spectrometer_fallback_emulator is None:
+            self.spectrometer_fallback_emulator = bool(self.fallback_emulator)
+        if self.power_meter_fallback_emulator is None:
+            self.power_meter_fallback_emulator = bool(self.fallback_emulator)
+        self._sync_legacy_mode_flags()
+
+    def _sync_legacy_mode_flags(self) -> None:
+        self.emulate = (
+            self.spectrometer_mode == "emulated"
+            and self.power_meter_mode == "emulated"
+        )
+        self.emulate_lasers = self.laser_mode == "emulated"
+        self.laser_fallback_emulator = self.laser_mode == "auto"
+
+    def select_spectrometer(self, mode: str, backend: str | None = None) -> None:
+        selected_mode = _normalized_mode(mode)
+        selected_backend = (
+            self.spectrometer_backend if backend is None else str(backend)
+        )
+        selected_backend = selected_backend.strip().lower()
+        if selected_backend not in {"qepro", "andor"}:
+            raise ValueError(
+                f"Unknown spectrometer backend {selected_backend!r}; "
+                "expected 'qepro' or 'andor'."
+            )
+        self.spectrometer_mode = selected_mode
+        self.spectrometer_backend = selected_backend
+        self._sync_legacy_mode_flags()
+
+    def select_power_meter(self, mode: str) -> None:
+        self.power_meter_mode = _normalized_mode(mode)
+        self._sync_legacy_mode_flags()
+
+    def select_lasers(self, mode: str) -> None:
+        self.laser_mode = _normalized_mode(mode, laser=True)
+        self._sync_legacy_mode_flags()
 
 
 @dataclass

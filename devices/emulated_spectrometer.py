@@ -111,7 +111,15 @@ class EmulatedSpectrometer:
             0.15 * np.sqrt(np.maximum(values, 1.0)),
         )
         read_noise = self._rng.normal(0.0, 2.0, size=values.shape)
-        return np.maximum(values + shot_noise + read_noise, 0.0)
+        noisy = values + shot_noise + read_noise
+
+        # A corrected spectrum is allowed to cross zero.  Clipping it here
+        # censors more than half of the pixels in a dark noise window and can
+        # collapse robust noise estimators toward zero.  Raw/uncorrected counts
+        # remain non-negative like detector ADC output.
+        if correct_dark:
+            return noisy
+        return np.maximum(noisy, 0.0)
 
     def capabilities(self) -> SpectrometerCapabilities:
         return SpectrometerCapabilities(

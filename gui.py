@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QStandardPaths
 from PySide6.QtWidgets import QApplication
 
 from core.configuration import (
@@ -12,6 +13,7 @@ from core.configuration import (
     build_device_config,
     load_json_defaults,
 )
+from core.logging_setup import configure_logging, install_exception_hook
 from core.restart import RESTART_EXIT_CODE, launch_replacement_process
 from panels.main_window import MainWindow
 from ui.theme import (
@@ -42,6 +44,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["qepro", "andor"],
         default=None,
         help="Real spectrometer backend (default: qepro).",
+    )
+    parser.add_argument(
+        "--spectrometer-mode",
+        choices=["real", "emulated", "disconnected"],
+        default=None,
+        help="Initial spectrometer connection mode; overrides the JSON default.",
+    )
+    parser.add_argument(
+        "--qepro-serial-number",
+        default=None,
+        help=(
+            "Open the matching SeaBreeze spectrometer serial instead of the "
+            "first available device."
+        ),
+    )
+    parser.add_argument(
+        "--power-meter-mode",
+        choices=["real", "emulated", "disconnected"],
+        default=None,
+        help="Initial power-meter connection mode; overrides the JSON default.",
     )
     parser.add_argument(
         "--andor-solis-dir",
@@ -79,13 +101,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--laser-mode",
-        choices=["real", "emulated", "auto"],
+        choices=["real", "emulated", "auto", "disconnected"],
         default=None,
         help=(
             "OBIS laser mode. "
             "'real' tries real OBIS boxes only; "
             "'emulated' uses fake COM3/COM5 boxes; "
-            "'auto' tries real boxes first and falls back to emulators."
+            "'auto' tries real boxes first and falls back to emulators; "
+            "'disconnected' leaves laser control offline."
         ),
     )
 
@@ -94,6 +117,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         nargs="*",
         default=None,
         help="Explicit OBIS serial ports, e.g. --obis-ports COM3 COM5",
+    )
+
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Minimum severity written to the rotating application log.",
     )
 
     return parser
@@ -114,6 +144,24 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setOrganizationName("YourLab")
     QApplication.setApplicationName("MagnetoPLAcquisition")
     QApplication.setApplicationVersion("0.1")
+
+    app_data = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.AppLocalDataLocation
+    )
+    log_directory = Path(app_data) / "logs" if app_data else Path.cwd() / "logs"
+    log_path = configure_logging(log_directory, level=args.log_level)
+    install_exception_hook()
+    logger = logging.getLogger("spectrometer_gui")
+    logger.info(
+        "Application starting: Python=%s, spectrometer=%s/%s, power=%s, "
+        "lasers=%s, log=%s",
+        sys.version.split()[0],
+        config.spectrometer_mode,
+        config.spectrometer_backend,
+        config.power_meter_mode,
+        config.laser_mode,
+        log_path,
+    )
 
     manager = ThemeManager(app)
     settings = QSettings()
@@ -153,10 +201,11 @@ def main(argv: list[str] | None = None) -> int:
 
     app.setQuitOnLastWindowClosed(False)
 
-    window = MainWindow(config, theme_manager=manager)
+    window = MainWindow(config, theme_manager=manager, log_path=log_path)
     window.show()
 
     exit_code = app.exec()
+    logger.info("Application event loop exited with code %s", exit_code)
 
     if exit_code == RESTART_EXIT_CODE:
         success, pid = launch_replacement_process()

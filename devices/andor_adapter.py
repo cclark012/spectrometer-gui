@@ -36,16 +36,29 @@ class AndorKymeraSpectrometer:
         self.camera = camera
         self.spectrograph = spectrograph
         try:
-            if self.camera is None:
-                self.camera = AndorSDK2Camera(
-                    self.solis_dir,
-                    camera_index=int(camera_index),
-                )
             if self.spectrograph is None:
                 self.spectrograph = AndorKymera(
                     self.solis_dir,
                     device_index=int(spectrograph_index),
                 )
+            if self.camera is None:
+                try:
+                    self.camera = AndorSDK2Camera(
+                        self.solis_dir,
+                        camera_index=int(camera_index),
+                    )
+                except Exception as exc:
+                    serial = str(
+                        getattr(
+                            getattr(self.spectrograph, "capabilities", None),
+                            "serial_number",
+                            "unknown",
+                        )
+                    )
+                    raise AndorSDK2Error(
+                        f"Kymera {serial} connected successfully, but the iDus "
+                        f"camera connection failed: {exc}"
+                    ) from exc
             self.name = (
                 f"Andor {self.camera.capabilities.model} + Kymera "
                 f"{self.spectrograph.capabilities.serial_number}"

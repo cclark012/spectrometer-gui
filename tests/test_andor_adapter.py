@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import devices.andor_adapter as andor_adapter_module
 from devices.andor_adapter import AndorCommunicationError, AndorKymeraSpectrometer
 from devices.andor_sdk2 import AndorCameraSettings, AndorSDK2Error
 
@@ -211,3 +212,35 @@ def test_acquisition_failure_with_failed_health_check_reports_disconnect() -> No
         assert "connection lost" in str(exc)
     else:
         raise AssertionError("A failed camera health check must report disconnect.")
+
+
+def test_real_constructor_reports_kymera_success_before_camera_failure() -> None:
+    events: list[str] = []
+
+    class ConnectedKymera(FakeSpectrograph):
+        def __init__(self, *_args, **_kwargs) -> None:
+            events.append("kymera")
+            super().__init__()
+
+    class MissingCamera:
+        def __init__(self, *_args, **_kwargs) -> None:
+            events.append("camera")
+            raise AndorSDK2Error("camera unavailable")
+
+    original_kymera = andor_adapter_module.AndorKymera
+    original_camera = andor_adapter_module.AndorSDK2Camera
+    andor_adapter_module.AndorKymera = ConnectedKymera
+    andor_adapter_module.AndorSDK2Camera = MissingCamera
+    try:
+        try:
+            AndorKymeraSpectrometer(".")
+        except AndorSDK2Error as exc:
+            assert "Kymera KY-4444 connected successfully" in str(exc)
+            assert "camera unavailable" in str(exc)
+        else:
+            raise AssertionError("A missing iDus camera must reject the combined backend.")
+    finally:
+        andor_adapter_module.AndorKymera = original_kymera
+        andor_adapter_module.AndorSDK2Camera = original_camera
+
+    assert events == ["kymera", "camera"]

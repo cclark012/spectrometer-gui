@@ -56,6 +56,57 @@ def test_andor_backend_options_are_normalized() -> None:
     assert config.andor_spectrograph_index == 2
 
 
+def test_instrument_modes_are_independent() -> None:
+    config = build_device_config(
+        namespace(),
+        {
+            "spectrometer_mode": "real",
+            "spectrometer_backend": "andor",
+            "qepro_serial_number": "QEP05831",
+            "power_meter_mode": "emulated",
+            "laser_mode": "disconnected",
+            "spectrometer_fallback_emulator": False,
+            "power_meter_fallback_emulator": True,
+        },
+    )
+
+    assert config.spectrometer_mode == "real"
+    assert config.spectrometer_backend == "andor"
+    assert config.qepro_serial_number == "QEP05831"
+    assert config.power_meter_mode == "emulated"
+    assert config.laser_mode == "disconnected"
+    assert not config.spectrometer_fallback_emulator
+    assert config.power_meter_fallback_emulator
+    assert not config.emulate
+
+
+def test_runtime_selection_does_not_change_other_instrument_modes() -> None:
+    config = build_device_config(namespace(), {})
+    original_power_mode = config.power_meter_mode
+    original_laser_mode = config.laser_mode
+
+    config.select_spectrometer("real", "andor")
+
+    assert config.spectrometer_mode == "real"
+    assert config.spectrometer_backend == "andor"
+    assert config.power_meter_mode == original_power_mode
+    assert config.laser_mode == original_laser_mode
+
+
+def test_per_instrument_cli_mode_overrides_shared_real_preset() -> None:
+    config = build_device_config(
+        namespace(
+            real=True,
+            spectrometer_mode="emulated",
+            power_meter_mode="disconnected",
+        ),
+        {},
+    )
+
+    assert config.spectrometer_mode == "emulated"
+    assert config.power_meter_mode == "disconnected"
+
+
 def test_invalid_laser_mode_fails() -> None:
     with pytest.raises(ConfigurationError, match="laser_mode"):
         build_device_config(namespace(), {"laser_mode": "invalid"})

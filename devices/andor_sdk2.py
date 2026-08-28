@@ -11,6 +11,30 @@ import numpy as np
 
 DRV_SUCCESS = 20002
 DRV_TEMPERATURE_CODES = {20034, 20035, 20036, 20037, 20038, 20039, 20040}
+DRV_RETURN_NAMES = {
+    20002: "DRV_SUCCESS",
+    20003: "DRV_VXDNOTINSTALLED",
+    20006: "DRV_ERROR_FILELOAD",
+    20010: "DRV_ERROR_PAGELOCK",
+    20013: "DRV_ERROR_ACK",
+    20024: "DRV_NO_NEW_DATA",
+    20066: "DRV_P1INVALID",
+    20067: "DRV_P2INVALID",
+    20068: "DRV_P3INVALID",
+    20069: "DRV_P4INVALID",
+    20070: "DRV_INIERROR",
+    20071: "DRV_COFERROR",
+    20072: "DRV_ACQUIRING",
+    20073: "DRV_IDLE",
+    20075: "DRV_NOT_INITIALIZED",
+    20089: "DRV_USBERROR",
+    20093: "DRV_USB_INTERRUPT_ENDPOINT_ERROR",
+    20099: "DRV_BINNING_ERROR",
+    20100: "DRV_INVALID_AMPLIFIER",
+    20990: "DRV_ERROR_NOCAMERA",
+    20991: "DRV_NOT_SUPPORTED",
+    20992: "DRV_NOT_AVAILABLE",
+}
 
 
 class AndorSDK2Error(RuntimeError):
@@ -153,7 +177,10 @@ class AndorSDK2Camera:
         code = int(self._function(name, argtypes)(*args))
         accepted_codes = {DRV_SUCCESS} if accepted is None else set(accepted)
         if code not in accepted_codes:
-            raise AndorSDK2Error(f"{name} failed with SDK2 return code {code}.")
+            code_name = DRV_RETURN_NAMES.get(code, "UNKNOWN_SDK2_STATUS")
+            raise AndorSDK2Error(
+                f"{name} failed with SDK2 return code {code} ({code_name})."
+            )
         return code
 
     def _optional_values(self, count_name: str, value_name: str) -> tuple[float, ...]:
