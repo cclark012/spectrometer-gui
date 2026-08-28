@@ -445,6 +445,11 @@ class Newport2936R:
         # DLL revisions differ: some expose Dispose, some Close, and some only
         # release the USB handle when the managed object is finalized.
         if self.obj is not None:
+            if self.device_key:
+                try:
+                    self.set_run(False)
+                except Exception:
+                    pass
             for method_name in ("Dispose", "Close"):
                 try:
                     self._invoke(method_name, [], n_params=0)
@@ -453,9 +458,12 @@ class Newport2936R:
                     continue
         self.obj = None
         self.assembly = None
+        self.device_key = ""
+        self.n_channels = 0
         try:
             GC.Collect()
             GC.WaitForPendingFinalizers()
+            GC.Collect()
         except Exception:
             pass
         if self._dll_directory_handle is not None:

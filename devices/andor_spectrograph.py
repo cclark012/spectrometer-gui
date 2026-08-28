@@ -10,6 +10,18 @@ from typing import Any
 import numpy as np
 
 ATSPECTROGRAPH_SUCCESS = 20202
+ATSPECTROGRAPH_RETURN_NAMES = {
+    20201: "ATSPECTROGRAPH_COMMUNICATION_ERROR",
+    20202: "ATSPECTROGRAPH_SUCCESS",
+    20249: "ATSPECTROGRAPH_ERROR",
+    20266: "ATSPECTROGRAPH_P1INVALID",
+    20267: "ATSPECTROGRAPH_P2INVALID",
+    20268: "ATSPECTROGRAPH_P3INVALID",
+    20269: "ATSPECTROGRAPH_P4INVALID",
+    20270: "ATSPECTROGRAPH_P5INVALID",
+    20275: "ATSPECTROGRAPH_NOT_INITIALIZED",
+    20292: "ATSPECTROGRAPH_NOT_AVAILABLE",
+}
 
 
 class AndorSpectrographError(RuntimeError):
@@ -128,8 +140,13 @@ class AndorKymera:
             return None
         code = int(function(*args))
         if code != ATSPECTROGRAPH_SUCCESS:
+            code_name = ATSPECTROGRAPH_RETURN_NAMES.get(
+                code,
+                "UNKNOWN_ATSPECTROGRAPH_STATUS",
+            )
             raise AndorSpectrographError(
-                f"{self.prefix}{suffix} failed with return code {code}."
+                f"{self.prefix}{suffix} failed with return code "
+                f"{code} ({code_name})."
             )
         return code
 

@@ -69,7 +69,10 @@ class ThemeManager:
         preview.ensurePolished()
         if preview.layout() is not None:
             preview.layout().activate()
+        preview.show()
+        app.processEvents()
         pixmap = preview.grab()
+        preview.hide()
         preview.deleteLater()
         return pixmap
 

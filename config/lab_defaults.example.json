@@ -1,11 +1,16 @@
 {
   "newport_dll": "C:/Program Files/Newport/Newport Power Meter Application/Samples/PowerMeterCommands.dll",
   "power_channel": 1,
+  "spectrometer_mode": "real",
   "spectrometer_backend": "qepro",
+  "qepro_serial_number": "QEP05831",
+  "power_meter_mode": "real",
   "andor_solis_dir": "C:/Program Files/Andor SOLIS",
   "andor_camera_index": 0,
   "andor_spectrograph_index": 0,
   "obis_ports": ["COM3", "COM5"],
   "laser_mode": "auto",
-  "fallback_emulator": false
+  "fallback_emulator": false,
+  "spectrometer_fallback_emulator": false,
+  "power_meter_fallback_emulator": false
 }

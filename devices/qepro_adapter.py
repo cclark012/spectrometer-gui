@@ -18,10 +18,15 @@ class QEProSpectrometer:
     DEFAULT_TEC_TARGET_MAX_C = 40.0
     VALID_AVERAGING_MODES = {"software", "device"}
 
-    def __init__(self) -> None:
+    def __init__(self, serial_number: str | None = None) -> None:
         from seabreeze.spectrometers import Spectrometer
 
-        self.spec = Spectrometer.from_first_available()
+        requested_serial = str(serial_number or "").strip()
+        self.spec = (
+            Spectrometer.from_serial_number(requested_serial)
+            if requested_serial
+            else Spectrometer.from_first_available()
+        )
         self.wavelengths_nm = np.asarray(self.spec.wavelengths(), dtype=float)
         if self.wavelengths_nm.ndim != 1 or self.wavelengths_nm.size == 0:
             raise RuntimeError("QEPro returned an invalid wavelength array.")

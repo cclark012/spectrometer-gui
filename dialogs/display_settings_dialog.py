@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -12,12 +13,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
 )
 
 from core.settings import DisplaySettings
 from dialogs.theme_editor_dialog import ThemeEditorDialog
-from ui.theme import ThemeManager
+from ui.theme import SYSTEM_THEME, ThemeManager
 from ui.theme_preview import ThemePreviewWidget
 
 
@@ -96,8 +98,16 @@ class DisplaySettingsDialog(QDialog):
         note.setWordWrap(True)
         root.addWidget(note)
 
-        self.theme_preview = ThemePreviewWidget(self)
-        root.addWidget(self.theme_preview, stretch=1)
+        self.theme_preview_stack = QStackedWidget(self)
+        self.theme_preview = ThemePreviewWidget(self.theme_preview_stack)
+        self.system_theme_preview = QLabel(self.theme_preview_stack)
+        self.system_theme_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.system_theme_preview.setPixmap(
+            self._theme_manager.system_preview_pixmap()
+        )
+        self.theme_preview_stack.addWidget(self.theme_preview)
+        self.theme_preview_stack.addWidget(self.system_theme_preview)
+        root.addWidget(self.theme_preview_stack, stretch=1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -135,13 +145,21 @@ class DisplaySettingsDialog(QDialog):
         self.theme_combo.blockSignals(False)
 
     def _update_theme_preview(self) -> None:
+        theme_key = str(self.theme_combo.currentData())
+        if theme_key == SYSTEM_THEME:
+            self.system_theme_preview.setPixmap(
+                self._theme_manager.system_preview_pixmap()
+            )
+            self.theme_preview_stack.setCurrentWidget(self.system_theme_preview)
+            return
+        self.theme_preview_stack.setCurrentWidget(self.theme_preview)
         app = QApplication.instance()
         if app is None:
             return
         palette, stylesheet, plot_background, plot_foreground = (
             self._theme_manager.preview_components(
                 app,
-                str(self.theme_combo.currentData()),
+                theme_key,
             )
         )
         self.theme_preview.apply_preview(

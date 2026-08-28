@@ -53,7 +53,6 @@ def render_stylesheet(
     return f"""
 QWidget {{
     color: {theme.text};
-    background-color: {theme.window};
     selection-background-color: {theme.selection};
     selection-color: {theme.text};
 }}

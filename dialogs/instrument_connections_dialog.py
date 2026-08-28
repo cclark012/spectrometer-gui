@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from functools import partial
-
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
@@ -16,7 +15,7 @@ from core.records import InstrumentConnectionState
 
 
 class InstrumentConnectionsDialog(QDialog):
-    connect_requested = Signal(str)
+    connect_requested = Signal(str, str, str)
     disconnect_requested = Signal(str)
     reconnect_all_requested = Signal()
 
@@ -26,13 +25,33 @@ class InstrumentConnectionsDialog(QDialog):
         "lasers": "Laser boxes",
     }
 
+    SOURCES = {
+        "spectrometer": (
+            ("QEPro (real)", "real", "qepro"),
+            ("Andor iDus + Kymera (real)", "real", "andor"),
+            ("Spectrometer emulator", "emulated", "qepro"),
+            ("Disconnected", "disconnected", "qepro"),
+        ),
+        "power_meter": (
+            ("Newport 2936-R (real)", "real", "newport_2936r"),
+            ("Power-meter emulator", "emulated", "newport_2936r"),
+            ("Disconnected", "disconnected", "newport_2936r"),
+        ),
+        "lasers": (
+            ("OBIS boxes (real)", "real", "obis"),
+            ("OBIS real, then emulator", "auto", "obis"),
+            ("OBIS emulators", "emulated", "obis"),
+            ("Disconnected", "disconnected", "obis"),
+        ),
+    }
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         self.setWindowTitle(
             "Instrument Connections"
         )
-        self.resize(520, 240)
+        self.resize(760, 260)
 
         self._states: dict[
             str,
@@ -41,32 +60,43 @@ class InstrumentConnectionsDialog(QDialog):
 
         self._status_labels: dict[str, QLabel] = {}
         self._buttons: dict[str, QPushButton] = {}
+        self._selectors: dict[str, QComboBox] = {}
 
         layout = QVBoxLayout(self)
         grid = QGridLayout()
 
         grid.addWidget(QLabel("Instrument"), 0, 0)
-        grid.addWidget(QLabel("Status"), 0, 1)
-        grid.addWidget(QLabel("Action"), 0, 2)
+        grid.addWidget(QLabel("Source"), 0, 1)
+        grid.addWidget(QLabel("Status"), 0, 2)
+        grid.addWidget(QLabel("Action"), 0, 3)
 
         for row, key in enumerate(
             self.LABELS,
             start=1,
         ):
             name = QLabel(self.LABELS[key])
+            selector = QComboBox()
+            for label, mode, backend in self.SOURCES[key]:
+                selector.addItem(label, (mode, backend))
             status = QLabel("Disconnected")
             button = QPushButton("Connect")
 
             button.clicked.connect(
-                partial(self._on_action, key)
+                lambda _checked=False, selected=key: self._on_action(selected)
             )
 
             self._status_labels[key] = status
             self._buttons[key] = button
+            self._selectors[key] = selector
+
+            selector.currentIndexChanged.connect(
+                lambda _index, selected=key: self._refresh_action(selected)
+            )
 
             grid.addWidget(name, row, 0)
-            grid.addWidget(status, row, 1)
-            grid.addWidget(button, row, 2)
+            grid.addWidget(selector, row, 1)
+            grid.addWidget(status, row, 2)
+            grid.addWidget(button, row, 3)
 
         layout.addLayout(grid)
 
@@ -89,7 +119,53 @@ class InstrumentConnectionsDialog(QDialog):
         if state is not None and state.connected:
             self.disconnect_requested.emit(key)
         else:
-            self.connect_requested.emit(key)
+            mode, backend = self.selection(key)
+            if mode != "disconnected":
+                self.connect_requested.emit(key, mode, backend)
+
+    def selection(self, key: str) -> tuple[str, str]:
+        selector = self._selectors[str(key)]
+        value = selector.currentData()
+        if not isinstance(value, (tuple, list)) or len(value) != 2:
+            return "disconnected", ""
+        return str(value[0]), str(value[1])
+
+    def set_selection(self, key: str, *, mode: str, backend: str = "") -> None:
+        selector = self._selectors.get(str(key))
+        if selector is None:
+            return
+        target_mode = str(mode)
+        target_backend = str(backend)
+        best_index = -1
+        for index in range(selector.count()):
+            value = selector.itemData(index)
+            if not isinstance(value, (tuple, list)) or len(value) != 2:
+                continue
+            item_mode, item_backend = str(value[0]), str(value[1])
+            if item_mode == target_mode and (
+                str(key) != "spectrometer" or item_backend == target_backend
+            ):
+                best_index = index
+                break
+        if best_index >= 0:
+            selector.blockSignals(True)
+            selector.setCurrentIndex(best_index)
+            selector.blockSignals(False)
+        self._refresh_action(str(key))
+
+    def _refresh_action(self, key: str) -> None:
+        state = self._states.get(str(key))
+        connected = bool(state and state.connected)
+        selector = self._selectors[str(key)]
+        button = self._buttons[str(key)]
+        selector.setEnabled(not connected)
+        if connected:
+            button.setEnabled(True)
+            button.setText("Disconnect")
+            return
+        mode, _backend = self.selection(str(key))
+        button.setEnabled(mode != "disconnected")
+        button.setText("Connect")
 
     @Slot(object)
     def set_state(
@@ -116,10 +192,10 @@ class InstrumentConnectionsDialog(QDialog):
             label.setText(
                 f"Connected ({mode})"
             )
-            button.setText("Disconnect")
         else:
             label.setText("Disconnected")
-            button.setText("Connect")
+
+        self._refresh_action(state.key)
 
         details = (
             state.error

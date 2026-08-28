@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 import math
-import sys
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal, Slot
@@ -81,6 +82,8 @@ from processing.snr import suggest_acquisition
 from ui.theme import ThemeManager
 from ui.window_geometry import clamp_main_window_to_available_screen
 
+logger = logging.getLogger(__name__)
+
 
 class MainWindow(QMainWindow):
     """Top-level UI shell and cross-controller coordinator.
@@ -104,9 +107,16 @@ class MainWindow(QMainWindow):
     spectrometer_capabilities_requested = Signal()
     spectrometer_configuration_requested = Signal(object)
 
-    def __init__(self, config: DeviceConfig, *, theme_manager: ThemeManager) -> None:
+    def __init__(
+        self,
+        config: DeviceConfig,
+        *,
+        theme_manager: ThemeManager,
+        log_path: str | Path | None = None,
+    ) -> None:
         super().__init__()
         self.theme_manager = theme_manager
+        self.log_path = Path(log_path) if log_path is not None else None
 
         self.setWindowTitle("Magneto-PL Spectrum Acquisition")
         self.resize(1600, 850)
@@ -127,19 +137,27 @@ class MainWindow(QMainWindow):
             "spectrometer": InstrumentConnectionState(
                 key="spectrometer",
                 connected=False,
+                mode=config.spectrometer_mode,
+                backend=config.spectrometer_backend,
             ),
             "power_meter": InstrumentConnectionState(
                 key="power_meter",
                 connected=False,
+                mode=config.power_meter_mode,
+                backend="newport_2936r",
             ),
             "lasers": InstrumentConnectionState(
                 key="lasers",
                 connected=False,
+                mode=config.laser_mode,
+                backend="obis",
             ),
         }
 
         self.app_t0 = time.perf_counter()
         self.current_record: SpectrumRecord | None = None
+        self._latest_valid_snr_record: SpectrumRecord | None = None
+        self._latest_snr_signature: tuple[object, ...] | None = None
         self.acquiring = False
         self._acquisition_owner: str | None = None
         self.sequence_arbiter = SequenceArbiter()
@@ -160,6 +178,7 @@ class MainWindow(QMainWindow):
 
         self._load_preferences()
         self._apply_loaded_preferences()
+        self._apply_instrument_visibility()
 
         self._start_instrument_runtime()
 
@@ -317,6 +336,7 @@ class MainWindow(QMainWindow):
         self.scan_timing_action = actions.scan_timing
         self.acquisition_toolbar = actions.toolbar
         self.power_label = actions.power_label
+        self.power_label_action = actions.power_label_action
 
     def _build_timers(self) -> None:
         self.live_next_timer = QTimer(self)
@@ -738,22 +758,39 @@ class MainWindow(QMainWindow):
         self._finish_acquisition_ui()
 
         self.performance_monitor.mark_acquisition()
+        logger.debug(
+            "Spectrum ready: owner=%s integration_ms=%d averages=%d "
+            "acquisition_s=%.6f background=%s power=%s snr=%s",
+            owner,
+            record.integration_ms,
+            record.averages,
+            max(0.0, record.acquisition_finished_s - record.acquisition_started_s),
+            record.background_subtracted,
+            record.p_after.has_finite_power(),
+            record.snr is not None,
+        )
         self.current_record = record
         self.file_io.set_current_record(record)
         self.spectrum_panel.queue_record(record)
-        self._display_power_snapshot(record.p_after)
+        if record.p_after.has_finite_power():
+            self._display_power_snapshot(record.p_after)
 
         if (
             (self.snr_settings.enabled or owner == "auto_tune")
             and record.snr is not None
         ):
             self.acquisition_panel.set_snr(record.snr)
+            if record.snr.valid:
+                self._latest_valid_snr_record = record
+                self._latest_snr_signature = self._snr_settings_signature()
 
         if self.power_monitor_settings.append_spectrum_power:
-            self._append_power_history(
-                record.mean_power_snapshot(),
-                source="spectrum_mean",
-            )
+            mean_power = record.mean_power_snapshot()
+            if mean_power.has_finite_power():
+                self._append_power_history(
+                    mean_power,
+                    source="spectrum_mean",
+                )
 
         self._check_signal_warning(record)
         if self.monitor_panel.tracking_enabled():
@@ -792,7 +829,7 @@ class MainWindow(QMainWindow):
         if not self.acquiring and self._acquisition_owner is None:
             # A connection-loss signal may have already unwound the UI before
             # the worker's failure result reaches this queued slot.
-            print(message, file=sys.stderr)
+            logger.error("Late acquisition failure after UI unwind:\n%s", message)
             return
         owner = self._acquisition_owner
         self._finish_acquisition_ui()
@@ -815,7 +852,7 @@ class MainWindow(QMainWindow):
             "Spectrum acquisition failed. Live acquisition stopped.",
             15_000,
         )
-        print(message, file=sys.stderr)
+        logger.error("Spectrum acquisition failed:\n%s", message)
         QMessageBox.warning(
             self,
             "Spectrum acquisition failed",
@@ -880,7 +917,7 @@ class MainWindow(QMainWindow):
     def show_acquisition_recommendation(
         self,
     ) -> None:
-        record = self.current_record
+        record = self._latest_valid_snr_record
 
         if record is None or record.snr is None:
             QMessageBox.information(
@@ -888,6 +925,15 @@ class MainWindow(QMainWindow):
                 "No SNR estimate",
                 "Acquire a spectrum with SNR estimation "
                 "enabled before requesting a recommendation.",
+            )
+            return
+
+        if self._latest_snr_signature != self._snr_settings_signature():
+            QMessageBox.information(
+                self,
+                "SNR settings changed",
+                "The cached SNR estimate used different signal/noise settings. "
+                "Acquire one scheduled SNR evaluation before requesting a recommendation.",
             )
             return
 
@@ -905,6 +951,16 @@ class MainWindow(QMainWindow):
             ),
             notes=self.file_name_settings.notes,
         )
+
+        if not self._snr_record_matches_settings(record, current):
+            QMessageBox.information(
+                self,
+                "Acquisition settings changed",
+                "The cached SNR estimate was measured with different acquisition "
+                "settings. Acquire one scheduled SNR evaluation before requesting "
+                "a recommendation.",
+            )
+            return
 
         minimum_ms, maximum_ms = (
             self._spectrometer_integration_limits_ms()
@@ -924,10 +980,8 @@ class MainWindow(QMainWindow):
                 self.snr_settings
                 .recommendation_metric
             ),
-            current_integration_ms=(
-                current.integration_ms
-            ),
-            current_averages=current.averages,
+            current_integration_ms=record.integration_ms,
+            current_averages=record.averages,
             target_snr=self.snr_settings.target_snr,
             target_peak_fraction=(
                 self.snr_settings
@@ -1160,11 +1214,15 @@ class MainWindow(QMainWindow):
         self._append_power_history(power, source="poll")
 
     def _display_power_snapshot(self, power: PowerSnapshot) -> None:
+        if not power.has_finite_power():
+            return
         self.power_panel.set_current_power(power)
         ch1 = power.powers_w[0] if power.powers_w else float("nan")
         self.power_label.setText(f"Power: {format_power_w(ch1)}")
 
     def _append_power_history(self, power: PowerSnapshot, *, source: str) -> None:
+        if not power.has_finite_power():
+            return
         point = PowerTracePoint(
             timestamp_utc=utc_now_iso(),
             elapsed_s=float(time.perf_counter() - self.app_t0),
@@ -1177,12 +1235,8 @@ class MainWindow(QMainWindow):
         self.power_panel.append_point(point)
 
     def _poll_power_tick(self) -> None:
-        # DeviceController currently serializes Newport and spectrometer work in
-        # one worker thread. Avoid building a queue of stale live-poll requests
-        # behind a long spectrum acquisition; spectrum-associated before/after
-        # readings are still recorded by DeviceController.acquire().
-        if self.acquiring or self.sequence_arbiter.automated:
-            return
+        # Newport owns a separate worker queue, so live readings remain
+        # independent of spectrometer acquisition and coordinator activity.
         if self.power_monitor_settings.live_polling_enabled:
             self.power_poll_requested.emit()
 
@@ -1274,10 +1328,10 @@ class MainWindow(QMainWindow):
             15_000,
         )
 
-        print(message, file=sys.stderr)
+        logger.error("Initial instrument connection failed:\n%s", message)
 
-    @Slot(str)
-    def _connect_instrument(self, key: str) -> None:
+    @Slot(str, str, str)
+    def _connect_instrument(self, key: str, mode: str, backend: str) -> None:
         if self.acquiring or self.sequence_arbiter.active:
             QMessageBox.information(
                 self,
@@ -1286,11 +1340,11 @@ class MainWindow(QMainWindow):
             )
             return
         if key == "spectrometer":
-            self.runtime.connect_spectrometer()
+            self.runtime.connect_spectrometer_selection(mode, backend)
         elif key == "power_meter":
-            self.runtime.connect_power_meter()
+            self.runtime.connect_power_meter_selection(mode)
         elif key == "lasers":
-            self.runtime.refresh_lasers()
+            self.runtime.connect_lasers_mode(mode)
 
     @Slot(str)
     def _disconnect_instrument(
@@ -1321,9 +1375,24 @@ class MainWindow(QMainWindow):
                 "Stop the active acquisition sequence before reconnecting instruments.",
             )
             return
-        self.runtime.connect_spectrometer()
-        self.runtime.connect_power_meter()
-        self.runtime.refresh_lasers()
+        dialog = getattr(self, "_instrument_connections_dialog", None)
+        if dialog is None:
+            self.runtime.connect_spectrometer_selection(
+                self.config.spectrometer_mode,
+                self.config.spectrometer_backend,
+            )
+            self.runtime.connect_power_meter_selection(
+                self.config.power_meter_mode
+            )
+            self.runtime.connect_lasers_mode(self.config.laser_mode)
+            return
+
+        for key in ("spectrometer", "power_meter", "lasers"):
+            mode, backend = dialog.selection(key)
+            if mode == "disconnected":
+                self._disconnect_instrument(key)
+            else:
+                self._connect_instrument(key, mode, backend)
 
     @Slot(str)
     def _on_worker_error(self, message: str) -> None:
@@ -1331,11 +1400,11 @@ class MainWindow(QMainWindow):
             "Instrument worker error. See console output.",
             10_000,
         )
-        print(message, file=sys.stderr)
+        logger.error("Instrument worker error:\n%s", message)
 
     @Slot(str)
     def _on_laser_error(self, message: str) -> None:
-        print(message, file=sys.stderr)
+        logger.error("Laser worker error:\n%s", message)
         self.statusBar().showMessage(
             "Laser controller error. See console output.",
             10_000,
@@ -1363,10 +1432,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _show_status_message(self, message: str) -> None:
+        logger.info("Instrument status: %s", message)
         self.statusBar().showMessage(str(message), 10_000)
 
     @Slot(str, int)
     def _show_status_with_timeout(self, message: str, timeout_ms: int) -> None:
+        logger.info("GUI event: %s", message)
         self.statusBar().showMessage(str(message), int(timeout_ms))
 
     @Slot(object)
@@ -1398,6 +1469,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_background_ready(self, background: BackgroundSpectrum) -> None:
+        self._latest_valid_snr_record = None
+        self._latest_snr_signature = None
         self._finish_acquisition_ui()
         self._release_sequence("background")
         self.statusBar().showMessage(
@@ -1408,17 +1481,19 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_background_cleared(self) -> None:
+        self._latest_valid_snr_record = None
+        self._latest_snr_signature = None
         self.statusBar().showMessage("Background spectrum cleared.", 10_000)
 
     @Slot(str)
     def _on_background_failed(self, message: str) -> None:
         if not self.acquiring and self._acquisition_owner != "background":
-            print(message, file=sys.stderr)
+            logger.error("Late background failure after UI unwind:\n%s", message)
             return
         self._finish_acquisition_ui()
         self._release_sequence("background")
         self.statusBar().showMessage("Background acquisition failed.", 15_000)
-        print(message, file=sys.stderr)
+        logger.error("Background acquisition failed:\n%s", message)
         QMessageBox.warning(
             self,
             "Background Acquisition Failed",
@@ -1441,6 +1516,18 @@ class MainWindow(QMainWindow):
         self,
         state: InstrumentConnectionState,
     ) -> None:
+        log = logger.info if state.connected or not state.error else logger.warning
+        log(
+            "Connection state: key=%s connected=%s emulated=%s mode=%s "
+            "backend=%s description=%s error=%s",
+            state.key,
+            state.connected,
+            state.emulated,
+            state.mode,
+            state.backend,
+            state.description,
+            state.error,
+        )
         self.instrument_states[state.key] = state
         if not state.connected:
             self._stop_work_for_disconnected_instrument(state)
@@ -1492,7 +1579,11 @@ class MainWindow(QMainWindow):
                     self._release_sequence(owner)
 
         elif key == "power_meter":
-            self._display_power_snapshot(PowerSnapshot.missing())
+            # Missing acquisition snapshots are intentionally ignored during
+            # normal operation, but an explicit disconnect must clear stale
+            # readback before the toolbar action is hidden and later restored.
+            self.power_panel.set_current_power(PowerSnapshot.missing())
+            self.power_label.setText("Power: --")
             if self.scan_coordinator.calibration_active:
                 self.scan_coordinator.fail_for_instrument_disconnect(
                     summary,
@@ -1604,6 +1695,38 @@ class MainWindow(QMainWindow):
                 replace(self.snr_settings)
             )
 
+    def _snr_settings_signature(self) -> tuple[object, ...]:
+        settings = self.snr_settings
+        return (
+            float(settings.signal_start_nm),
+            float(settings.signal_stop_nm),
+            float(settings.noise1_start_nm),
+            float(settings.noise1_stop_nm),
+            bool(settings.use_noise2),
+            float(settings.noise2_start_nm),
+            float(settings.noise2_stop_nm),
+            int(settings.baseline_order),
+            int(settings.minimum_noise_pixels),
+            float(settings.peak_percentile),
+        )
+
+    @staticmethod
+    def _snr_record_matches_settings(
+        record: SpectrumRecord,
+        settings: AcquisitionSettings,
+    ) -> bool:
+        return (
+            int(record.integration_ms) == int(settings.integration_ms)
+            and int(record.averages) == int(settings.averages)
+            and bool(record.correct_dark) == bool(settings.correct_dark)
+            and bool(record.correct_nonlinearity)
+            == bool(settings.correct_nonlinearity)
+            and int(record.boxcar_width) == int(settings.boxcar_width)
+            and str(record.averaging_mode) == str(settings.averaging_mode)
+            and bool(record.background_subtracted)
+            == bool(settings.subtract_background)
+        )
+
     # ------------------------------------------------------------- plot/view tools
 
     def _apply_display_settings(self) -> None:
@@ -1696,6 +1819,7 @@ class MainWindow(QMainWindow):
         # Newport controls.
         self.power_dock.setVisible(power_meter)
         self.power_label.setVisible(power_meter)
+        self.power_label_action.setVisible(power_meter)
 
         if not power_meter:
             self.power_timer.stop()
@@ -1870,6 +1994,22 @@ class MainWindow(QMainWindow):
                 dialog
             )
 
+        dialog.set_selection(
+            "spectrometer",
+            mode=self.config.spectrometer_mode,
+            backend=self.config.spectrometer_backend,
+        )
+        dialog.set_selection(
+            "power_meter",
+            mode=self.config.power_meter_mode,
+            backend="newport_2936r",
+        )
+        dialog.set_selection(
+            "lasers",
+            mode=self.config.laser_mode,
+            backend="obis",
+        )
+
         for state in self.instrument_states.values():
             dialog.set_state(state)
 
@@ -1927,6 +2067,14 @@ class MainWindow(QMainWindow):
         self._save_preferences()
 
     def show_spectrometer_details_dialog(self) -> None:
+        if not self._instrument_connected("spectrometer"):
+            QMessageBox.information(
+                self,
+                "No spectrometer",
+                "Connect a spectrometer from Tools > Instrument Connections before "
+                "querying its capabilities.",
+            )
+            return
         if self.acquiring or self.sequence_arbiter.active:
             QMessageBox.information(
                 self,
@@ -2092,6 +2240,18 @@ class MainWindow(QMainWindow):
     def open_github(self) -> None:
         QDesktopServices.openUrl(
             QUrl("https://github.com/cclark012/spectrometer-gui")
+        )
+
+    def open_log_folder(self) -> None:
+        if self.log_path is None:
+            QMessageBox.information(
+                self,
+                "Application Log",
+                "No application log path is available for this session.",
+            )
+            return
+        QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(self.log_path.parent.resolve()))
         )
 
     # -------------------------------------------------------------------- shutdown

@@ -145,9 +145,12 @@ class PowerPanel(QWidget):
             + format_power_w(ch2)
         )
 
-    def append_point(self, point: PowerTracePoint) -> None:
+    def append_point(self, point: PowerTracePoint) -> bool:
+        if not any(math.isfinite(float(value)) for value in point.powers_w):
+            return False
         self.power_trace.append(point)
         self._plot_dirty = True
+        return True
 
     def _redraw_if_dirty(self) -> None:
         if not self._plot_dirty:

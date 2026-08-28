@@ -73,6 +73,18 @@ def _obis_ports(value: Any) -> list[str] | None:
     return ports or None
 
 
+def _instrument_mode(value: Any, *, key: str, allow_auto: bool = False) -> str:
+    mode = str(value).strip().lower()
+    allowed = {"real", "emulated", "disconnected"}
+    if allow_auto:
+        allowed.add("auto")
+    if mode not in allowed:
+        raise ConfigurationError(
+            f"{key!r} must be one of: {', '.join(sorted(allowed))}."
+        )
+    return mode
+
+
 def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConfig:
     """Resolve CLI options and JSON defaults into a validated DeviceConfig."""
 
@@ -101,11 +113,33 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
             raise ConfigurationError(f"{key!r} must not be negative.")
         return value
 
-    laser_mode = str(_value(args, defaults, "laser_mode", "auto")).strip().lower()
-    if laser_mode not in {"real", "emulated", "auto"}:
-        raise ConfigurationError(
-            "'laser_mode' must be one of: real, emulated, auto."
-        )
+    preset_mode: str | None = None
+    if bool(getattr(args, "real", False)):
+        preset_mode = "real"
+    elif bool(getattr(args, "emulate", False)):
+        preset_mode = "emulated"
+
+    def requested_mode(key: str, default: str) -> Any:
+        command_line_mode = getattr(args, key, None)
+        if command_line_mode is not None:
+            return command_line_mode
+        if preset_mode is not None:
+            return preset_mode
+        return defaults.get(key, default)
+
+    spectrometer_mode = _instrument_mode(
+        requested_mode("spectrometer_mode", "emulated"),
+        key="spectrometer_mode",
+    )
+    power_meter_mode = _instrument_mode(
+        requested_mode("power_meter_mode", "emulated"),
+        key="power_meter_mode",
+    )
+    laser_mode = _instrument_mode(
+        _value(args, defaults, "laser_mode", "auto"),
+        key="laser_mode",
+        allow_auto=True,
+    )
 
     fallback_emulator = _boolean(
         _value(args, defaults, "fallback_emulator", False),
@@ -126,20 +160,46 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
     )
     andor_solis_dir = Path(str(andor_solis_value)) if andor_solis_value else None
 
-    emulate_main_devices = not bool(getattr(args, "real", False))
-    if bool(getattr(args, "emulate", False)):
-        emulate_main_devices = True
+    spectrometer_fallback = _boolean(
+        _value(
+            args,
+            defaults,
+            "spectrometer_fallback_emulator",
+            fallback_emulator,
+        ),
+        key="spectrometer_fallback_emulator",
+    )
+    power_meter_fallback = _boolean(
+        _value(
+            args,
+            defaults,
+            "power_meter_fallback_emulator",
+            fallback_emulator,
+        ),
+        key="power_meter_fallback_emulator",
+    )
 
     return DeviceConfig(
-        emulate=emulate_main_devices,
+        emulate=(
+            spectrometer_mode == "emulated"
+            and power_meter_mode == "emulated"
+        ),
         fallback_emulator=fallback_emulator,
         newport_dll=newport_dll,
         power_channel=power_channel,
         spectrometer_backend=spectrometer_backend,
+        qepro_serial_number=str(
+            _value(args, defaults, "qepro_serial_number", "") or ""
+        ).strip(),
         andor_solis_dir=andor_solis_dir,
         andor_camera_index=nonnegative_index("andor_camera_index"),
         andor_spectrograph_index=nonnegative_index("andor_spectrograph_index"),
         emulate_lasers=(laser_mode == "emulated"),
         laser_fallback_emulator=(laser_mode == "auto"),
         obis_ports=_obis_ports(_value(args, defaults, "obis_ports", None)),
+        spectrometer_mode=spectrometer_mode,
+        power_meter_mode=power_meter_mode,
+        laser_mode=laser_mode,
+        spectrometer_fallback_emulator=spectrometer_fallback,
+        power_meter_fallback_emulator=power_meter_fallback,
     )

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import numpy as np
 import pytest
 
@@ -33,6 +36,9 @@ class FakeSpectrometer:
         self.intensity_read_count = 0
         self.frames: list[np.ndarray] = []
 
+    def wavelengths(self) -> np.ndarray:
+        return np.array([400.0, 500.0, 600.0])
+
     def set_scans_to_average(self, averages: int) -> None:
         self.last_averages = int(averages)
 
@@ -60,6 +66,43 @@ def make_adapter(spec: FakeSpectrometer | None = None) -> QEProSpectrometer:
     adapter._applied_integration_us = None
     adapter._applied_device_averages = None
     return adapter
+
+
+def test_constructor_opens_configured_serial_number() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeFactory:
+        @classmethod
+        def from_serial_number(cls, serial: str):
+            calls.append(("serial", serial))
+            return FakeSpectrometer()
+
+        @classmethod
+        def from_first_available(cls):
+            calls.append(("first", ""))
+            return FakeSpectrometer()
+
+    package = types.ModuleType("seabreeze")
+    module = types.ModuleType("seabreeze.spectrometers")
+    module.Spectrometer = FakeFactory
+    original_package = sys.modules.get("seabreeze")
+    original_module = sys.modules.get("seabreeze.spectrometers")
+    sys.modules["seabreeze"] = package
+    sys.modules["seabreeze.spectrometers"] = module
+    try:
+        adapter = QEProSpectrometer(serial_number=" QEP05831 ")
+    finally:
+        if original_package is None:
+            sys.modules.pop("seabreeze", None)
+        else:
+            sys.modules["seabreeze"] = original_package
+        if original_module is None:
+            sys.modules.pop("seabreeze.spectrometers", None)
+        else:
+            sys.modules["seabreeze.spectrometers"] = original_module
+
+    assert adapter.serial_number == "FAKE"
+    assert calls == [("serial", "QEP05831")]
 
 
 def test_capabilities_exclude_unavailable_feature_lists() -> None:

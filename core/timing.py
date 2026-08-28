@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 
 class StepTimer:
@@ -23,9 +26,11 @@ class StepTimer:
             return
 
         now = time.perf_counter()
-        print(
-            f"[{self.label}] total={now - self._t0:9.3f} s, "
-            f"dt={now - self._last:8.3f} s, {message}",
-            flush=True,
+        logger.info(
+            "[%s] total=%9.3f s, dt=%8.3f s, %s",
+            self.label,
+            now - self._t0,
+            now - self._last,
+            message,
         )
         self._last = now

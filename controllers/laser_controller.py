@@ -30,10 +30,22 @@ class LaserController(QObject):
         emulate: bool = False,
         fallback_emulator: bool = False,
         candidate_ports: list[str] | None = None,
+        mode: str | None = None,
     ) -> None:
         super().__init__()
-        self.emulate = bool(emulate)
-        self.fallback_emulator = bool(fallback_emulator)
+        self.mode = self._normalize_mode(
+            mode
+            or (
+                "emulated"
+                if emulate
+                else "auto"
+                if fallback_emulator
+                else "real"
+            )
+        )
+        self.emulate = self.mode == "emulated"
+        self.fallback_emulator = self.mode == "auto"
+        self._using_emulator = False
         self.candidate_ports = candidate_ports
         self.boxes: dict[str, LaserBoxAdapter] = {}
         self._laser_cache: dict[tuple[str, int], LaserChannelInfo] = {}
@@ -42,10 +54,43 @@ class LaserController(QObject):
         self._safety_timer.setInterval(1000)
         self._safety_timer.timeout.connect(self._verify_enabled_channels)
 
+    @staticmethod
+    def _normalize_mode(mode: str) -> str:
+        value = str(mode).strip().lower()
+        if value not in {"real", "emulated", "auto", "disconnected"}:
+            raise ValueError(
+                f"Unknown laser mode {mode!r}; expected real, emulated, auto, "
+                "or disconnected."
+            )
+        return value
+
+    @Slot(str)
+    def connect_mode(self, mode: str) -> None:
+        try:
+            self.mode = self._normalize_mode(mode)
+        except ValueError as exc:
+            self.error.emit(str(exc))
+            return
+        self.emulate = self.mode == "emulated"
+        self.fallback_emulator = self.mode == "auto"
+        self.refresh()
+
     @Slot()
     def refresh(self) -> None:
         try:
             self._close_boxes()
+            if self.mode == "disconnected":
+                self.lasers_ready.emit([])
+                self.connection_changed.emit(
+                    InstrumentConnectionState(
+                        key="lasers",
+                        connected=False,
+                        description="Laser boxes disconnected by configuration.",
+                        mode="disconnected",
+                        backend="obis",
+                    )
+                )
+                return
             using_emulator = bool(self.emulate)
 
             if self.emulate:
@@ -68,6 +113,7 @@ class LaserController(QObject):
                     mode_message = "No real OBIS boxes found; using laser emulators."
 
             self.status.emit(mode_message)
+            self._using_emulator = bool(using_emulator)
             self.boxes = {box.port: box for box in boxes}
             lasers = self._collect_lasers()
             self._laser_cache = {
@@ -89,15 +135,18 @@ class LaserController(QObject):
                 InstrumentConnectionState(
                     key="lasers",
                     connected=bool(self.boxes),
-                    emulated=bool(self.boxes) and using_emulator,
+                    emulated=bool(self.boxes) and self._using_emulator,
                     description=message,
                     error="",
+                    mode="emulated" if using_emulator else self.mode,
+                    backend="obis",
                 )
             )
         except Exception:
             message = traceback.format_exc()
 
             self.boxes = {}
+            self._using_emulator = False
             self._laser_cache.clear()
             self.lasers_ready.emit([])
 
@@ -107,6 +156,8 @@ class LaserController(QObject):
                     connected=False,
                     description="Laser connection failed.",
                     error=message,
+                    mode=self.mode,
+                    backend="obis",
                 )
             )
 
@@ -191,12 +242,15 @@ class LaserController(QObject):
             InstrumentConnectionState(
                 key="lasers",
                 connected=bool(self.boxes),
+                emulated=bool(self.boxes) and self._using_emulator,
                 description=(
                     f"OBIS box on {port} disconnected."
                     if not self.boxes
                     else f"OBIS box on {port} disconnected; other boxes remain available."
                 ),
                 error=str(message),
+                mode="emulated" if self._using_emulator else self.mode,
+                backend="obis",
             )
         )
 
@@ -428,6 +482,8 @@ class LaserController(QObject):
                 key="lasers",
                 connected=False,
                 description="Laser boxes disconnected.",
+                mode="disconnected",
+                backend="obis",
             )
         )
 
@@ -446,4 +502,5 @@ class LaserController(QObject):
             except Exception:
                 pass
         self.boxes = {}
+        self._using_emulator = False
         self._laser_cache.clear()
