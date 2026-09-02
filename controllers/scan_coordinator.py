@@ -13,6 +13,10 @@ from core.settings import AcquisitionSettings, DeviceConfig
 from core.time_utils import utc_now_iso
 from core.timing import StepTimer
 from io_utils.calibration_io import load_calibration_csv, save_calibration_csv
+from panels.acquisition_panel import AcquisitionPanel
+from panels.filter_wheels_panel import FilterWheelPanel
+from panels.laser_panel import LaserPanel
+from panels.scan_panel import ScanPanel
 from planning.filter_planning import enumerate_filter_states, plan_min_filter_changes
 from planning.power_scan import CalibrationCurve, ScanPlan
 
@@ -39,10 +43,10 @@ class ScanCoordinator(QObject):
         *,
         parent: QWidget,
         config: DeviceConfig,
-        scan_panel,
-        laser_panel,
-        acquisition_panel,
-        filter_wheel_panel,
+        scan_panel: ScanPanel,
+        laser_panel: LaserPanel,
+        acquisition_panel: AcquisitionPanel,
+        filter_wheel_panel: FilterWheelPanel,
     ) -> None:
         super().__init__(parent)
         self.parent_widget = parent
@@ -652,7 +656,7 @@ class ScanCoordinator(QObject):
         self.calibration_readings_w.append(measured)
         self.calibration_read_index += 1
 
-        if self.calibration_read_index < self.scan_panel.calibration_reads_per_point():
+        if self.calibration_read_index < self.scan_panel.repeats():
             QTimer.singleShot(0, self._read_current_calibration_power)
             return
 

@@ -73,10 +73,6 @@ class ScanPanel(QWidget):
         self.spacing_combo.addItem("Custom", "custom")
         self.spacing_combo.currentIndexChanged.connect(self._on_spacing_changed)
 
-        self.calibration_reads = QSpinBox()
-        self.calibration_reads.setRange(1, 1000)
-        self.calibration_reads.setValue(3)
-
         self.start_power = self._make_power_spin(1.0)
         self.stop_power = self._make_power_spin(10.0)
         self.start_power_units = self._make_power_units()
@@ -123,7 +119,6 @@ class ScanPanel(QWidget):
 
         form.addRow("Basis", self.basis_combo)
         form.addRow("Spacing", self.spacing_combo)
-        form.addRow("Calibration reads/point", self.calibration_reads)
         form.addRow("Power range", power_row)
         form.addRow("Points", self.n_points)
         form.addRow("Repeats/point", self.repeats_per_point)
@@ -216,9 +211,6 @@ class ScanPanel(QWidget):
 
     def _on_spacing_changed(self) -> None:
         self.custom_values.setVisible(self.spacing() == "custom")
-
-    def calibration_reads_per_point(self) -> int:
-        return int(self.calibration_reads.value())
 
     def power_factor(self) -> float:
         """Return the stop/custom-value factor retained by the legacy API."""
@@ -398,7 +390,6 @@ class ScanPanel(QWidget):
         for widget in (
             self.basis_combo,
             self.spacing_combo,
-            self.calibration_reads,
             self.start_power,
             self.stop_power,
             self.start_power_units,
@@ -457,9 +448,6 @@ class ScanPanel(QWidget):
         self.repeats_per_point.setValue(
             get_int(settings, "scan/repeats_per_point", self.repeats_per_point.value())
         )
-        self.calibration_reads.setValue(
-            get_int(settings, "scan/calibration_reads", self.calibration_reads.value())
-        )
         self.settling_time_s.setValue(
             get_float(settings, "scan/settling_time_s", self.settling_time_s.value())
         )
@@ -486,7 +474,6 @@ class ScanPanel(QWidget):
         settings.setValue("scan/stop_power", self.stop_power.value())
         settings.setValue("scan/n_points", self.n_points.value())
         settings.setValue("scan/repeats_per_point", self.repeats_per_point.value())
-        settings.setValue("scan/calibration_reads", self.calibration_reads.value())
         settings.setValue("scan/settling_time_s", self.settling_time_s.value())
         settings.setValue("scan/enable_before", self.enable_before_scan.isChecked())
         settings.setValue("scan/disable_after", self.disable_after_scan.isChecked())
