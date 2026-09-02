@@ -1280,7 +1280,8 @@ def main(argv: list[str] | None = None) -> int:
         report.solis_dir = str(root)
         dll_handle = os.add_dll_directory(str(root))
 
-        camera_path = _camera_dll_path(root)
+        # camera_path = _camera_dll_path(root)
+        camera_path = root / Path("atmcd64d_legacy.dll")
         spectrograph_path = _spectrograph_dll_path(root)
         report.camera_dll = str(camera_path)
         report.spectrograph_dll = str(spectrograph_path)
