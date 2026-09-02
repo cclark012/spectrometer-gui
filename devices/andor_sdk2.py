@@ -80,7 +80,7 @@ class AndorCameraCapabilities:
 class AndorSDK2Camera:
     """Small SDK2 wrapper for single-scan, full-vertical-binning spectroscopy."""
 
-    DLL_NAMES = ("atmcd64d.dll", "atmcd64d_legacy.dll", "atmcd32d.dll")
+    DLL_NAMES = ("atmcd64d_legacy.dll", "atmcd64d.dll", "atmcd32d.dll")
 
     def __init__(
         self,
