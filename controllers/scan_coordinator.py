@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -13,12 +14,14 @@ from core.settings import AcquisitionSettings, DeviceConfig
 from core.time_utils import utc_now_iso
 from core.timing import StepTimer
 from io_utils.calibration_io import load_calibration_csv, save_calibration_csv
-from panels.acquisition_panel import AcquisitionPanel
-from panels.filter_wheels_panel import FilterWheelPanel
-from panels.laser_panel import LaserPanel
-from panels.scan_panel import ScanPanel
 from planning.filter_planning import enumerate_filter_states, plan_min_filter_changes
 from planning.power_scan import CalibrationCurve, ScanPlan
+
+if TYPE_CHECKING:
+    from panels.acquisition_panel import AcquisitionPanel
+    from panels.filter_wheels_panel import FilterWheelPanel
+    from panels.laser_panel import LaserPanel
+    from panels.scan_panel import ScanPanel
 
 
 class ScanCoordinator(QObject):
