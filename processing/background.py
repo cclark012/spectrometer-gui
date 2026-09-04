@@ -117,6 +117,7 @@ class BackgroundCorrector:
         wavelengths_nm: NDArray[np.float64],
         intensities_counts: NDArray[np.float64],
         integration_ms: int,
+        configuration_signature: str = "",
     ) -> tuple[NDArray[np.float64], bool, str, int]:
         wavelengths = np.asarray(wavelengths_nm, dtype=float)
         intensities = np.asarray(intensities_counts, dtype=float)
@@ -130,6 +131,14 @@ class BackgroundCorrector:
 
         if self.background is None:
             return intensities.copy(), False, "", 0
+
+        expected_signature = str(self.background.configuration_signature)
+        actual_signature = str(configuration_signature)
+        if expected_signature and actual_signature != expected_signature:
+            raise ValueError(
+                "The active detector/acquisition settings do not match the saved "
+                "background. Capture a new background before subtracting it."
+            )
 
         background_counts_per_s = self._background_on_grid(wavelengths)
         corrected = intensities - background_counts_per_s * (float(integration_ms) * 1.0e-3)

@@ -50,6 +50,15 @@ class GatedAcquisitionPanel(QWidget):
         self.output_combo.addItem("Individual spectrum files", "individual_frames")
         self.output_combo.addItem("One averaged series file", "averaged_series")
 
+        self.timing_guard_combo = QComboBox()
+        self.timing_guard_combo.addItem("Discard timing outliers", "discard")
+        self.timing_guard_combo.addItem("Flag timing outliers", "flag")
+        self.timing_guard_combo.addItem("Timing guard off", "off")
+        self.timing_guard_combo.setToolTip(
+            "Uses the robust spread of observed timing residuals and the "
+            "exposure uncertainty; it does not use a fixed millisecond tolerance."
+        )
+
         self.cycles = self._spin(1, 10_000, 1)
         self.inter_frame_gap_ms = self._spin(0, 3_600_000, 0, " ms")
 
@@ -61,6 +70,8 @@ class GatedAcquisitionPanel(QWidget):
         common.addWidget(self.cycles, 2, 1)
         common.addWidget(QLabel("Frame gap"), 2, 2)
         common.addWidget(self.inter_frame_gap_ms, 2, 3)
+        common.addWidget(QLabel("Timing quality"), 3, 0)
+        common.addWidget(self.timing_guard_combo, 3, 1, 1, 3)
         layout.addLayout(common)
 
         self.on_settle_ms = self._spin(0, 3_600_000, 250, " ms")
@@ -136,10 +147,17 @@ class GatedAcquisitionPanel(QWidget):
         self.disable_after.setChecked(True)
         self.autosave = QCheckBox("Autosave output")
         self.autosave.setChecked(True)
+        self.measure_power = QCheckBox("Power/frame")
+        self.measure_power.setChecked(False)
+        self.measure_power.setToolTip(
+            "Read Newport before and after every gated frame. This adds variable "
+            "latency; leave it off for the best software timing."
+        )
         options = QHBoxLayout()
         options.addWidget(self.enable_before)
         options.addWidget(self.disable_after)
         options.addWidget(self.autosave)
+        options.addWidget(self.measure_power)
         options.addStretch(1)
         layout.addLayout(options)
 
@@ -223,7 +241,9 @@ class GatedAcquisitionPanel(QWidget):
             enable_before_start=self.enable_before.isChecked(),
             disable_after_finish=self.disable_after.isChecked(),
             autosave_frames=self.autosave.isChecked(),
+            measure_power_per_frame=self.measure_power.isChecked(),
             output_mode=str(self.output_combo.currentData()),
+            timing_guard_mode=str(self.timing_guard_combo.currentData()),
         )
 
     def _preference_widgets(self) -> tuple[tuple[str, QSpinBox], ...]:
@@ -255,6 +275,10 @@ class GatedAcquisitionPanel(QWidget):
         index = self.output_combo.findData(output_mode)
         if index >= 0:
             self.output_combo.setCurrentIndex(index)
+        timing_guard_mode = get_str(settings, "gated/timing_guard_mode", "discard")
+        index = self.timing_guard_combo.findData(timing_guard_mode)
+        if index >= 0:
+            self.timing_guard_combo.setCurrentIndex(index)
         for key, widget in self._preference_widgets():
             widget.setValue(get_int(settings, f"gated/{key}", widget.value()))
         self.enable_before.setChecked(
@@ -264,16 +288,24 @@ class GatedAcquisitionPanel(QWidget):
             get_bool(settings, "gated/disable_after", self.disable_after.isChecked())
         )
         self.autosave.setChecked(get_bool(settings, "gated/autosave", self.autosave.isChecked()))
+        self.measure_power.setChecked(
+            get_bool(settings, "gated/measure_power", self.measure_power.isChecked())
+        )
         self._update_mode_visibility()
 
     def save_preferences(self, settings: QSettings) -> None:
         settings.setValue("gated/mode", str(self.mode_combo.currentData()))
         settings.setValue("gated/output_mode", str(self.output_combo.currentData()))
+        settings.setValue(
+            "gated/timing_guard_mode",
+            str(self.timing_guard_combo.currentData()),
+        )
         for key, widget in self._preference_widgets():
             settings.setValue(f"gated/{key}", widget.value())
         settings.setValue("gated/enable_before", self.enable_before.isChecked())
         settings.setValue("gated/disable_after", self.disable_after.isChecked())
         settings.setValue("gated/autosave", self.autosave.isChecked())
+        settings.setValue("gated/measure_power", self.measure_power.isChecked())
 
     def set_plan(self, plan: GatedPlan) -> None:
         display_actions = plan.actions[:5000]
@@ -329,10 +361,12 @@ class GatedAcquisitionPanel(QWidget):
         for widget in (
             self.mode_combo,
             self.output_combo,
+            self.timing_guard_combo,
             *(widget for _key, widget in self._preference_widgets()),
             self.enable_before,
             self.disable_after,
             self.autosave,
+            self.measure_power,
         ):
             widget.setEnabled(idle)
 

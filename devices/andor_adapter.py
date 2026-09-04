@@ -29,6 +29,7 @@ class AndorKymeraSpectrometer:
         *,
         camera_index: int = 0,
         spectrograph_index: int = 0,
+        camera_dll: str | Path | None = None,
         camera=None,
         spectrograph=None,
     ) -> None:
@@ -46,6 +47,7 @@ class AndorKymeraSpectrometer:
                     self.camera = AndorSDK2Camera(
                         self.solis_dir,
                         camera_index=int(camera_index),
+                        camera_dll=camera_dll,
                     )
                 except Exception as exc:
                     serial = str(
@@ -86,6 +88,9 @@ class AndorKymeraSpectrometer:
 
     def capabilities(self) -> SpectrometerCapabilities:
         camera_schema = self.camera.capabilities.as_control_schema()
+        selected_camera_dll = getattr(self.camera, "dll_path", None)
+        if selected_camera_dll is not None:
+            camera_schema["sdk2_dll"] = str(selected_camera_dll)
         spectrograph_schema = self.spectrograph.capabilities.as_control_schema()
         return SpectrometerCapabilities(
             model=self.name,
@@ -371,6 +376,7 @@ class AndorKymeraSpectrometer:
             intensities_counts=values,
             signal_max_counts=float(np.max(finite)),
             device_averaging_used=False,
+            timing=getattr(self.camera, "last_timing", None),
         )
 
     def get_ccd_temperature_c(self) -> float:

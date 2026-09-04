@@ -8,7 +8,7 @@ from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -39,7 +39,11 @@ class AcquisitionPanel(QWidget):
         self._nonlinearity_correction_supported = True
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        form = QGridLayout()
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(5)
+        form.setRowStretch(1, 1)
+        form.setColumnStretch(3, 1)
 
         self.live_check = QCheckBox()
         self.live_check.setChecked(False)
@@ -49,6 +53,7 @@ class AcquisitionPanel(QWidget):
         self.integration_ms.setRange(1, 600_000)
         self.integration_ms.setValue(100)
         self.integration_ms.setSuffix(" ms")
+        # self.integration_ms.setMaximumWidth(112)
 
         self.averaging_mode_combo = QComboBox()
         self.averaging_mode_combo.addItem("Software averaging", "software")
@@ -78,10 +83,17 @@ class AcquisitionPanel(QWidget):
         self.averages = QSpinBox()
         self.averages.setRange(1, 1000)
         self.averages.setValue(5)
+        # self.averages.setMaximumWidth(90)
+
+        averaging_row = QHBoxLayout()
+        averaging_row.addWidget(self.averages)
+        averaging_row.addWidget(self.averaging_mode_combo)
+        averaging_row.setSpacing(5)
 
         self.boxcar_width = QSpinBox()
         self.boxcar_width.setRange(0, 501)
         self.boxcar_width.setValue(0)
+        self.boxcar_width.setMaximumWidth(90)
 
         self.dark_check = QCheckBox()
         self.dark_check.setChecked(True)
@@ -89,11 +101,15 @@ class AcquisitionPanel(QWidget):
         self.nonlinearity_check = QCheckBox()
         self.nonlinearity_check.setChecked(True)
 
+        self.record_field = QCheckBox()
+        self.record_field.setChecked(True)
+
         self.field_input = QSpinBox()
         self.field_input.setRange(-100_000, 100_000)
         self.field_input.setSingleStep(10)
         self.field_input.setValue(0)
         self.field_input.setSuffix(" mT")
+        self.field_input.setMaximumWidth(112)
 
         self._snr_enabled = False
 
@@ -124,6 +140,7 @@ class AcquisitionPanel(QWidget):
         recommendation_row = QHBoxLayout()
         recommendation_row.addWidget(self.recommend_button)
         recommendation_row.addWidget(self.auto_tune_button)
+        recommendation_row.setSpacing(5)
 
         live_label = QLabel()
         live_label.setText("Live")
@@ -146,21 +163,31 @@ class AcquisitionPanel(QWidget):
         for label, check in zip(labels, checks, strict=True):
             options.addWidget(label)
             options.addWidget(check)
+        options.setSpacing(5)
 
-        form.addRow(options)
+        form.addLayout(options, 0, 0, 1, 4)
         background_row = QHBoxLayout()
         background_row.addWidget(self.take_background_button)
         background_row.addWidget(self.clear_background_button)
-        form.addRow("Background", background_row)
-        form.addRow("Integration time", self.integration_ms)
-        form.addRow("Averaging mode", self.averaging_mode_combo)
-        form.addRow("Averages", self.averages)
-        form.addRow("Boxcar width", self.boxcar_width)
-        form.addRow("Magnetic field", self.field_input)
-        form.addRow("Measure power", self.measure_power_check)
-        form.addRow("SNR", self.snr_label)
-        form.addRow("Acquisition tuning", recommendation_row)
-
+        background_row.setSpacing(5)
+        form.addWidget(QLabel("Exposure"), 1, 0)
+        form.addWidget(self.integration_ms, 1, 1)
+        form.addWidget(QLabel("SNR"), 1, 2)
+        form.addWidget(self.snr_label, 1, 3, 1, 1)
+        form.addWidget(QLabel("Averaging"), 2, 0)
+        form.addLayout(averaging_row, 2, 1, 1, 3)
+        form.addWidget(QLabel("Boxcar"), 3, 0)
+        form.addWidget(self.boxcar_width, 3, 1)
+        form.addWidget(QLabel("Field"), 3, 2)
+        form.addWidget(self.field_input, 3, 3)
+        form.addWidget(QLabel("Measure power"), 4, 0)
+        form.addWidget(self.measure_power_check, 4, 1)
+        form.addWidget(QLabel("Record field"), 4, 2)
+        form.addWidget(self.record_field, 4, 3)
+        form.addWidget(QLabel("Tuning"), 5, 0)
+        form.addLayout(recommendation_row, 5, 1, 1, 3)
+        form.addWidget(QLabel("Background"), 6, 0)
+        form.addLayout(background_row, 6, 1, 1, 3)
         layout.addLayout(form)
 
         self.acquire_button = QPushButton("Take Spectrum")
@@ -184,7 +211,7 @@ class AcquisitionPanel(QWidget):
             boxcar_width=int(self.boxcar_width.value()),
             correct_dark=bool(self.dark_check.isChecked()),
             correct_nonlinearity=bool(self.nonlinearity_check.isChecked()),
-            field_value=float(self.field_input.value()),
+            field_value=float(self.field_input.value()) if self.record_field.isChecked() else None,
             run_identifier=str(run_identifier),
             notes=str(notes),
             averaging_mode=str(self.averaging_mode_combo.currentData()),
@@ -235,6 +262,7 @@ class AcquisitionPanel(QWidget):
             self.nonlinearity_check,
             self.subtract_background_check,
             self.measure_power_check,
+            self.record_field,
             self.field_input,
         ):
             widget.setEnabled(parameters_enabled)
@@ -325,7 +353,7 @@ class AcquisitionPanel(QWidget):
 
         if self._snr_enabled:
             self.snr_label.setText(
-                "Enabled — waiting for spectrum"
+                "Enabled"
             )
             self.snr_label.setToolTip(
                 "SNR estimation is enabled. "
@@ -394,6 +422,9 @@ class AcquisitionPanel(QWidget):
         self.measure_power_check.setChecked(
             get_bool(settings, "acquisition/measure_power", True)
         )
+        self.record_field.setChecked(
+            get_bool(settings, "acquisition/record_field", True)
+        )
 
     def save_preferences(self, settings: QSettings) -> None:
         settings.setValue("acquisition/live_enabled", self.live_check.isChecked())
@@ -417,4 +448,8 @@ class AcquisitionPanel(QWidget):
         settings.setValue(
             "acquisition/measure_power",
             self.measure_power_check.isChecked(),
+        )
+        settings.setValue(
+            "acquisition/record_field",
+            self.record_field.isChecked(),
         )

@@ -42,6 +42,9 @@ def test_gated_series_is_saved_as_one_matrix_csv(tmp_path: Path) -> None:
         laser_box_id="box",
         laser_channel=1,
         laser_wavelength_nm=532.0,
+        timing_evaluated_count=12,
+        timing_rejected_count=2,
+        timing_guard_method="discard",
     )
     path = tmp_path / "series.csv"
 
@@ -51,5 +54,8 @@ def test_gated_series_is_saved_as_one_matrix_csv(tmp_path: Path) -> None:
     assert "# file_type,gated_averaged_series" in text
     assert "delay_5_ms__mean_counts" in text
     assert "call_start_std_ms" in text
+    assert "timing_error_p99_ms" in text
     assert "std_power_W..." in text
+    assert "# timing_rejected_count,2" in text
+    assert "exposure_uncertainty_mean_ms" in text
     assert text.count("# trace,") == 1

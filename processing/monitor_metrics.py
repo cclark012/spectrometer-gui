@@ -87,7 +87,7 @@ def build_monitor_point(
     return MonitorTracePoint(
         timestamp_utc=record.timestamp_utc,
         elapsed_s=float(record.timestamp_s - config.application_t0_s),
-        field_mT=float(record.field_value),
+        field_mT=float(record.field_value) if record.field_value is not None else 0.0,
         power_ch1_W=float(record.mean_power_w(0)),
         power_ch2_W=float(record.mean_power_w(1)),
         intensity_target_counts=target_intensity,

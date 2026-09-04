@@ -3,11 +3,14 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from core.records import AcquisitionTiming
 
 DRV_SUCCESS = 20002
 DRV_TEMPERATURE_CODES = {20034, 20035, 20036, 20037, 20038, 20039, 20040}
@@ -80,7 +83,15 @@ class AndorCameraCapabilities:
 class AndorSDK2Camera:
     """Small SDK2 wrapper for single-scan, full-vertical-binning spectroscopy."""
 
-    DLL_NAMES = ("atmcd64d_legacy.dll", "atmcd64d.dll", "atmcd32d.dll")
+    # The lab DU401_BVF is enumerated by the legacy 64-bit SDK2 runtime but not
+    # by atmcd64d.dll.  Keep the proven runtime first and allow an exact DLL to
+    # be configured for other installations.
+    DLL_NAMES = (
+        "atmcd64d_legacy.dll",
+        "atmcd64d.dll",
+        "atmcd32d_legacy.dll",
+        "atmcd32d.dll",
+    )
 
     def __init__(
         self,
@@ -88,10 +99,14 @@ class AndorSDK2Camera:
         *,
         camera_index: int = 0,
         settings: AndorCameraSettings | None = None,
+        camera_dll: str | Path | None = None,
     ) -> None:
         self.solis_dir = Path(solis_dir)
         self.camera_index = int(camera_index)
         self.settings = settings or AndorCameraSettings()
+        self.requested_camera_dll = Path(camera_dll) if camera_dll else None
+        self.dll_path: Path | None = None
+        self.last_timing: AcquisitionTiming | None = None
         self._initialized = False
         self._dll_directory_handle = None
         self._dll = self._load_dll()
@@ -145,19 +160,28 @@ class AndorSDK2Camera:
             raise AndorSDK2Error(
                 "The Andor SDK2 native adapter is available only on Windows."
             )
-        dll_path = next(
-            (
-                self.solis_dir / name
-                for name in self.DLL_NAMES
-                if (self.solis_dir / name).exists()
-            ),
-            None,
-        )
+        requested = self.requested_camera_dll
+        if requested is not None:
+            dll_path = requested if requested.is_absolute() else self.solis_dir / requested
+            if not dll_path.exists():
+                raise FileNotFoundError(
+                    f"Configured Andor SDK2 camera DLL was not found: {dll_path}"
+                )
+        else:
+            dll_path = next(
+                (
+                    self.solis_dir / name
+                    for name in self.DLL_NAMES
+                    if (self.solis_dir / name).exists()
+                ),
+                None,
+            )
         if dll_path is None:
             raise FileNotFoundError(f"No Andor SDK2 camera DLL found in {self.solis_dir}")
         if hasattr(os, "add_dll_directory"):
             self._dll_directory_handle = os.add_dll_directory(str(self.solis_dir))
-        return ctypes.WinDLL(str(dll_path))
+        self.dll_path = dll_path.resolve()
+        return ctypes.WinDLL(str(self.dll_path))
 
     def _function(self, name: str, argtypes: list[Any]):
         function = getattr(self._dll, name, None)
@@ -497,11 +521,17 @@ class AndorSDK2Camera:
         self._call("PrepareAcquisition", argtypes=[])
         count = self.output_pixel_count
         running_mean: np.ndarray | None = None
+        timing_started_s = float("nan")
+        timing_finished_s = float("nan")
+        sample_windows_s: list[tuple[float, float]] = []
         timeout_ms = min(
             2_147_000_000,
             max(10_000, int(math.ceil(2.0 * exposure_ms + 10_000.0))),
         )
         for index in range(max(1, int(averages))):
+            frame_started_s = time.perf_counter()
+            if index == 0:
+                timing_started_s = frame_started_s
             self._call("StartAcquisition", argtypes=[])
             try:
                 if getattr(self._dll, "WaitForAcquisitionTimeOut", None) is not None:
@@ -521,6 +551,8 @@ class AndorSDK2Camera:
                     f"Andor acquisition did not complete within the bounded "
                     f"wait ({timeout_ms} ms): {exc}"
                 ) from exc
+            timing_finished_s = time.perf_counter()
+            sample_windows_s.append((frame_started_s, timing_finished_s))
             buffer = (ctypes.c_int32 * count)()
             self._call(
                 "GetAcquiredData",
@@ -535,6 +567,17 @@ class AndorSDK2Camera:
                 running_mean += (values - running_mean) / float(index + 1)
         if running_mean is None:
             raise AndorSDK2Error("SDK2 returned no acquisition data.")
+        if math.isfinite(timing_started_s) and math.isfinite(timing_finished_s):
+            self.last_timing = AcquisitionTiming(
+                window_started_s=timing_started_s,
+                window_finished_s=timing_finished_s,
+                midpoint_estimate_s=0.5 * (timing_started_s + timing_finished_s),
+                uncertainty_s=0.5 * max(0.0, timing_finished_s - timing_started_s),
+                basis="sdk_start_to_acquisition_complete_bounds",
+                sample_windows_s=tuple(sample_windows_s),
+            )
+        else:
+            self.last_timing = None
         return running_mean
 
     def get_temperature_c(self) -> float:

@@ -5,7 +5,7 @@ import time
 from collections import deque
 from dataclasses import replace
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 
 from core.gated_acquisition import (
     GatedAcquisitionSettings,
@@ -18,6 +18,7 @@ from core.records import SpectrumRecord
 from core.settings import AcquisitionSettings
 from planning.gated_sequence import build_gated_plan
 from processing.gated_averaging import GatedSeriesAccumulator
+from processing.gated_timing import RobustTimingGuard
 
 
 class GatedAcquisitionCoordinator(QObject):
@@ -53,12 +54,16 @@ class GatedAcquisitionCoordinator(QObject):
         self._laser: LaserChannelInfo | None = None
         self._pending_frame: GatedFrameMetadata | None = None
         self._transition_time_s: float | None = None
+        self._transition_time_ns: int | None = None
         self._sequence_id = ""
         self._accumulator: GatedSeriesAccumulator | None = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._on_timer_timeout)
         self._timer_callback = None
+        self._timer_deadline_ns: int | None = None
+        self._timing_guard = RobustTimingGuard(mode="off")
 
     @property
     def active(self) -> bool:
@@ -90,6 +95,7 @@ class GatedAcquisitionCoordinator(QObject):
         self._current_action = None
         self._pending_frame = None
         self._transition_time_s = None
+        self._transition_time_ns = None
         self._sequence_id = next(
             (
                 action.frame.sequence_id
@@ -102,6 +108,13 @@ class GatedAcquisitionCoordinator(QObject):
             GatedSeriesAccumulator()
             if settings.output_mode == "averaged_series"
             else None
+        )
+        self._timing_guard = RobustTimingGuard(
+            mode=settings.timing_guard_mode,
+            sigma=settings.timing_guard_sigma,
+            warmup=settings.timing_guard_warmup,
+            max_rejected_fraction=settings.timing_guard_max_rejected_fraction,
+            min_evaluated=settings.timing_guard_min_evaluated,
         )
         self._set_active(True)
         self.plan_ready.emit(plan)
@@ -152,7 +165,8 @@ class GatedAcquisitionCoordinator(QObject):
         action = self._current_action
         self._awaiting_laser = False
         if action is not None and action.marks_transition:
-            self._transition_time_s = time.perf_counter()
+            self._transition_time_ns = time.perf_counter_ns()
+            self._transition_time_s = self._transition_time_ns * 1.0e-9
 
         if self._abort_requested:
             self._finish_aborted()
@@ -191,14 +205,83 @@ class GatedAcquisitionCoordinator(QObject):
                 if math.isfinite(start_ms) and math.isfinite(end_ms)
                 else float("nan")
             )
+            timing = record.acquisition_timing
+            if timing is not None:
+                exposure_start_ms = 1000.0 * (
+                    timing.window_started_s - self._transition_time_s
+                )
+                exposure_end_ms = 1000.0 * (
+                    timing.window_finished_s - self._transition_time_s
+                )
+                exposure_midpoint_ms = 1000.0 * (
+                    timing.midpoint_estimate_s - self._transition_time_s
+                )
+                exposure_uncertainty_ms = 1000.0 * timing.uncertainty_s
+                exposure_basis = str(timing.basis)
+                exposure_sample_windows_ms = tuple(
+                    (
+                        1000.0 * (sample_start_s - self._transition_time_s),
+                        1000.0 * (sample_end_s - self._transition_time_s),
+                    )
+                    for sample_start_s, sample_end_s in timing.sample_windows_s
+                )
+            else:
+                exposure_start_ms = start_ms
+                exposure_end_ms = end_ms
+                exposure_midpoint_ms = midpoint_ms
+                exposure_uncertainty_ms = (
+                    0.5 * max(0.0, end_ms - start_ms)
+                    if math.isfinite(start_ms) and math.isfinite(end_ms)
+                    else float("nan")
+                )
+                exposure_basis = "controller_call_bounds"
+                exposure_sample_windows_ms = ()
             record.gated = replace(
                 record.gated,
                 acquisition_call_start_elapsed_ms=start_ms,
                 acquisition_call_midpoint_elapsed_ms=midpoint_ms,
                 acquisition_call_end_elapsed_ms=end_ms,
+                exposure_window_start_elapsed_ms=exposure_start_ms,
+                exposure_window_end_elapsed_ms=exposure_end_ms,
+                exposure_midpoint_estimate_elapsed_ms=exposure_midpoint_ms,
+                exposure_timing_uncertainty_ms=exposure_uncertainty_ms,
+                exposure_timing_basis=exposure_basis,
+                exposure_sample_windows_elapsed_ms=exposure_sample_windows_ms,
             )
 
-        if self._settings.output_mode == "averaged_series":
+        decision = (
+            self._timing_guard.evaluate(record.gated)
+            if record.gated is not None
+            else None
+        )
+        if decision is not None:
+            record.gated = replace(
+                record.gated,
+                timing_error_ms=decision.residual_ms,
+                timing_quality=decision.quality,
+                timing_center_ms=decision.center_ms,
+                timing_robust_sigma_ms=decision.robust_sigma_ms,
+                timing_threshold_ms=decision.threshold_ms,
+            )
+
+        if self._timing_guard.should_abort:
+            self._pending_frame = None
+            self._fail(
+                "Gated timing quality failed: "
+                f"{self._timing_guard.rejected_count}/"
+                f"{self._timing_guard.evaluated_count} evaluated frames were "
+                "timing outliers. Increase the delay/spacing or reduce detector "
+                "readout load before retrying."
+            )
+            return True
+
+        accepted = decision is None or decision.accepted
+        if not accepted:
+            self.status_requested.emit(
+                "Discarded a gated frame whose observed timing was a robust outlier.",
+                10_000,
+            )
+        elif self._settings.output_mode == "averaged_series":
             try:
                 if self._accumulator is None:
                     raise RuntimeError("The gated-series accumulator is unavailable.")
@@ -233,14 +316,37 @@ class GatedAcquisitionCoordinator(QObject):
             self._fail(f"Gated spectrum acquisition failed: {self._last_line(message)}")
 
     def _schedule(self, delay_ms: int, callback) -> None:
+        deadline_ns = time.perf_counter_ns() + max(0, int(delay_ms)) * 1_000_000
+        self._schedule_at(deadline_ns, callback)
+
+    def _schedule_at(self, deadline_ns: int, callback) -> None:
         self._timer.stop()
         self._timer_callback = callback
-        self._timer.start(max(0, int(delay_ms)))
+        self._timer_deadline_ns = int(deadline_ns)
+        self._arm_timer()
+
+    def _arm_timer(self) -> None:
+        if self._timer_callback is None or self._timer_deadline_ns is None:
+            return
+        remaining_ns = self._timer_deadline_ns - time.perf_counter_ns()
+        if remaining_ns <= 0:
+            self._timer.start(0)
+            return
+        # Ceiling prevents integer conversion from intentionally asking Qt to
+        # wake before the absolute deadline; the timeout handler rechecks too.
+        self._timer.start(max(1, int(math.ceil(remaining_ns / 1_000_000.0))))
 
     @Slot()
     def _on_timer_timeout(self) -> None:
+        if (
+            self._timer_deadline_ns is not None
+            and time.perf_counter_ns() < self._timer_deadline_ns
+        ):
+            self._arm_timer()
+            return
         callback = self._timer_callback
         self._timer_callback = None
+        self._timer_deadline_ns = None
         if callable(callback):
             callback()
 
@@ -279,15 +385,16 @@ class GatedAcquisitionCoordinator(QObject):
             if self._transition_time_s is None:
                 self._fail("A delayed frame was requested before a transition timestamp existed.")
                 return
-            elapsed_ms = 1000.0 * (time.perf_counter() - self._transition_time_s)
-            remaining_ms = max(0, int(round(action.target_delay_ms - elapsed_ms)))
-            if remaining_ms > 0:
-                self._schedule(
-                    remaining_ms,
-                    lambda action=action: self._request_frame(action),
-                )
+            if self._transition_time_ns is None:
+                self._fail("The transition clock was unavailable for a delayed frame.")
                 return
-            self._request_frame(action)
+            deadline_ns = (
+                self._transition_time_ns + int(action.target_delay_ms) * 1_000_000
+            )
+            self._schedule_at(
+                deadline_ns,
+                lambda action=action: self._request_frame(action),
+            )
             return
 
         if action.kind == "acquire":
@@ -322,6 +429,12 @@ class GatedAcquisitionCoordinator(QObject):
                 if self._accumulator is None:
                     raise RuntimeError("The gated-series accumulator is unavailable.")
                 series = self._accumulator.finish()
+                series = replace(
+                    series,
+                    timing_evaluated_count=self._timing_guard.evaluated_count,
+                    timing_rejected_count=self._timing_guard.rejected_count,
+                    timing_guard_method=self._settings.timing_guard_mode,
+                )
             except Exception as exc:
                 self._fail(f"Could not finalize averaged gated series: {exc}")
                 return
@@ -365,12 +478,14 @@ class GatedAcquisitionCoordinator(QObject):
         if not active:
             self._timer.stop()
             self._timer_callback = None
+            self._timer_deadline_ns = None
             self._actions.clear()
             self._awaiting_laser = False
             self._awaiting_spectrum = False
             self._current_action = None
             self._pending_frame = None
             self._transition_time_s = None
+            self._transition_time_ns = None
             self._sequence_id = ""
             self._accumulator = None
             self._abort_requested = False

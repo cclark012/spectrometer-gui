@@ -34,3 +34,24 @@ def test_rotating_application_log_is_created(tmp_path: Path) -> None:
                 root.removeHandler(handler)
                 handler.close()
         root.setLevel(original_level)
+
+
+def test_file_logging_can_be_disabled(tmp_path: Path) -> None:
+    root = logging.getLogger()
+    original_handlers = tuple(root.handlers)
+    original_level = root.level
+    try:
+        path = configure_logging(tmp_path, file_enabled=False)
+        assert path is None
+        assert not (tmp_path / "spectrometer-gui.log").exists()
+        added_handlers = [
+            handler for handler in root.handlers if handler not in original_handlers
+        ]
+        assert len(added_handlers) == 1
+        assert not getattr(added_handlers[0], "baseFilename", "")
+    finally:
+        for handler in tuple(root.handlers):
+            if handler not in original_handlers:
+                root.removeHandler(handler)
+                handler.close()
+        root.setLevel(original_level)

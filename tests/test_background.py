@@ -139,3 +139,31 @@ def test_background_rejects_nonpositive_integration_time() -> None:
         assert "positive" in str(exc)
     else:
         raise AssertionError("Expected nonpositive integration time to fail")
+
+
+def test_background_rejects_incompatible_detector_signature() -> None:
+    corrector = BackgroundCorrector()
+    corrector.set_background(
+        BackgroundSpectrum(
+            timestamp_utc="now",
+            wavelengths_nm=np.array([400.0, 500.0]),
+            counts_per_s=np.array([10.0, 20.0]),
+            integration_ms=100,
+            averages=1,
+            correct_dark=False,
+            correct_nonlinearity=False,
+            configuration_signature="background-settings",
+        )
+    )
+
+    try:
+        corrector.apply(
+            wavelengths_nm=np.array([400.0, 500.0]),
+            intensities_counts=np.array([2.0, 5.0]),
+            integration_ms=100,
+            configuration_signature="changed-settings",
+        )
+    except ValueError as exc:
+        assert "Capture a new background" in str(exc)
+    else:
+        raise AssertionError("Incompatible background settings must be rejected")

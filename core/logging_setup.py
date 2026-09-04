@@ -20,8 +20,10 @@ def configure_logging(
     log_directory: str | Path,
     *,
     level: int | str = logging.INFO,
-) -> Path:
-    """Configure one bounded UTF-8 application log and return its path."""
+    file_enabled: bool = True,
+    console_level: int | str = logging.ERROR,
+) -> Path | None:
+    """Configure optional bounded file logging and a quiet error console."""
 
     directory = Path(log_directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -31,7 +33,7 @@ def configure_logging(
     root.setLevel(level)
     for handler in tuple(root.handlers):
         if getattr(handler, "_spectrometer_gui_handler", False):
-            return path
+            return path if file_enabled else None
 
     formatter = _UtcFormatter(
         "%(asctime)s.%(msecs)03dZ %(levelname)s "
@@ -39,26 +41,27 @@ def configure_logging(
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    file_handler = RotatingFileHandler(
-        path,
-        maxBytes=MAX_LOG_BYTES,
-        backupCount=BACKUP_COUNT,
-        encoding="utf-8",
-        delay=True,
-    )
-    file_handler.setLevel(level)
-    file_handler.setFormatter(formatter)
-    file_handler._spectrometer_gui_handler = True  # type: ignore[attr-defined]
-    root.addHandler(file_handler)
+    if file_enabled:
+        file_handler = RotatingFileHandler(
+            path,
+            maxBytes=MAX_LOG_BYTES,
+            backupCount=BACKUP_COUNT,
+            encoding="utf-8",
+            delay=True,
+        )
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        file_handler._spectrometer_gui_handler = True  # type: ignore[attr-defined]
+        root.addHandler(file_handler)
 
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.WARNING)
+    console_handler.setLevel(console_level)
     console_handler.setFormatter(formatter)
     console_handler._spectrometer_gui_handler = True  # type: ignore[attr-defined]
     root.addHandler(console_handler)
 
     logging.captureWarnings(True)
-    return path
+    return path if file_enabled else None
 
 
 def install_exception_hook() -> None:

@@ -37,7 +37,7 @@ def test_build_device_config_validates_and_normalizes_values() -> None:
     assert config.power_channel == 2
     assert config.laser_fallback_emulator
     assert config.obis_ports == ["COM8"]
-    assert config.spectrometer_backend == "qepro"
+    assert config.spectrometer_backend == "auto"
 
 
 def test_andor_backend_options_are_normalized() -> None:
@@ -54,6 +54,16 @@ def test_andor_backend_options_are_normalized() -> None:
     assert config.andor_solis_dir == Path("C:/Andor")
     assert config.andor_camera_index == 1
     assert config.andor_spectrograph_index == 2
+    assert config.andor_camera_dll == Path("atmcd64d_legacy.dll")
+
+
+def test_auto_spectrometer_backend_is_accepted() -> None:
+    config = build_device_config(
+        namespace(real=True, spectrometer_backend="auto"),
+        {},
+    )
+    assert config.spectrometer_backend == "auto"
+    assert config.spectrometer_mode == "real"
 
 
 def test_instrument_modes_are_independent() -> None:

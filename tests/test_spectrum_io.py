@@ -28,6 +28,11 @@ def _record() -> SpectrumRecord:
         field_value=10.0,
         run_identifier="run-A",
         notes="line one, with comma\nline two contains literal \\n text",
+        spectrometer_backend="andor",
+        spectrometer_model="DU401_BVF + Kymera",
+        spectrometer_serial="26970",
+        spectrograph_serial="KY-4444",
+        raw_intensities_counts=np.asarray([11.0, 21.0]),
         scan_active=True,
         scan_index=1,
         scan_count=3,
@@ -47,6 +52,17 @@ def _record() -> SpectrumRecord:
             acquisition_call_start_elapsed_ms=53.0,
             acquisition_call_midpoint_elapsed_ms=103.0,
             acquisition_call_end_elapsed_ms=153.0,
+            exposure_window_start_elapsed_ms=53.2,
+            exposure_window_end_elapsed_ms=62.9,
+            exposure_midpoint_estimate_elapsed_ms=58.05,
+            exposure_timing_uncertainty_ms=4.85,
+            exposure_timing_basis="driver_call_bounds",
+            exposure_sample_windows_elapsed_ms=((53.2, 62.9),),
+            timing_error_ms=8.05,
+            timing_quality="accepted",
+            timing_center_ms=7.9,
+            timing_robust_sigma_ms=0.2,
+            timing_threshold_ms=4.85,
             phase_index=2,
             repeat_index=1,
         ),
@@ -80,10 +96,13 @@ def test_spectrum_csv_round_trip(tmp_path):
     assert np.allclose(intensities, record.intensities_counts)
     assert np.allclose(loaded.wavelengths_nm, record.wavelengths_nm)
     assert np.allclose(loaded.intensities_counts, record.intensities_counts)
+    assert np.allclose(loaded.raw_intensities_counts, record.raw_intensities_counts)
     assert loaded.integration_ms == 100
     assert loaded.averages == 2
     assert loaded.run_identifier == "run-A"
     assert loaded.notes == record.notes
+    assert loaded.spectrometer_backend == "andor"
+    assert loaded.spectrometer_serial == "26970"
     assert loaded.scan_active is True
     assert loaded.laser_channel == 2
     assert loaded.filter_state == "W1:open"
@@ -92,8 +111,13 @@ def test_spectrum_csv_round_trip(tmp_path):
     assert loaded.snr == record.snr
 
     text = path.read_text(encoding="utf-8")
-    assert "intensity_counts_per_s" in text
+    assert "# schema_version,2" in text
+    assert "intensity_counts_raw" in text
+    assert "intensity_counts_processed" in text
     assert "# p_before_command_status" in text
+    assert "# notes_json" not in text
+    assert "# scan_active" not in text
+    assert "# gated_active" not in text
 
 
 def test_legacy_spectrum_without_integration_has_nan_counts_per_s(tmp_path):
@@ -128,3 +152,41 @@ def test_invalid_snr_round_trips_as_boolean_false(tmp_path):
     assert loaded.snr is not None
     assert loaded.snr.valid is False
     assert loaded.snr.message == "not enough noise pixels"
+    text = path.read_text(encoding="utf-8")
+    assert "# snr_status,invalid" in text
+    assert "# snr_reason,not enough noise pixels" in text
+    assert "# snr_peak," not in text
+
+
+def test_ordinary_schema_omits_unrelated_optional_blocks(tmp_path):
+    record = _record()
+    record.scan_active = False
+    record.gated = None
+    record.snr = None
+    record.p_before = PowerSnapshot.missing()
+    record.p_after = PowerSnapshot.missing()
+    record.laser_port = ""
+    record.laser_box_id = ""
+    record.laser_channel = -1
+    record.raw_intensities_counts = record.intensities_counts.copy()
+    path = tmp_path / "ordinary.csv"
+
+    save_spectrum_record(path, record)
+    text = path.read_text(encoding="utf-8")
+
+    assert "# p_before_W" not in text
+    assert "# scan_index" not in text
+    assert "# laser_channel" not in text
+    assert "# gated_sequence_id" not in text
+    assert "# snr_status" not in text
+    assert "intensity_counts_processed" not in text
+
+
+def test_schema_v2_notes_preserve_whitespace_and_literal_backslash_n(tmp_path):
+    record = _record()
+    record.notes = "  first line\nsecond has literal \\n text  "
+    path = tmp_path / "notes.csv"
+
+    save_spectrum_record(path, record)
+
+    assert load_spectrum_record(path).notes == record.notes

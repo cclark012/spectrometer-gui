@@ -18,6 +18,17 @@ class FakeFeature:
         pass
 
 
+class FakeDataBuffer:
+    def __init__(self, spectrometer: "FakeSpectrometer", completed_frames: int) -> None:
+        self.spectrometer = spectrometer
+        self.completed_frames = int(completed_frames)
+        self.clear_count = 0
+
+    def clear(self) -> None:
+        self.clear_count += 1
+        del self.spectrometer.frames[: self.completed_frames]
+
+
 class FakeSpectrometer:
     def __init__(self) -> None:
         self.features = {
@@ -65,6 +76,9 @@ def make_adapter(spec: FakeSpectrometer | None = None) -> QEProSpectrometer:
     adapter._hardware_average_method = None
     adapter._applied_integration_us = None
     adapter._applied_device_averages = None
+    adapter._applied_read_corrections = None
+    adapter._data_buffer_checked = False
+    adapter._data_buffer_feature = None
     return adapter
 
 
@@ -172,6 +186,33 @@ def test_unchanged_integration_does_not_discard_or_reconfigure() -> None:
     )
     assert spec.intensity_read_count == 1
     assert spec.integration_set_count == 0
+
+
+def test_setting_change_clears_all_completed_buffer_frames() -> None:
+    spec = FakeSpectrometer()
+    buffer = FakeDataBuffer(spec, completed_frames=2)
+    spec.features["data_buffer"] = [buffer]
+    spec.frames = [
+        np.asarray([100.0, 100.0, 100.0]),
+        np.asarray([200.0, 200.0, 200.0]),
+        # One in-flight synchronization frame, then the returned frame.
+        np.asarray([300.0, 300.0, 300.0]),
+        np.asarray([10.0, 20.0, 30.0]),
+    ]
+    adapter = make_adapter(spec)
+    adapter._applied_integration_us = 1_000_000
+    adapter._applied_device_averages = 1
+
+    result = adapter.acquire_spectrum(
+        integration_ms=10,
+        averages=1,
+        correct_dark=False,
+        correct_nonlinearity=False,
+    )
+
+    assert buffer.clear_count == 1
+    np.testing.assert_array_equal(result.intensities_counts, [10.0, 20.0, 30.0])
+    assert spec.intensity_read_count == 2
 
 
 def test_unknown_averaging_mode_fails() -> None:

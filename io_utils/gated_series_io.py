@@ -13,6 +13,16 @@ def _timing_values(statistics) -> list[str]:
         f"{statistics.std_ms:.9f}",
         f"{statistics.minimum_ms:.9f}",
         f"{statistics.maximum_ms:.9f}",
+        f"{statistics.median_ms:.9f}",
+        f"{statistics.p95_ms:.9f}",
+        f"{statistics.p99_ms:.9f}",
+    ]
+
+
+def _timing_headers(prefix: str) -> list[str]:
+    return [
+        f"{prefix}_{suffix}_ms"
+        for suffix in ("mean", "std", "min", "max", "median", "p95", "p99")
     ]
 
 
@@ -29,6 +39,9 @@ def save_gated_series_csv(path: Path, series: GatedSeriesRecord) -> None:
         writer.writerow(["# timestamp_utc", series.timestamp_utc])
         writer.writerow(["# integration_ms", series.integration_ms])
         writer.writerow(["# detector_averages", series.detector_averages])
+        writer.writerow(["# timing_guard_method", series.timing_guard_method])
+        writer.writerow(["# timing_evaluated_count", series.timing_evaluated_count])
+        writer.writerow(["# timing_rejected_count", series.timing_rejected_count])
         writer.writerow(["# field_value_mT", f"{series.field_value_mT:.12e}"])
         writer.writerow(["# laser_port", series.laser_port])
         writer.writerow(["# laser_box_id", series.laser_box_id])
@@ -42,22 +55,15 @@ def save_gated_series_csv(path: Path, series: GatedSeriesRecord) -> None:
                 "laser_state",
                 "requested_delay_ms",
                 "sample_count",
-                "request_mean_ms",
-                "request_std_ms",
-                "request_min_ms",
-                "request_max_ms",
-                "call_start_mean_ms",
-                "call_start_std_ms",
-                "call_start_min_ms",
-                "call_start_max_ms",
-                "call_midpoint_mean_ms",
-                "call_midpoint_std_ms",
-                "call_midpoint_min_ms",
-                "call_midpoint_max_ms",
-                "call_end_mean_ms",
-                "call_end_std_ms",
-                "call_end_min_ms",
-                "call_end_max_ms",
+                *_timing_headers("request"),
+                *_timing_headers("call_start"),
+                *_timing_headers("call_midpoint"),
+                *_timing_headers("call_end"),
+                *_timing_headers("exposure_start"),
+                *_timing_headers("exposure_midpoint"),
+                *_timing_headers("exposure_end"),
+                *_timing_headers("exposure_uncertainty"),
+                *_timing_headers("timing_error"),
                 "mean_power_W...",
                 "std_power_W...",
             ]
@@ -75,6 +81,11 @@ def save_gated_series_csv(path: Path, series: GatedSeriesRecord) -> None:
                     *_timing_values(trace.acquisition_start_timing),
                     *_timing_values(trace.acquisition_midpoint_timing),
                     *_timing_values(trace.acquisition_end_timing),
+                    *_timing_values(trace.exposure_start_timing),
+                    *_timing_values(trace.exposure_midpoint_timing),
+                    *_timing_values(trace.exposure_end_timing),
+                    *_timing_values(trace.exposure_uncertainty),
+                    *_timing_values(trace.timing_error),
                     *[f"{value:.12e}" for value in trace.mean_power_w],
                     *[f"{value:.12e}" for value in trace.std_power_w],
                 ]

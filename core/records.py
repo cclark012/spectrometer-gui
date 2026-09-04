@@ -20,6 +20,26 @@ class InstrumentConnectionState:
     error: str = ""
     mode: str = ""
     backend: str = ""
+    # Machine-readable transition reason.  Expected absence at startup is not
+    # an application warning; a connection lost during use is.
+    event: str = "state_changed"
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionTiming:
+    """Best available bounds for the detector exposure/readout transaction.
+
+    Values use ``time.perf_counter()`` and are meaningful only inside the
+    running process.  They deliberately describe bounds/estimates rather than
+    claiming hardware-trigger accuracy.
+    """
+
+    window_started_s: float = float("nan")
+    window_finished_s: float = float("nan")
+    midpoint_estimate_s: float = float("nan")
+    uncertainty_s: float = float("nan")
+    basis: str = ""
+    sample_windows_s: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(slots=True)
@@ -32,6 +52,8 @@ class BackgroundSpectrum:
     correct_dark: bool
     correct_nonlinearity: bool
     averaging_mode: str = "software"
+    configuration_signature: str = ""
+    compatibility_policy: str = "strict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +64,7 @@ class SpectralAcquisition:
     intensities_counts: FloatArray
     signal_max_counts: float
     device_averaging_used: bool = False
+    timing: AcquisitionTiming | None = None
 
 
 @dataclass(slots=True)
@@ -128,14 +151,27 @@ class SpectrumRecord:
     boxcar_width: int
     correct_dark: bool
     correct_nonlinearity: bool
-    field_value: float
+    field_value: float | None
     acquisition_started_s: float = float("nan")
     acquisition_finished_s: float = float("nan")
+    acquisition_timing: AcquisitionTiming | None = None
     signal_max_counts: float = float("nan")
     spectrometer_max_intensity: float = float("nan")
     snr: SNRMetrics | None = None
     run_identifier: str = ""
     notes: str = ""
+
+    # Identity is acquisition provenance, not display state.  Composite Andor
+    # systems may populate both detector and spectrograph serials.
+    spectrometer_backend: str = ""
+    spectrometer_model: str = ""
+    spectrometer_serial: str = ""
+    spectrograph_serial: str = ""
+
+    # The processed array is retained for display/backward compatibility.
+    # ``raw_intensities_counts`` preserves the adapter result before GUI-side
+    # background subtraction or smoothing.
+    raw_intensities_counts: FloatArray | None = None
 
     scan_active: bool = False
     scan_index: int = -1

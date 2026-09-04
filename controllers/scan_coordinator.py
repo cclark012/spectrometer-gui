@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -16,12 +15,6 @@ from core.timing import StepTimer
 from io_utils.calibration_io import load_calibration_csv, save_calibration_csv
 from planning.filter_planning import enumerate_filter_states, plan_min_filter_changes
 from planning.power_scan import CalibrationCurve, ScanPlan
-
-if TYPE_CHECKING:
-    from panels.acquisition_panel import AcquisitionPanel
-    from panels.filter_wheels_panel import FilterWheelPanel
-    from panels.laser_panel import LaserPanel
-    from panels.scan_panel import ScanPanel
 
 
 class ScanCoordinator(QObject):
@@ -46,10 +39,10 @@ class ScanCoordinator(QObject):
         *,
         parent: QWidget,
         config: DeviceConfig,
-        scan_panel: ScanPanel,
-        laser_panel: LaserPanel,
-        acquisition_panel: AcquisitionPanel,
-        filter_wheel_panel: FilterWheelPanel,
+        scan_panel,
+        laser_panel,
+        acquisition_panel,
+        filter_wheel_panel,
     ) -> None:
         super().__init__(parent)
         self.parent_widget = parent

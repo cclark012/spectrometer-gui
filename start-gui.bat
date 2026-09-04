@@ -32,14 +32,18 @@ echo.
 echo Spectroscopy GUI
 echo.
 echo 1. Emulated spectrometer, power meter, and lasers
-echo 2. Real instruments using config/lab_defaults.json
-echo 3. Real lasers with emulated spectrometer/power meter
+echo 2. Real instruments; auto-detect QEPro or Andor
+echo 3. Real instruments; require QEPro
+echo 4. Real instruments; require Andor iDus + Kymera
+echo 5. Real lasers with emulated spectrometer/power meter
 echo.
 
-choice /c 123 /n /m "Choose mode [1/2/3]: "
+choice /c 12345 /n /m "Choose mode [1/2/3/4/5]: "
 
-if errorlevel 3 goto real_lasers_only
-if errorlevel 2 goto real_all
+if errorlevel 5 goto real_lasers_only
+if errorlevel 4 goto real_andor
+if errorlevel 3 goto real_qepro
+if errorlevel 2 goto real_auto
 if errorlevel 1 goto emulated_all
 
 :emulated_all
@@ -47,9 +51,19 @@ echo Starting emulated GUI...
 "%PYTHON%" "%GUI%" --config "%CONFIG%" --emulate --laser-mode emulated
 goto end
 
-:real_all
-echo Starting real-instrument GUI...
-"%PYTHON%" "%GUI%" --config "%CONFIG%" --real
+:real_auto
+echo Starting real-instrument GUI with spectrometer auto-detection...
+"%PYTHON%" "%GUI%" --config "%CONFIG%" --real --spectrometer-backend auto
+goto end
+
+:real_qepro
+echo Starting real-instrument GUI with QEPro...
+"%PYTHON%" "%GUI%" --config "%CONFIG%" --real --spectrometer-backend qepro
+goto end
+
+:real_andor
+echo Starting real-instrument GUI with Andor iDus + Kymera...
+"%PYTHON%" "%GUI%" --config "%CONFIG%" --real --spectrometer-backend andor
 goto end
 
 :real_lasers_only
