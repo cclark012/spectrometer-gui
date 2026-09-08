@@ -97,11 +97,11 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
         raise ConfigurationError("'power_channel' must be at least 1.")
 
     spectrometer_backend = str(
-        _value(args, defaults, "spectrometer_backend", "qepro")
+        _value(args, defaults, "spectrometer_backend", "auto")
     ).strip().lower()
-    if spectrometer_backend not in {"qepro", "andor"}:
+    if spectrometer_backend not in {"auto", "qepro", "andor"}:
         raise ConfigurationError(
-            "'spectrometer_backend' must be one of: qepro, andor."
+            "'spectrometer_backend' must be one of: auto, qepro, andor."
         )
 
     def nonnegative_index(key: str) -> int:
@@ -159,6 +159,15 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
         r"C:\Program Files\Andor SOLIS",
     )
     andor_solis_dir = Path(str(andor_solis_value)) if andor_solis_value else None
+    andor_camera_dll_value = _value(
+        args,
+        defaults,
+        "andor_camera_dll",
+        "atmcd64d_legacy.dll",
+    )
+    andor_camera_dll = (
+        Path(str(andor_camera_dll_value)) if andor_camera_dll_value else None
+    )
 
     spectrometer_fallback = _boolean(
         _value(
@@ -192,8 +201,18 @@ def build_device_config(args: Namespace, defaults: dict[str, Any]) -> DeviceConf
             _value(args, defaults, "qepro_serial_number", "") or ""
         ).strip(),
         andor_solis_dir=andor_solis_dir,
+        andor_camera_dll=andor_camera_dll,
         andor_camera_index=nonnegative_index("andor_camera_index"),
         andor_spectrograph_index=nonnegative_index("andor_spectrograph_index"),
+        newport_process_isolation=_boolean(
+            _value(
+                args,
+                defaults,
+                "newport_process_isolation",
+                True,
+            ),
+            key="newport_process_isolation",
+        ),
         emulate_lasers=(laser_mode == "emulated"),
         laser_fallback_emulator=(laser_mode == "auto"),
         obis_ports=_obis_ports(_value(args, defaults, "obis_ports", None)),

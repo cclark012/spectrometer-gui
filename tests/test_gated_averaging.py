@@ -53,6 +53,9 @@ def test_repeated_frames_are_incrementally_averaged() -> None:
     np.testing.assert_allclose(trace.mean_counts, [12.0, 24.0])
     np.testing.assert_allclose(trace.std_counts, [np.sqrt(8.0), np.sqrt(32.0)])
     assert trace.request_timing.mean_ms == 6.0
+    assert trace.request_timing.median_ms == 6.0
+    assert np.isclose(trace.request_timing.p95_ms, 6.45)
+    assert np.isclose(trace.request_timing.p99_ms, 6.49)
     assert trace.mean_power_w == (2.0e-3,)
 
 

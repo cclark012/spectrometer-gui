@@ -235,6 +235,30 @@ class Newport2936R:
     def identify(self) -> str:
         return self.query("*IDN?")
 
+    def diagnostics(self) -> dict[str, object]:
+        """Return JSON/pickle-safe driver identity for focused support probes."""
+
+        assembly = self.assembly
+        assembly_name = assembly.GetName() if assembly is not None else None
+        try:
+            stat = self.dll_path.stat()
+            file_size = int(stat.st_size)
+            file_mtime_ns = int(stat.st_mtime_ns)
+        except OSError:
+            file_size = 0
+            file_mtime_ns = 0
+        return {
+            "dll_path": str(self.dll_path.resolve()),
+            "dll_file_size": file_size,
+            "dll_file_mtime_ns": file_mtime_ns,
+            "assembly_full_name": str(getattr(assembly, "FullName", "")),
+            "assembly_location": str(getattr(assembly, "Location", "")),
+            "assembly_runtime": str(getattr(assembly, "ImageRuntimeVersion", "")),
+            "assembly_version": str(getattr(assembly_name, "Version", "")),
+            "device_key": str(self.device_key),
+            "channel_count": int(self.n_channels),
+        }
+
     def get_num_channels(self) -> int:
         result, _, _ = self._invoke(
             "GetNumChannels",

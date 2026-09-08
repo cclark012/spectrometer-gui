@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QWidget

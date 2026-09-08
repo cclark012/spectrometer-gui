@@ -27,6 +27,7 @@ class InstrumentConnectionsDialog(QDialog):
 
     SOURCES = {
         "spectrometer": (
+            ("Auto-detect real (QEPro → Andor)", "real", "auto"),
             ("QEPro (real)", "real", "qepro"),
             ("Andor iDus + Kymera (real)", "real", "andor"),
             ("Spectrometer emulator", "emulated", "qepro"),
@@ -143,7 +144,9 @@ class InstrumentConnectionsDialog(QDialog):
                 continue
             item_mode, item_backend = str(value[0]), str(value[1])
             if item_mode == target_mode and (
-                str(key) != "spectrometer" or item_backend == target_backend
+                str(key) != "spectrometer"
+                or target_mode != "real"
+                or item_backend == target_backend
             ):
                 best_index = index
                 break

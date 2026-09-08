@@ -5,7 +5,7 @@ import time
 
 import numpy as np
 
-from core.records import SpectralAcquisition, SpectrometerCapabilities
+from core.records import AcquisitionTiming, SpectralAcquisition, SpectrometerCapabilities
 
 
 class EmulatedSpectrometer:
@@ -49,7 +49,9 @@ class EmulatedSpectrometer:
 
         # Match the wall-clock behavior of N integrations without adding an
         # arbitrary cap that makes the emulator unrealistically fast.
+        timing_started_s = time.perf_counter()
         time.sleep(integration_ms * averages / 1000.0)
+        timing_finished_s = time.perf_counter()
 
         running_mean: np.ndarray | None = None
         signal_max = float("-inf")
@@ -73,6 +75,14 @@ class EmulatedSpectrometer:
             intensities_counts=running_mean,
             signal_max_counts=signal_max,
             device_averaging_used=(mode == "device"),
+            timing=AcquisitionTiming(
+                window_started_s=timing_started_s,
+                window_finished_s=timing_finished_s,
+                midpoint_estimate_s=0.5 * (timing_started_s + timing_finished_s),
+                uncertainty_s=0.5 * (timing_finished_s - timing_started_s),
+                basis="emulator_exposure_bounds",
+                sample_windows_s=((timing_started_s, timing_finished_s),),
+            ),
         )
 
     def _single_spectrum(
@@ -140,6 +150,7 @@ class EmulatedSpectrometer:
             },
             tec_supported=True,
             device_averaging_supported=True,
+            backend="emulator",
         )
 
     def get_ccd_temperature_c(self) -> float:

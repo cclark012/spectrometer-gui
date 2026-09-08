@@ -79,22 +79,26 @@ class LaserPanel(QWidget):
     set_enabled_requested = Signal(str, int, bool)
     disable_all_requested = Signal()
     set_cdrh_delay_requested = Signal(str, int, bool)
+    selection_changed = Signal(object)
 
-    COL_WAVELENGTH = 0
-    COL_SETPOINT = 1
-    COL_MIN = 2
-    COL_MAX = 3
-    COL_NOMINAL = 4
-    COL_EMISSION = 5
-    COL_CHANNEL = 6
-    COL_BOX = 7
-    COL_PORT = 8
+    COL_SELECT = 0
+    COL_WAVELENGTH = 1
+    COL_SETPOINT = 2
+    COL_MIN = 3
+    COL_MAX = 4
+    COL_NOMINAL = 5
+    COL_EMISSION = 6
+    COL_CHANNEL = 7
+    COL_BOX = 8
+    COL_PORT = 9
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         self._lasers: list[LaserChannelInfo] = []
         self._laser_by_key: dict[tuple[str, int], LaserChannelInfo] = {}
+        self._selector_by_key: dict[tuple[str, int], QCheckBox] = {}
+        self._selected_key: tuple[str, int] | None = None
         self._sequence_busy = False
 
         layout = QVBoxLayout(self)
@@ -137,10 +141,10 @@ class LaserPanel(QWidget):
 
     def _build_table(self) -> QTableWidget:
         table = QTableWidget()
-        table.setColumnCount(9)
+        table.setColumnCount(10)
         table.setIconSize(QSize(12, 12))
         table.setHorizontalHeaderLabels(
-            ["λ", "Set", "Min", "Max", "Nom", "On", "Ch", "Box", "Port"]
+            ["Use", "λ", "Set", "Min", "Max", "Nom", "On", "Ch", "Box", "Port"]
         )
         table.setMinimumWidth(250)
         table.verticalHeader().setVisible(False)
@@ -148,11 +152,9 @@ class LaserPanel(QWidget):
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(False)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         table.setAlternatingRowColors(False)
         table.setWordWrap(False)
-        table.itemSelectionChanged.connect(self._on_selection_changed)
         return table
 
     def _build_power_controls(self) -> QHBoxLayout:
@@ -193,6 +195,7 @@ class LaserPanel(QWidget):
         self._laser_by_key = {
             (str(laser.port), int(laser.channel)): laser for laser in self._lasers
         }
+        self._selector_by_key.clear()
 
         self.table.clearContents()
         self.table.setRowCount(len(self._lasers))
@@ -202,11 +205,11 @@ class LaserPanel(QWidget):
         self._apply_detail_column_visibility(self.show_details_check.isChecked())
         self.table.resizeColumnsToContents()
 
-        if selected_key is not None:
-            self._select_key(*selected_key)
-        elif self._lasers:
-            self.table.selectRow(0)
+        if selected_key is not None and selected_key in self._laser_by_key:
+            self._set_selected_key(selected_key, emit=False)
         else:
+            self._set_selected_key(None, emit=False)
+        if not self._lasers:
             self.selected_detail_label.setText("Selected: no lasers found")
             self.cdrh_delay_check.setEnabled(False)
         self._apply_manual_control_state()
@@ -215,6 +218,7 @@ class LaserPanel(QWidget):
         brush = QBrush(_row_color(laser.wavelength_nm))
         key = (str(laser.port), int(laser.channel))
         values = [
+            "",
             _format_wavelength(laser.wavelength_nm),
             _format_laser_power(laser.setpoint_w),
             _format_laser_power(laser.min_setpoint_w),
@@ -251,6 +255,26 @@ class LaserPanel(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, key)
             self.table.setItem(row, column, item)
 
+        selector = QCheckBox()
+        selector.setToolTip(
+            "Select this laser for scans and gated acquisitions. Click the "
+            "selected box again to clear the selection."
+        )
+        selector.toggled.connect(
+            lambda checked, selected=key: self._on_selector_toggled(
+                selected,
+                bool(checked),
+            )
+        )
+        holder = QWidget()
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.addStretch(1)
+        holder_layout.addWidget(selector)
+        holder_layout.addStretch(1)
+        self._selector_by_key[key] = selector
+        self.table.setCellWidget(row, self.COL_SELECT, holder)
+
         enabled = laser.enabled == LaserEmissionState.ON
         button = QPushButton("ON" if enabled else "OFF")
         button.setCheckable(True)
@@ -282,9 +306,41 @@ class LaserPanel(QWidget):
         return None
 
     def _select_key(self, port: str, channel: int) -> None:
-        row = self._row_for_key(port, channel)
-        if row is not None:
-            self.table.selectRow(row)
+        key = (str(port), int(channel))
+        self._set_selected_key(key if key in self._laser_by_key else None)
+
+    def _on_selector_toggled(
+        self,
+        key: tuple[str, int],
+        checked: bool,
+    ) -> None:
+        if checked:
+            self._set_selected_key(key)
+        elif self._selected_key == key:
+            self._set_selected_key(None)
+
+    def _set_selected_key(
+        self,
+        key: tuple[str, int] | None,
+        *,
+        emit: bool = True,
+    ) -> None:
+        normalized = (
+            (str(key[0]), int(key[1]))
+            if key is not None and key in self._laser_by_key
+            else None
+        )
+        self._selected_key = normalized
+        for selector_key, selector in self._selector_by_key.items():
+            should_check = selector_key == normalized
+            if selector.isChecked() == should_check:
+                continue
+            selector.blockSignals(True)
+            selector.setChecked(should_check)
+            selector.blockSignals(False)
+        self._on_selection_changed()
+        if emit:
+            self.selection_changed.emit(normalized)
 
     def update_setpoint(self, port: str, channel: int, power_w: float) -> None:
         key = (str(port), int(channel))
@@ -369,16 +425,7 @@ class LaserPanel(QWidget):
             self.table.setColumnHidden(column, not bool(show))
 
     def selected_laser_key(self) -> tuple[str, int] | None:
-        row = self.table.currentRow()
-        if row < 0:
-            return None
-        item = self.table.item(row, self.COL_WAVELENGTH)
-        if item is None:
-            return None
-        data = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(data, tuple) or len(data) != 2:
-            return None
-        return str(data[0]), int(data[1])
+        return self._selected_key
 
     def selected_laser(self) -> LaserChannelInfo | None:
         key = self.selected_laser_key()
@@ -453,6 +500,8 @@ class LaserPanel(QWidget):
             button = self.table.cellWidget(row, self.COL_EMISSION)
             if isinstance(button, QPushButton):
                 button.setEnabled(editable)
+        for selector in self._selector_by_key.values():
+            selector.setEnabled(editable)
 
         # Emergency stop stays available while a sequence owns the controls.
         self.disable_all_button.setEnabled(bool(self._lasers))

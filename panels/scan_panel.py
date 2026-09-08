@@ -121,7 +121,13 @@ class ScanPanel(QWidget):
         form.addRow("Spacing", self.spacing_combo)
         form.addRow("Power range", power_row)
         form.addRow("Points", self.n_points)
-        form.addRow("Repeats/point", self.repeats_per_point)
+        repeats_label = QLabel("Repeats/point")
+        repeats_label.setToolTip(
+            "Number of readings at each point for both laser calibration and "
+            "power-dependent spectrum scans."
+        )
+        self.repeats_per_point.setToolTip(repeats_label.toolTip())
+        form.addRow(repeats_label, self.repeats_per_point)
         form.addRow("Settling", self.settling_time_s)
 
         options = QHBoxLayout()

@@ -59,11 +59,17 @@ class DeviceConfig:
     newport_dll: Path | None
     power_channel: int
 
-    spectrometer_backend: str = "qepro"
+    spectrometer_backend: str = "auto"
     qepro_serial_number: str = ""
     andor_solis_dir: Path | None = None
+    andor_camera_dll: Path | None = None
     andor_camera_index: int = 0
     andor_spectrograph_index: int = 0
+
+    # The Newport .NET wrapper appears to retain process-global USB state after
+    # a power cycle on the lab PC.  Isolation makes reconnect start a fresh CLR
+    # and vendor object while retaining a direct-mode escape hatch.
+    newport_process_isolation: bool = True
 
     emulate_lasers: bool = False
     laser_fallback_emulator: bool = False
@@ -115,10 +121,10 @@ class DeviceConfig:
             self.spectrometer_backend if backend is None else str(backend)
         )
         selected_backend = selected_backend.strip().lower()
-        if selected_backend not in {"qepro", "andor"}:
+        if selected_backend not in {"auto", "qepro", "andor"}:
             raise ValueError(
                 f"Unknown spectrometer backend {selected_backend!r}; "
-                "expected 'qepro' or 'andor'."
+                "expected 'auto', 'qepro', or 'andor'."
             )
         self.spectrometer_mode = selected_mode
         self.spectrometer_backend = selected_backend

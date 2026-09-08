@@ -13,72 +13,123 @@ from io_utils.atomic import atomic_text_writer
 
 
 def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
-    """Save spectrum data and acquisition metadata to CSV."""
+    """Save a compact, conditional schema-v2 spectrum CSV.
+
+    The adapter result is canonical raw data.  GUI-processed values are written
+    as a second column only when background subtraction or smoothing changed
+    the array.  The loader below continues to accept the eager schema-v1 rows.
+    """
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    counts_per_s = record.intensities_counts_per_s()
+    processed = np.asarray(record.intensities_counts, dtype=float)
+    raw = (
+        np.asarray(record.raw_intensities_counts, dtype=float)
+        if record.raw_intensities_counts is not None
+        else processed
+    )
+    if raw.shape != processed.shape or raw.shape != np.asarray(record.wavelengths_nm).shape:
+        raise ValueError("Raw, processed, and wavelength spectrum arrays must match.")
+    has_processed = not np.array_equal(raw, processed, equal_nan=True)
 
     with atomic_text_writer(output) as file:
         writer = csv.writer(file)
 
         writer.writerow(["# file_type", "spectrum"])
+        writer.writerow(["# schema_version", 2])
         writer.writerow(["# timestamp_utc", record.timestamp_utc])
+        if record.spectrometer_backend:
+            writer.writerow(["# spectrometer_backend", record.spectrometer_backend])
+        if record.spectrometer_model:
+            writer.writerow(["# spectrometer_model", record.spectrometer_model])
+        if record.spectrometer_serial:
+            writer.writerow(["# spectrometer_serial", record.spectrometer_serial])
+        if record.spectrograph_serial:
+            writer.writerow(["# spectrograph_serial", record.spectrograph_serial])
         writer.writerow(["# integration_ms", record.integration_ms])
         acquisition_duration_ms = 1000.0 * (
             float(record.acquisition_finished_s) - float(record.acquisition_started_s)
         )
-        writer.writerow(["# acquisition_call_duration_ms", f"{acquisition_duration_ms:.9f}"])
-        writer.writerow(["# averages", record.averages])
-        writer.writerow(["# boxcar_width", record.boxcar_width])
-        writer.writerow(["# correct_dark", int(record.correct_dark)])
-        writer.writerow(["# correct_nonlinearity", int(record.correct_nonlinearity)])
-        writer.writerow(["# signal_max_counts", f"{record.signal_max_counts:.12e}"])
+        if np.isfinite(acquisition_duration_ms):
+            writer.writerow(
+                ["# acquisition_call_duration_ms", f"{acquisition_duration_ms:.9f}"]
+            )
+        writer.writerow(["# averages_requested", record.averages])
+        writer.writerow(["# averaging_mode_requested", record.averaging_mode])
         writer.writerow(
             [
-                "# spectrometer_max_intensity",
-                f"{record.spectrometer_max_intensity:.12e}",
+                "# averaging_mode_applied",
+                "device" if record.device_averaging_used else "software",
             ]
         )
-        writer.writerow(["# field_value_mT", f"{record.field_value:.12e}"])
+        writer.writerow(["# correct_dark_applied", int(record.correct_dark)])
         writer.writerow(
-            ["# p_before_W", *[f"{value:.12e}" for value in record.p_before.powers_w]]
+            ["# correct_nonlinearity_applied", int(record.correct_nonlinearity)]
         )
-        writer.writerow(
-            ["# p_after_W", *[f"{value:.12e}" for value in record.p_after.powers_w]]
-        )
-        writer.writerow(["# p_before_status", *record.p_before.pm_status])
-        writer.writerow(["# p_after_status", *record.p_after.pm_status])
-        writer.writerow(["# p_before_command_status", record.p_before.command_status])
-        writer.writerow(["# p_after_command_status", record.p_after.command_status])
-        writer.writerow(["# run_identifier", record.run_identifier])
-        writer.writerow(["# notes", record.notes.replace("\n", "\\n")])
-        writer.writerow(["# notes_json", json.dumps(record.notes, ensure_ascii=False)])
+        if np.isfinite(record.spectrometer_max_intensity):
+            writer.writerow(
+                [
+                    "# spectrometer_max_intensity",
+                    f"{record.spectrometer_max_intensity:.12e}",
+                ]
+            )
 
-        writer.writerow(["# scan_active", int(record.scan_active)])
-        writer.writerow(["# scan_index", record.scan_index])
-        writer.writerow(["# scan_count", record.scan_count])
-        writer.writerow(["# scan_basis", record.scan_basis])
-        writer.writerow(["# scan_spacing", record.scan_spacing])
-        writer.writerow(["# laser_port", record.laser_port])
-        writer.writerow(["# laser_box_id", record.laser_box_id])
-        writer.writerow(["# laser_channel", record.laser_channel])
-        writer.writerow(["# laser_wavelength_nm", f"{record.laser_wavelength_nm:.12e}"])
-        writer.writerow(["# laser_setpoint_W", f"{record.laser_setpoint_w:.12e}"])
-        writer.writerow(["# requested_power_W", f"{record.requested_power_w:.12e}"])
-        writer.writerow(
-            ["# expected_actual_power_W", f"{record.expected_actual_power_w:.12e}"]
-        )
-        writer.writerow(["# filter_state", record.filter_state])
+        if record.field_value is not None:
+            writer.writerow(["# field_value_mT", f"{record.field_value:.12e}"])
 
-        writer.writerow(["# averaging_mode", record.averaging_mode])
-        writer.writerow(["# device_averaging_used", int(record.device_averaging_used)])
-        writer.writerow(["# background_subtracted", int(record.background_subtracted)])
-        writer.writerow(["# background_timestamp_utc", record.background_timestamp_utc])
-        writer.writerow(["# background_integration_ms", record.background_integration_ms])
+        if record.p_before.powers_w or record.p_after.powers_w:
+            writer.writerow(
+                ["# p_before_W", *[f"{value:.12e}" for value in record.p_before.powers_w]]
+            )
+            writer.writerow(
+                ["# p_after_W", *[f"{value:.12e}" for value in record.p_after.powers_w]]
+            )
+            writer.writerow(["# p_before_status", *record.p_before.pm_status])
+            writer.writerow(["# p_after_status", *record.p_after.pm_status])
+            writer.writerow(["# p_before_command_status", record.p_before.command_status])
+            writer.writerow(["# p_after_command_status", record.p_after.command_status])
+
+        if record.run_identifier:
+            writer.writerow(["# run_identifier", record.run_identifier])
+        if record.notes:
+            writer.writerow(["# notes", record.notes])
+
+        if record.scan_active:
+            writer.writerow(["# scan_index", record.scan_index])
+            writer.writerow(["# scan_count", record.scan_count])
+            writer.writerow(["# scan_basis", record.scan_basis])
+            writer.writerow(["# scan_spacing", record.scan_spacing])
+        if record.scan_active or record.gated is not None or record.laser_channel >= 0:
+            if record.laser_port:
+                writer.writerow(["# laser_port", record.laser_port])
+            if record.laser_box_id:
+                writer.writerow(["# laser_box_id", record.laser_box_id])
+            if record.laser_channel >= 0:
+                writer.writerow(["# laser_channel", record.laser_channel])
+            if np.isfinite(record.laser_wavelength_nm):
+                writer.writerow(
+                    ["# laser_wavelength_nm", f"{record.laser_wavelength_nm:.12e}"]
+                )
+            if np.isfinite(record.laser_setpoint_w):
+                writer.writerow(["# laser_setpoint_W", f"{record.laser_setpoint_w:.12e}"])
+        if record.scan_active:
+            if np.isfinite(record.requested_power_w):
+                writer.writerow(["# requested_power_W", f"{record.requested_power_w:.12e}"])
+            if np.isfinite(record.expected_actual_power_w):
+                writer.writerow(
+                    ["# expected_actual_power_W", f"{record.expected_actual_power_w:.12e}"]
+                )
+            if record.filter_state and record.filter_state != "none":
+                writer.writerow(["# filter_state", record.filter_state])
+
+        if record.background_subtracted:
+            writer.writerow(["# background_timestamp_utc", record.background_timestamp_utc])
+            writer.writerow(["# background_integration_ms", record.background_integration_ms])
+        if record.boxcar_width > 1:
+            writer.writerow(["# smoothing_method", "boxcar"])
+            writer.writerow(["# smoothing_width", record.boxcar_width])
 
         if record.gated is not None:
-            writer.writerow(["# gated_active", 1])
             writer.writerow(["# gated_sequence_id", record.gated.sequence_id])
             writer.writerow(["# gated_mode", record.gated.mode])
             writer.writerow(["# gated_frame_index", record.gated.frame_index])
@@ -103,69 +154,117 @@ def save_spectrum_record(path: Path, record: SpectrumRecord) -> None:
                 "# gated_acquisition_call_end_elapsed_ms",
                 f"{record.gated.acquisition_call_end_elapsed_ms:.9f}",
             ])
+            writer.writerow([
+                "# gated_exposure_window_start_elapsed_ms",
+                f"{record.gated.exposure_window_start_elapsed_ms:.9f}",
+            ])
+            writer.writerow([
+                "# gated_exposure_window_end_elapsed_ms",
+                f"{record.gated.exposure_window_end_elapsed_ms:.9f}",
+            ])
+            writer.writerow([
+                "# gated_exposure_midpoint_estimate_elapsed_ms",
+                f"{record.gated.exposure_midpoint_estimate_elapsed_ms:.9f}",
+            ])
+            writer.writerow([
+                "# gated_exposure_timing_uncertainty_ms",
+                f"{record.gated.exposure_timing_uncertainty_ms:.9f}",
+            ])
+            writer.writerow(["# gated_exposure_timing_basis", record.gated.exposure_timing_basis])
+            if record.gated.exposure_sample_windows_elapsed_ms:
+                writer.writerow(
+                    [
+                        "# gated_exposure_sample_start_elapsed_ms",
+                        *[
+                            f"{window[0]:.9f}"
+                            for window in record.gated.exposure_sample_windows_elapsed_ms
+                        ],
+                    ]
+                )
+                writer.writerow(
+                    [
+                        "# gated_exposure_sample_end_elapsed_ms",
+                        *[
+                            f"{window[1]:.9f}"
+                            for window in record.gated.exposure_sample_windows_elapsed_ms
+                        ],
+                    ]
+                )
+            writer.writerow(["# gated_timing_error_ms", f"{record.gated.timing_error_ms:.9f}"])
+            writer.writerow(["# gated_timing_quality", record.gated.timing_quality])
+            if np.isfinite(record.gated.timing_center_ms):
+                writer.writerow(
+                    ["# gated_timing_center_ms", f"{record.gated.timing_center_ms:.9f}"]
+                )
+            if np.isfinite(record.gated.timing_robust_sigma_ms):
+                writer.writerow(
+                    [
+                        "# gated_timing_robust_sigma_ms",
+                        f"{record.gated.timing_robust_sigma_ms:.9f}",
+                    ]
+                )
+            if np.isfinite(record.gated.timing_threshold_ms):
+                writer.writerow(
+                    [
+                        "# gated_timing_threshold_ms",
+                        f"{record.gated.timing_threshold_ms:.9f}",
+                    ]
+                )
             writer.writerow(["# gated_phase_index", record.gated.phase_index])
             writer.writerow(["# gated_repeat_index", record.gated.repeat_index])
-        else:
-            writer.writerow(["# gated_active", 0])
 
         if record.snr is not None:
-            writer.writerow(["# snr_valid", int(record.snr.valid)])
-            writer.writerow(["# snr_message", record.snr.message])
-            writer.writerow(["# snr_peak", f"{record.snr.peak_snr:.12e}"])
-            writer.writerow(["# snr_integrated", f"{record.snr.integrated_snr:.12e}"])
-            writer.writerow(
-                ["# snr_noise_sigma_counts", f"{record.snr.noise_sigma_counts:.12e}"]
-            )
-            writer.writerow(
-                ["# snr_peak_fraction", f"{record.snr.peak_fraction_of_full_scale:.12e}"]
-            )
-            writer.writerow(
-                ["# snr_peak_signal_counts", f"{record.snr.peak_signal_counts:.12e}"]
-            )
-            writer.writerow(
-                [
-                    "# snr_integrated_signal_counts_nm",
-                    f"{record.snr.integrated_signal_counts_nm:.12e}",
-                ]
-            )
-            writer.writerow(
-                [
-                    "# snr_integrated_noise_counts_nm",
-                    f"{record.snr.integrated_noise_counts_nm:.12e}",
-                ]
-            )
-            writer.writerow(
-                ["# snr_mean_signal_counts", f"{record.snr.mean_signal_counts:.12e}"]
-            )
-            writer.writerow(
-                [
-                    "# snr_baseline_at_signal_center_counts",
-                    f"{record.snr.baseline_at_signal_center_counts:.12e}",
-                ]
-            )
-            writer.writerow(["# snr_n_signal_pixels", record.snr.n_signal_pixels])
-            writer.writerow(["# snr_n_noise_pixels", record.snr.n_noise_pixels])
+            writer.writerow(["# snr_status", "ok" if record.snr.valid else "invalid"])
+            if not record.snr.valid:
+                writer.writerow(["# snr_reason", record.snr.message])
+            else:
+                writer.writerow(["# snr_peak", f"{record.snr.peak_snr:.12e}"])
+                writer.writerow(["# snr_integrated", f"{record.snr.integrated_snr:.12e}"])
+                writer.writerow(
+                    ["# snr_noise_sigma_counts", f"{record.snr.noise_sigma_counts:.12e}"]
+                )
+                writer.writerow(
+                    [
+                        "# snr_peak_fraction",
+                        f"{record.snr.peak_fraction_of_full_scale:.12e}",
+                    ]
+                )
+                writer.writerow(
+                    ["# snr_peak_signal_counts", f"{record.snr.peak_signal_counts:.12e}"]
+                )
+                writer.writerow(
+                    [
+                        "# snr_integrated_signal_counts_nm",
+                        f"{record.snr.integrated_signal_counts_nm:.12e}",
+                    ]
+                )
+                writer.writerow(
+                    [
+                        "# snr_integrated_noise_counts_nm",
+                        f"{record.snr.integrated_noise_counts_nm:.12e}",
+                    ]
+                )
+                writer.writerow(
+                    ["# snr_mean_signal_counts", f"{record.snr.mean_signal_counts:.12e}"]
+                )
+                writer.writerow(
+                    [
+                        "# snr_baseline_at_signal_center_counts",
+                        f"{record.snr.baseline_at_signal_center_counts:.12e}",
+                    ]
+                )
+                writer.writerow(["# snr_n_signal_pixels", record.snr.n_signal_pixels])
+                writer.writerow(["# snr_n_noise_pixels", record.snr.n_noise_pixels])
 
-        writer.writerow(
-            [
-                "wavelength_nm",
-                "intensity_counts",
-                "intensity_counts_per_s",
-            ]
-        )
-        for wavelength, intensity, normalized in zip(
-            record.wavelengths_nm,
-            record.intensities_counts,
-            counts_per_s,
-            strict=True,
-        ):
-            writer.writerow(
-                [
-                    f"{float(wavelength):.12e}",
-                    f"{float(intensity):.12e}",
-                    f"{float(normalized):.12e}",
-                ]
-            )
+        header = ["wavelength_nm", "intensity_counts_raw"]
+        if has_processed:
+            header.append("intensity_counts_processed")
+        writer.writerow(header)
+        for index, wavelength in enumerate(record.wavelengths_nm):
+            row = [f"{float(wavelength):.12e}", f"{float(raw[index]):.12e}"]
+            if has_processed:
+                row.append(f"{float(processed[index]):.12e}")
+            writer.writerow(row)
 
 
 def _first(metadata: dict[str, list[str]], key: str, default: str = "") -> str:
@@ -226,10 +325,11 @@ def _int_list(metadata: dict[str, list[str]], key: str) -> list[int]:
 
 def _read_spectrum_file(
     path: Path,
-) -> tuple[dict[str, list[str]], np.ndarray, np.ndarray]:
+) -> tuple[dict[str, list[str]], np.ndarray, np.ndarray, np.ndarray]:
     metadata: dict[str, list[str]] = {}
     wavelengths: list[float] = []
     intensities: list[float] = []
+    raw_intensities: list[float] = []
     header: list[str] | None = None
 
     with Path(path).open("r", newline="", encoding="utf-8") as file:
@@ -244,7 +344,10 @@ def _read_spectrum_file(
 
             if first.startswith("#"):
                 key = first.lstrip("#").strip()
-                metadata[key] = [value.strip() for value in row[1:]]
+                metadata[key] = [
+                    value if key == "notes" else value.strip()
+                    for value in row[1:]
+                ]
                 continue
 
             if header is None:
@@ -263,29 +366,40 @@ def _read_spectrum_file(
                 except ValueError:
                     wavelength_index = 0
 
-            try:
+            if "intensity_counts_processed" in header:
+                intensity_index = header.index("intensity_counts_processed")
+            elif "intensity_counts" in header:
                 intensity_index = header.index("intensity_counts")
-            except ValueError:
+            elif "intensity_counts_raw" in header:
+                intensity_index = header.index("intensity_counts_raw")
+            else:
                 intensity_index = 1
+            raw_index = (
+                header.index("intensity_counts_raw")
+                if "intensity_counts_raw" in header
+                else intensity_index
+            )
 
-            if len(row) <= max(wavelength_index, intensity_index):
+            if len(row) <= max(wavelength_index, intensity_index, raw_index):
                 continue
 
             try:
                 wavelengths.append(float(row[wavelength_index]))
                 intensities.append(float(row[intensity_index]))
+                raw_intensities.append(float(row[raw_index]))
             except ValueError as exc:
                 raise ValueError(f"Invalid spectrum data row in {path}: {row!r}") from exc
 
     if not wavelengths:
         raise ValueError(f"No spectrum data found in {path}")
-    if len(wavelengths) != len(intensities):
+    if len(wavelengths) != len(intensities) or len(wavelengths) != len(raw_intensities):
         raise ValueError(f"Mismatched wavelength/intensity columns in {path}")
 
     return (
         metadata,
         np.asarray(wavelengths, dtype=float),
         np.asarray(intensities, dtype=float),
+        np.asarray(raw_intensities, dtype=float),
     )
 
 
@@ -296,8 +410,11 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
     sentinel/default values rather than fabricated acquisition settings.
     """
 
-    metadata, wavelengths, intensities = _read_spectrum_file(Path(path))
-    notes = _first(metadata, "notes").replace("\\n", "\n")
+    metadata, wavelengths, intensities, raw_intensities = _read_spectrum_file(Path(path))
+    schema_version = _int_value(metadata, "schema_version", 1)
+    notes = _first(metadata, "notes")
+    if schema_version < 2:
+        notes = notes.replace("\\n", "\n")
     notes_json = _first(metadata, "notes_json")
     if notes_json:
         try:
@@ -322,7 +439,15 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         command_status=_int_value(metadata, "p_after_command_status", -1),
     )
     gated = None
-    if _bool_value(metadata, "gated_active"):
+    if _bool_value(metadata, "gated_active") or "gated_sequence_id" in metadata:
+        sample_starts = _float_list(
+            metadata,
+            "gated_exposure_sample_start_elapsed_ms",
+        )
+        sample_ends = _float_list(
+            metadata,
+            "gated_exposure_sample_end_elapsed_ms",
+        )
         gated = GatedFrameMetadata(
             sequence_id=_first(metadata, "gated_sequence_id"),
             mode=_first(metadata, "gated_mode"),
@@ -348,15 +473,57 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
                 metadata,
                 "gated_acquisition_call_end_elapsed_ms",
             ),
+            exposure_window_start_elapsed_ms=_float_value(
+                metadata,
+                "gated_exposure_window_start_elapsed_ms",
+            ),
+            exposure_window_end_elapsed_ms=_float_value(
+                metadata,
+                "gated_exposure_window_end_elapsed_ms",
+            ),
+            exposure_midpoint_estimate_elapsed_ms=_float_value(
+                metadata,
+                "gated_exposure_midpoint_estimate_elapsed_ms",
+            ),
+            exposure_timing_uncertainty_ms=_float_value(
+                metadata,
+                "gated_exposure_timing_uncertainty_ms",
+            ),
+            exposure_timing_basis=_first(
+                metadata,
+                "gated_exposure_timing_basis",
+            ),
+            exposure_sample_windows_elapsed_ms=tuple(zip(sample_starts, sample_ends, strict=True)),
+            timing_error_ms=_float_value(metadata, "gated_timing_error_ms"),
+            timing_quality=_first(
+                metadata,
+                "gated_timing_quality",
+                "not_evaluated",
+            ),
+            timing_center_ms=_float_value(metadata, "gated_timing_center_ms"),
+            timing_robust_sigma_ms=_float_value(
+                metadata,
+                "gated_timing_robust_sigma_ms",
+            ),
+            timing_threshold_ms=_float_value(metadata, "gated_timing_threshold_ms"),
             phase_index=_int_value(metadata, "gated_phase_index", -1),
             repeat_index=_int_value(metadata, "gated_repeat_index", 0),
         )
 
     snr_metrics = None
-    if "snr_valid" in metadata:
+    if "snr_valid" in metadata or "snr_status" in metadata:
+        snr_valid = (
+            _first(metadata, "snr_status").strip().lower() == "ok"
+            if "snr_status" in metadata
+            else _bool_value(metadata, "snr_valid")
+        )
         snr_metrics = SNRMetrics(
-            valid=_bool_value(metadata, "snr_valid"),
-            message=_first(metadata, "snr_message"),
+            valid=snr_valid,
+            message=(
+                "ok"
+                if snr_valid
+                else _first(metadata, "snr_reason", _first(metadata, "snr_message"))
+            ),
             peak_snr=_float_value(metadata, "snr_peak"),
             integrated_snr=_float_value(metadata, "snr_integrated"),
             noise_sigma_counts=_float_value(metadata, "snr_noise_sigma_counts"),
@@ -386,13 +553,30 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         timestamp_s=0.0,
         wavelengths_nm=wavelengths,
         intensities_counts=intensities,
+        raw_intensities_counts=raw_intensities,
         p_before=p_before,
         p_after=p_after,
         integration_ms=_int_value(metadata, "integration_ms", 0),
-        averages=_int_value(metadata, "averages", 0),
-        boxcar_width=_int_value(metadata, "boxcar_width", 0),
-        correct_dark=_bool_value(metadata, "correct_dark"),
-        correct_nonlinearity=_bool_value(metadata, "correct_nonlinearity"),
+        averages=_int_value(
+            metadata,
+            "averages_requested",
+            _int_value(metadata, "averages", 0),
+        ),
+        boxcar_width=_int_value(
+            metadata,
+            "smoothing_width",
+            _int_value(metadata, "boxcar_width", 0),
+        ),
+        correct_dark=_bool_value(
+            metadata,
+            "correct_dark_applied",
+            _bool_value(metadata, "correct_dark"),
+        ),
+        correct_nonlinearity=_bool_value(
+            metadata,
+            "correct_nonlinearity_applied",
+            _bool_value(metadata, "correct_nonlinearity"),
+        ),
         field_value=_float_value(metadata, "field_value_mT", 0.0),
         snr=snr_metrics,
         signal_max_counts=signal_max,
@@ -402,7 +586,11 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         ),
         run_identifier=_first(metadata, "run_identifier"),
         notes=notes,
-        scan_active=_bool_value(metadata, "scan_active"),
+        spectrometer_backend=_first(metadata, "spectrometer_backend"),
+        spectrometer_model=_first(metadata, "spectrometer_model"),
+        spectrometer_serial=_first(metadata, "spectrometer_serial"),
+        spectrograph_serial=_first(metadata, "spectrograph_serial"),
+        scan_active=_bool_value(metadata, "scan_active") or "scan_index" in metadata,
         scan_index=_int_value(metadata, "scan_index", -1),
         scan_count=_int_value(metadata, "scan_count", 0),
         scan_basis=_first(metadata, "scan_basis"),
@@ -415,10 +603,21 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
         requested_power_w=_float_value(metadata, "requested_power_W"),
         expected_actual_power_w=_float_value(metadata, "expected_actual_power_W"),
         filter_state=_first(metadata, "filter_state", "none"),
-        averaging_mode=_first(metadata, "averaging_mode", "software"),
-        device_averaging_used=_bool_value(metadata, "device_averaging_used"),
+        averaging_mode=_first(
+            metadata,
+            "averaging_mode_requested",
+            _first(metadata, "averaging_mode", "software"),
+        ),
+        device_averaging_used=(
+            _first(metadata, "averaging_mode_applied").strip().lower() == "device"
+            if "averaging_mode_applied" in metadata
+            else _bool_value(metadata, "device_averaging_used")
+        ),
         gated=gated,
-        background_subtracted=_bool_value(metadata, "background_subtracted"),
+        background_subtracted=(
+            _bool_value(metadata, "background_subtracted")
+            or "background_timestamp_utc" in metadata
+        ),
         background_timestamp_utc=_first(metadata, "background_timestamp_utc"),
         background_integration_ms=_int_value(
             metadata,
@@ -431,5 +630,5 @@ def load_spectrum_record(path: Path) -> SpectrumRecord:
 def load_spectrum_csv(path: Path) -> tuple[np.ndarray, np.ndarray]:
     """Compatibility loader returning only wavelength and intensity arrays."""
 
-    _metadata, wavelengths, intensities = _read_spectrum_file(Path(path))
+    _metadata, wavelengths, intensities, _raw = _read_spectrum_file(Path(path))
     return wavelengths, intensities

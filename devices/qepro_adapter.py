@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import math
+import time
 from typing import Any, NoReturn
 
 import numpy as np
 
-from core.records import SpectralAcquisition, SpectrometerCapabilities
+from core.records import AcquisitionTiming, SpectralAcquisition, SpectrometerCapabilities
 from devices.errors import SpectrometerCommandError, SpectrometerCommunicationError
 
 
@@ -14,7 +16,7 @@ class QEProSpectrometer:
 
     DEFAULT_MIN_INTEGRATION_US = 8_000
     DEFAULT_MAX_INTEGRATION_US = 60_000_000
-    DEFAULT_TEC_TARGET_MIN_C = -25.0
+    DEFAULT_TEC_TARGET_MIN_C = -20.0
     DEFAULT_TEC_TARGET_MAX_C = 40.0
     VALID_AVERAGING_MODES = {"software", "device"}
 
@@ -49,6 +51,9 @@ class QEProSpectrometer:
         self._hardware_average_method: Callable[[int], Any] | None = None
         self._applied_integration_us: int | None = None
         self._applied_device_averages: int | None = None
+        self._applied_read_corrections: tuple[bool, bool] | None = None
+        self._data_buffer_checked = False
+        self._data_buffer_feature: object | None = None
         self.tec_target_min_c = self.DEFAULT_TEC_TARGET_MIN_C
         self.tec_target_max_c = self.DEFAULT_TEC_TARGET_MAX_C
 
@@ -264,6 +269,7 @@ class QEProSpectrometer:
             feature_methods=feature_methods,
             tec_supported=self._feature("thermo_electric") is not None,
             device_averaging_supported=self._find_hardware_average_method() is not None,
+            backend="qepro",
         )
         self._capabilities_cache = capabilities
         return capabilities
@@ -434,6 +440,83 @@ class QEProSpectrometer:
             )
         return values
 
+    def _read_intensities_timed(
+        self,
+        *,
+        correct_dark: bool,
+        correct_nonlinearity: bool,
+    ) -> tuple[np.ndarray, float, float]:
+        started_s = time.perf_counter()
+        values = self._read_intensities(
+            correct_dark=correct_dark,
+            correct_nonlinearity=correct_nonlinearity,
+        )
+        finished_s = time.perf_counter()
+        return values, started_s, finished_s
+
+    def _data_buffer(self) -> object | None:
+        if not getattr(self, "_data_buffer_checked", False):
+            self._data_buffer_feature = self._feature("data_buffer")
+            self._data_buffer_checked = True
+        return getattr(self, "_data_buffer_feature", None)
+
+    def _clear_data_buffer(self) -> bool:
+        """Clear completed QEPro frames after changing acquisition settings.
+
+        SeaBreeze backends expose either ``clear`` or an element-count/removal
+        pair.  A subsequent synchronization read is still discarded because a
+        frame already in flight may complete just after the clear operation.
+        """
+
+        feature = self._data_buffer()
+        if feature is None:
+            return False
+
+        clear = getattr(feature, "clear", None)
+        if callable(clear):
+            try:
+                clear()
+                return True
+            except Exception as exc:
+                if self._is_transport_error(exc):
+                    self._raise_if_transport_error("spectrum-buffer clear", exc)
+
+        count_method = getattr(feature, "get_number_of_elements", None)
+        remove_method = getattr(feature, "remove_oldest_spectra", None)
+        if not callable(count_method) or not callable(remove_method):
+            return False
+        try:
+            count = max(0, int(count_method()))
+            if count:
+                remove_method(count)
+            return True
+        except Exception as exc:
+            if self._is_transport_error(exc):
+                self._raise_if_transport_error("spectrum-buffer drain", exc)
+            return False
+
+    @staticmethod
+    def _timing(
+        started_s: float,
+        finished_s: float,
+        *,
+        averaged: bool,
+        sample_windows_s: tuple[tuple[float, float], ...] = (),
+    ) -> AcquisitionTiming:
+        duration_s = max(0.0, float(finished_s) - float(started_s))
+        return AcquisitionTiming(
+            window_started_s=float(started_s),
+            window_finished_s=float(finished_s),
+            midpoint_estimate_s=0.5 * (float(started_s) + float(finished_s)),
+            uncertainty_s=0.5 * duration_s,
+            basis=(
+                "driver_call_bounds_software_average"
+                if averaged
+                else "driver_call_bounds"
+            ),
+            sample_windows_s=sample_windows_s,
+        )
+
     @staticmethod
     def _signal_max(values: np.ndarray) -> float:
         finite = np.asarray(values, dtype=float)
@@ -491,16 +574,25 @@ class QEProSpectrometer:
             self._applied_device_averages is not None
             and self._applied_device_averages != previous_device_averages
         )
-        if integration_changed or device_averaging_changed:
-            # QEPro/SeaBreeze can return the previously completed frame on the
-            # first read after a configuration change. Discard exactly one.
+        correction_signature = (bool(correct_dark), bool(correct_nonlinearity))
+        correction_changed = (
+            self._applied_read_corrections is not None
+            and correction_signature != self._applied_read_corrections
+        )
+        if integration_changed or device_averaging_changed or correction_changed:
+            # Empty every completed frame first, then discard one synchronization
+            # read for a frame that may already have been integrating when the
+            # settings changed.  Returning only the next read prevents stale
+            # buffered spectra from escaping into a measurement.
+            self._clear_data_buffer()
             self._read_intensities(
                 correct_dark=correct_dark,
                 correct_nonlinearity=correct_nonlinearity,
             )
+        self._applied_read_corrections = correction_signature
 
         if device_averaging_used:
-            values = self._read_intensities(
+            values, started_s, finished_s = self._read_intensities_timed(
                 correct_dark=correct_dark,
                 correct_nonlinearity=correct_nonlinearity,
             )
@@ -509,15 +601,28 @@ class QEProSpectrometer:
                 intensities_counts=values,
                 signal_max_counts=self._signal_max(values),
                 device_averaging_used=True,
+                timing=self._timing(
+                    started_s,
+                    finished_s,
+                    averaged=averages > 1,
+                    sample_windows_s=((started_s, finished_s),),
+                ),
             )
 
         running_mean: np.ndarray | None = None
         signal_max = float("-inf")
+        timing_started_s = float("nan")
+        timing_finished_s = float("nan")
+        sample_windows_s: list[tuple[float, float]] = []
         for index in range(averages):
-            values = self._read_intensities(
+            values, frame_started_s, frame_finished_s = self._read_intensities_timed(
                 correct_dark=correct_dark,
                 correct_nonlinearity=correct_nonlinearity,
             )
+            if not math.isfinite(timing_started_s):
+                timing_started_s = frame_started_s
+            timing_finished_s = frame_finished_s
+            sample_windows_s.append((frame_started_s, frame_finished_s))
             signal_max = max(signal_max, self._signal_max(values))
             if running_mean is None:
                 running_mean = values.astype(float, copy=True)
@@ -532,6 +637,12 @@ class QEProSpectrometer:
             intensities_counts=running_mean,
             signal_max_counts=signal_max,
             device_averaging_used=False,
+            timing=self._timing(
+                timing_started_s,
+                timing_finished_s,
+                averaged=averages > 1,
+                sample_windows_s=tuple(sample_windows_s),
+            ),
         )
 
     def close(self) -> None:

@@ -13,6 +13,9 @@ class TimingStatistics:
     std_ms: float = float("nan")
     minimum_ms: float = float("nan")
     maximum_ms: float = float("nan")
+    median_ms: float = float("nan")
+    p95_ms: float = float("nan")
+    p99_ms: float = float("nan")
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +30,11 @@ class GatedAverageTrace:
     acquisition_start_timing: TimingStatistics
     acquisition_midpoint_timing: TimingStatistics
     acquisition_end_timing: TimingStatistics
+    exposure_start_timing: TimingStatistics = TimingStatistics()
+    exposure_midpoint_timing: TimingStatistics = TimingStatistics()
+    exposure_end_timing: TimingStatistics = TimingStatistics()
+    exposure_uncertainty: TimingStatistics = TimingStatistics()
+    timing_error: TimingStatistics = TimingStatistics()
     mean_power_w: tuple[float, ...] = ()
     std_power_w: tuple[float, ...] = ()
 
@@ -45,6 +53,9 @@ class GatedSeriesRecord:
     laser_box_id: str
     laser_channel: int
     laser_wavelength_nm: float
+    timing_evaluated_count: int = 0
+    timing_rejected_count: int = 0
+    timing_guard_method: str = "off"
 
 
 @dataclass(slots=True)
@@ -59,6 +70,11 @@ class _Group:
     start_ms: list[float] = field(default_factory=list)
     midpoint_ms: list[float] = field(default_factory=list)
     end_ms: list[float] = field(default_factory=list)
+    exposure_start_ms: list[float] = field(default_factory=list)
+    exposure_midpoint_ms: list[float] = field(default_factory=list)
+    exposure_end_ms: list[float] = field(default_factory=list)
+    exposure_uncertainty_ms: list[float] = field(default_factory=list)
+    timing_error_ms: list[float] = field(default_factory=list)
     power_w: list[list[float]] = field(default_factory=list)
 
     def add(self, record: SpectrumRecord) -> None:
@@ -79,6 +95,15 @@ class _Group:
         self.start_ms.append(float(gated.acquisition_call_start_elapsed_ms))
         self.midpoint_ms.append(float(gated.acquisition_call_midpoint_elapsed_ms))
         self.end_ms.append(float(gated.acquisition_call_end_elapsed_ms))
+        self.exposure_start_ms.append(float(gated.exposure_window_start_elapsed_ms))
+        self.exposure_midpoint_ms.append(
+            float(gated.exposure_midpoint_estimate_elapsed_ms)
+        )
+        self.exposure_end_ms.append(float(gated.exposure_window_end_elapsed_ms))
+        self.exposure_uncertainty_ms.append(
+            float(gated.exposure_timing_uncertainty_ms)
+        )
+        self.timing_error_ms.append(float(gated.timing_error_ms))
         self.power_w.append(
             [float(value) for value in record.mean_power_snapshot().powers_w]
         )
@@ -94,6 +119,9 @@ def _timing_statistics(values: list[float]) -> TimingStatistics:
         std_ms=float(np.std(finite, ddof=1)) if finite.size > 1 else 0.0,
         minimum_ms=float(np.min(finite)),
         maximum_ms=float(np.max(finite)),
+        median_ms=float(np.median(finite)),
+        p95_ms=float(np.percentile(finite, 95.0)),
+        p99_ms=float(np.percentile(finite, 99.0)),
     )
 
 
@@ -199,6 +227,15 @@ class GatedSeriesAccumulator:
                     acquisition_start_timing=_timing_statistics(group.start_ms),
                     acquisition_midpoint_timing=_timing_statistics(group.midpoint_ms),
                     acquisition_end_timing=_timing_statistics(group.end_ms),
+                    exposure_start_timing=_timing_statistics(group.exposure_start_ms),
+                    exposure_midpoint_timing=_timing_statistics(
+                        group.exposure_midpoint_ms
+                    ),
+                    exposure_end_timing=_timing_statistics(group.exposure_end_ms),
+                    exposure_uncertainty=_timing_statistics(
+                        group.exposure_uncertainty_ms
+                    ),
+                    timing_error=_timing_statistics(group.timing_error_ms),
                     mean_power_w=power_mean,
                     std_power_w=power_std,
                 )
@@ -213,7 +250,7 @@ class GatedSeriesAccumulator:
             traces=tuple(traces),
             integration_ms=int(first.integration_ms),
             detector_averages=int(first.averages),
-            field_value_mT=float(first.field_value),
+            field_value_mT=float(first.field_value) if first.field_value is not None else None,
             laser_port=str(first.laser_port),
             laser_box_id=str(first.laser_box_id),
             laser_channel=int(first.laser_channel),

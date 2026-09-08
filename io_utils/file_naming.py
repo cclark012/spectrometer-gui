@@ -75,8 +75,9 @@ def build_spectrum_path(
         parts.append(
             timestamp.strftime("%H%M%S") + f"{timestamp.microsecond // 1000:03d}"
         )
-    if settings.include_field and math.isfinite(float(record.field_value)):
-        parts.append(field_token(float(record.field_value)))
+    if settings.include_field and record.field_value is not None:
+        if  math.isfinite(float(record.field_value)):
+            parts.append(field_token(float(record.field_value)))
     mean_power_w = float(record.mean_power_w(0))
     if settings.include_power and math.isfinite(mean_power_w):
         parts.append(power_token(mean_power_w))

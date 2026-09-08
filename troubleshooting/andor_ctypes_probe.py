@@ -308,15 +308,18 @@ def _find_solis_dir(explicit: str | None) -> Path:
     )
 
 
-def _camera_dll_path(root: Path) -> Path:
+def _camera_dll_path(root: Path, explicit: str | None = None) -> Path:
+    if explicit:
+        requested = Path(explicit)
+        candidate = requested if requested.is_absolute() else root / requested
+        if candidate.exists():
+            return candidate.resolve()
+        raise FileNotFoundError(f"Configured SDK2 camera DLL was not found: {candidate}")
     names = (
-        "atmcd64d.dll",
         "atmcd64d_legacy.dll",
-        "atmcd32d.dll",
+        "atmcd64d.dll",
         "atmcd32d_legacy.dll",
-        "camera.dll",
-        "atusb_libusb10.dll",
-        "atusb_libusb.dll",
+        "atmcd32d.dll",
     )
     for name in names:
         candidate = root / name
@@ -1240,6 +1243,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory containing atmcd64d.dll and atspectrograph.dll.",
     )
     parser.add_argument(
+        "--camera-dll",
+        default=None,
+        help=(
+            "Exact SDK2 camera DLL path or filename. If omitted, "
+            "atmcd64d_legacy.dll is preferred."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Write machine-readable JSON to stdout.",
@@ -1253,6 +1264,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--verbose",
         action="store_true",
         help="Write progress diagnostics to stderr.",
+    )
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--camera-only",
+        action="store_true",
+        help="Probe only the SDK2 camera (useful for isolated DLL comparison).",
+    )
+    scope.add_argument(
+        "--spectrograph-only",
+        action="store_true",
+        help="Probe only the Kymera/Shamrock spectrograph.",
     )
     return parser.parse_args(argv)
 
@@ -1280,27 +1302,28 @@ def main(argv: list[str] | None = None) -> int:
         report.solis_dir = str(root)
         dll_handle = os.add_dll_directory(str(root))
 
-        # camera_path = _camera_dll_path(root)
-        camera_path = root / Path("atmcd64d_legacy.dll")
-        spectrograph_path = _spectrograph_dll_path(root)
-        report.camera_dll = str(camera_path)
-        report.spectrograph_dll = str(spectrograph_path)
         _debug(f"Root: {root}")
 
-        _debug("Probing camera...")
-        try:
-            report.camera = _probe_camera(root, camera_path)
-            _debug("Camera probe complete.")
-        except Exception:
-            report.camera = {"fatal_error": traceback.format_exc()}
-            _debug("Camera probe failed.")
+        if not args.spectrograph_only:
+            camera_path = _camera_dll_path(root, args.camera_dll)
+            report.camera_dll = str(camera_path)
+            _debug("Probing camera...")
+            try:
+                report.camera = _probe_camera(root, camera_path)
+                _debug("Camera probe complete.")
+            except Exception:
+                report.camera = {"fatal_error": traceback.format_exc()}
+                _debug("Camera probe failed.")
 
-        try:
-            report.spectrograph = _probe_spectrograph(root, spectrograph_path)
-            _debug("Spectrograph probe complete.")
-        except Exception:
-            report.spectrograph = {"fatal_error": traceback.format_exc()}
-            _debug("Spectrograph probe failed.")
+        if not args.camera_only:
+            spectrograph_path = _spectrograph_dll_path(root)
+            report.spectrograph_dll = str(spectrograph_path)
+            try:
+                report.spectrograph = _probe_spectrograph(root, spectrograph_path)
+                _debug("Spectrograph probe complete.")
+            except Exception:
+                report.spectrograph = {"fatal_error": traceback.format_exc()}
+                _debug("Spectrograph probe failed.")
     except Exception:
         report.warnings.append(traceback.format_exc())
     finally:
@@ -1353,6 +1376,10 @@ def main(argv: list[str] | None = None) -> int:
 
     has_camera = bool(report.camera.get("available_camera_count", 0))
     has_spectrograph = bool(report.spectrograph.get("devices", []))
+    if args.camera_only:
+        return 0 if has_camera else 1
+    if args.spectrograph_only:
+        return 0 if has_spectrograph else 1
     return 0 if has_camera or has_spectrograph else 1
 
 

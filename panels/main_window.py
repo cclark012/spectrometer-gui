@@ -160,6 +160,11 @@ class MainWindow(QMainWindow):
         self._latest_snr_signature: tuple[object, ...] | None = None
         self.acquiring = False
         self._acquisition_owner: str | None = None
+        self._gated_acquisition_template: AcquisitionSettings | None = None
+        self._gated_settings_pending = None
+        self._gated_laser_pending: LaserChannelInfo | None = None
+        self._gated_preparing = False
+        self._gated_prepare_cancelled = False
         self.sequence_arbiter = SequenceArbiter()
         self.auto_update_power_meter_wavelength = True
         self.last_power_meter_wavelength_nm: int | None = None
@@ -419,7 +424,7 @@ class MainWindow(QMainWindow):
         self.gated_coordinator = GatedAcquisitionCoordinator(self)
         self.gated_panel.preview_requested.connect(self.preview_gated_acquisition)
         self.gated_panel.run_requested.connect(self.start_gated_acquisition)
-        self.gated_panel.abort_requested.connect(self.gated_coordinator.abort)
+        self.gated_panel.abort_requested.connect(self._abort_gated_acquisition)
         self.gated_coordinator.laser_set_enabled_requested.connect(
             self.laser_set_enabled_requested.emit
         )
@@ -547,6 +552,12 @@ class MainWindow(QMainWindow):
         )
         self.runtime.spectrometer_temperature_ready.connect(
             self._on_spectrometer_temperature_ready
+        )
+        self.runtime.spectrometer_prepared.connect(
+            self._on_gated_spectrometer_prepared
+        )
+        self.runtime.spectrometer_prepare_failed.connect(
+            self._on_gated_spectrometer_prepare_failed
         )
         self.runtime.spectrometer_connection_changed.connect(
             self._on_instrument_connection_changed
@@ -688,7 +699,12 @@ class MainWindow(QMainWindow):
         self.acquiring = True
         self._acquisition_owner = owner
         self._refresh_sequence_controls()
-        settings = self._settings()
+        if owner == "gated" and self._gated_acquisition_template is not None:
+            settings = self.gated_coordinator.apply_metadata(
+                replace(self._gated_acquisition_template)
+            )
+        else:
+            settings = self._settings()
         self.statusBar().showMessage(
             f"Acquiring spectrum: {settings.integration_ms} ms, "
             f"avg={settings.averages}, boxcar={settings.boxcar_width}",
@@ -852,7 +868,7 @@ class MainWindow(QMainWindow):
             "Spectrum acquisition failed. Live acquisition stopped.",
             15_000,
         )
-        logger.error("Spectrum acquisition failed:\n%s", message)
+        logger.warning("Handled spectrum acquisition failure:\n%s", message)
         QMessageBox.warning(
             self,
             "Spectrum acquisition failed",
@@ -1172,15 +1188,98 @@ class MainWindow(QMainWindow):
         if not self._begin_sequence("gated"):
             return
         try:
-            plan = self.gated_coordinator.start(
-                settings=self._gated_settings(),
-                laser=laser,
+            gated_settings = self._gated_settings()
+            base_settings = self.acquisition_panel.settings(
+                run_identifier=self.file_name_settings.run_identifier,
+                notes=self.file_name_settings.notes,
             )
+            self._gated_acquisition_template = replace(
+                base_settings,
+                measure_power=bool(gated_settings.measure_power_per_frame),
+                laser_port=str(laser.port),
+                laser_box_id=str(laser.box_id),
+                laser_channel=int(laser.channel),
+                laser_wavelength_nm=float(laser.wavelength_nm),
+                laser_setpoint_w=float(laser.setpoint_w),
+            )
+            self._gated_settings_pending = gated_settings
+            self._gated_laser_pending = laser
+            self._gated_preparing = True
+            self._gated_prepare_cancelled = False
+            self.gated_panel.set_running(True)
+            self.statusBar().showMessage(
+                "Preparing spectrometer and consuming one unsaved warm-up frame...",
+                15_000,
+            )
+            self.runtime.prepare_spectrometer(self._gated_acquisition_template)
         except Exception as exc:
+            self._clear_gated_preparation()
+            self._release_sequence("gated")
+            QMessageBox.critical(self, "Gated Acquisition Failed", str(exc))
+            return
+
+    @Slot()
+    def _on_gated_spectrometer_prepared(self) -> None:
+        if not self._gated_preparing:
+            return
+        if self._gated_prepare_cancelled:
+            self._clear_gated_preparation()
+            self._release_sequence("gated")
+            self.statusBar().showMessage("Gated preparation cancelled.", 5000)
+            return
+        settings = self._gated_settings_pending
+        laser = self._gated_laser_pending
+        self._gated_preparing = False
+        self._gated_settings_pending = None
+        self._gated_laser_pending = None
+        if settings is None or laser is None or self.sequence_arbiter.owner != "gated":
+            self._clear_gated_preparation()
+            self._release_sequence("gated")
+            return
+        try:
+            plan = self.gated_coordinator.start(settings=settings, laser=laser)
+        except Exception as exc:
+            self._clear_gated_preparation()
             self._release_sequence("gated")
             QMessageBox.critical(self, "Gated Acquisition Failed", str(exc))
             return
         self.gated_panel.set_plan(plan)
+
+    @Slot(str)
+    def _on_gated_spectrometer_prepare_failed(self, message: str) -> None:
+        if not self._gated_preparing:
+            return
+        cancelled = self._gated_prepare_cancelled
+        self._clear_gated_preparation()
+        self._release_sequence("gated")
+        if cancelled:
+            self.statusBar().showMessage("Gated preparation cancelled.", 5000)
+            return
+        QMessageBox.warning(
+            self,
+            "Gated preparation failed",
+            self._last_message_line(message) or "Spectrometer preparation failed.",
+        )
+
+    @Slot()
+    def _abort_gated_acquisition(self) -> None:
+        if self._gated_preparing:
+            self._gated_prepare_cancelled = True
+            self.statusBar().showMessage(
+                "Gated preparation cancellation requested; waiting for the unsaved "
+                "warm-up call to finish.",
+                10_000,
+            )
+            return
+        self.gated_coordinator.abort()
+
+    def _clear_gated_preparation(self) -> None:
+        self._gated_preparing = False
+        self._gated_prepare_cancelled = False
+        self._gated_settings_pending = None
+        self._gated_laser_pending = None
+        self._gated_acquisition_template = None
+        self.gated_panel.set_running(False)
 
     @Slot(bool)
     def _on_gated_active_changed(self, active: bool) -> None:
@@ -1188,6 +1287,7 @@ class MainWindow(QMainWindow):
             self.sequence_arbiter.claim("gated")
         else:
             self.sequence_arbiter.release("gated")
+            self._clear_gated_preparation()
         self.gated_panel.set_running(active)
         self._refresh_sequence_controls()
 
@@ -1328,7 +1428,10 @@ class MainWindow(QMainWindow):
             15_000,
         )
 
-        logger.error("Initial instrument connection failed:\n%s", message)
+        # Missing optional hardware at startup is an expected operating mode.
+        # Keep the details in the optional file log without presenting a Python
+        # traceback in the terminal.
+        logger.info("Initial instruments unavailable:\n%s", message)
 
     @Slot(str, str, str)
     def _connect_instrument(self, key: str, mode: str, backend: str) -> None:
@@ -1397,16 +1500,16 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_worker_error(self, message: str) -> None:
         self.statusBar().showMessage(
-            "Instrument worker error. See console output.",
+            self._last_message_line(message) or "Instrument operation failed.",
             10_000,
         )
-        logger.error("Instrument worker error:\n%s", message)
+        logger.warning("Handled instrument operation failure:\n%s", message)
 
     @Slot(str)
     def _on_laser_error(self, message: str) -> None:
-        logger.error("Laser worker error:\n%s", message)
+        logger.warning("Handled laser operation failure:\n%s", message)
         self.statusBar().showMessage(
-            "Laser controller error. See console output.",
+            self._last_message_line(message) or "Laser operation failed.",
             10_000,
         )
 
@@ -1493,7 +1596,7 @@ class MainWindow(QMainWindow):
         self._finish_acquisition_ui()
         self._release_sequence("background")
         self.statusBar().showMessage("Background acquisition failed.", 15_000)
-        logger.error("Background acquisition failed:\n%s", message)
+        logger.warning("Handled background acquisition failure:\n%s", message)
         QMessageBox.warning(
             self,
             "Background Acquisition Failed",
@@ -1516,7 +1619,7 @@ class MainWindow(QMainWindow):
         self,
         state: InstrumentConnectionState,
     ) -> None:
-        log = logger.info if state.connected or not state.error else logger.warning
+        log = logger.warning if state.event == "connection_lost" else logger.info
         log(
             "Connection state: key=%s connected=%s emulated=%s mode=%s "
             "backend=%s description=%s error=%s",
@@ -1542,9 +1645,23 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.set_state(state)
 
+        if state.event == "connect_failed" and not state.connected:
+            QMessageBox.warning(
+                self,
+                f"{state.key.replace('_', ' ').title()} connection failed",
+                str(state.description or self._last_message_line(state.error)),
+            )
+
         QTimer.singleShot(
             0,
             lambda: clamp_main_window_to_available_screen(self),
+        )
+
+    @staticmethod
+    def _last_message_line(message: str) -> str:
+        return next(
+            (line.strip() for line in reversed(str(message).splitlines()) if line.strip()),
+            "",
         )
 
     def _stop_work_for_disconnected_instrument(
@@ -1719,12 +1836,10 @@ class MainWindow(QMainWindow):
             int(record.integration_ms) == int(settings.integration_ms)
             and int(record.averages) == int(settings.averages)
             and bool(record.correct_dark) == bool(settings.correct_dark)
-            and bool(record.correct_nonlinearity)
-            == bool(settings.correct_nonlinearity)
+            and bool(record.correct_nonlinearity) == bool(settings.correct_nonlinearity)
             and int(record.boxcar_width) == int(settings.boxcar_width)
             and str(record.averaging_mode) == str(settings.averaging_mode)
-            and bool(record.background_subtracted)
-            == bool(settings.subtract_background)
+            and bool(record.background_subtracted) == bool(settings.subtract_background)
         )
 
     # ------------------------------------------------------------- plot/view tools

@@ -41,9 +41,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--spectrometer-backend",
-        choices=["qepro", "andor"],
+        choices=["auto", "qepro", "andor"],
         default=None,
-        help="Real spectrometer backend (default: qepro).",
+        help="Real spectrometer backend (default: auto-detect QEPro, then Andor).",
     )
     parser.add_argument(
         "--spectrometer-mode",
@@ -69,6 +69,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--andor-solis-dir",
         default=None,
         help="Directory containing Andor SDK2 and ATSpectrograph DLLs.",
+    )
+    parser.add_argument(
+        "--andor-camera-dll",
+        default=None,
+        help=(
+            "Exact Andor SDK2 camera DLL path or filename "
+            "(default: atmcd64d_legacy.dll)."
+        ),
     )
     parser.add_argument("--andor-camera-index", type=int, default=None)
     parser.add_argument("--andor-spectrograph-index", type=int, default=None)
@@ -125,6 +133,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Minimum severity written to the rotating application log.",
     )
+    parser.add_argument(
+        "--file-logging",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the rotating application log (use --no-file-logging to disable).",
+    )
+    parser.add_argument(
+        "--newport-process-isolation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Run the Newport .NET driver in a restartable child process "
+            "(recommended for hot reconnect)."
+        ),
+    )
 
     return parser
 
@@ -149,7 +172,11 @@ def main(argv: list[str] | None = None) -> int:
         QStandardPaths.StandardLocation.AppLocalDataLocation
     )
     log_directory = Path(app_data) / "logs" if app_data else Path.cwd() / "logs"
-    log_path = configure_logging(log_directory, level=args.log_level)
+    log_path = configure_logging(
+        log_directory,
+        level=args.log_level,
+        file_enabled=bool(args.file_logging),
+    )
     install_exception_hook()
     logger = logging.getLogger("spectrometer_gui")
     logger.info(

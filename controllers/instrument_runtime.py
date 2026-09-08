@@ -37,6 +37,8 @@ class InstrumentRuntime(QObject):
     spectrometer_info_ready = Signal(object)
     spectrometer_capabilities_ready = Signal(object)
     spectrometer_temperature_ready = Signal(float)
+    spectrometer_prepared = Signal()
+    spectrometer_prepare_failed = Signal(str)
     background_ready = Signal(object)
     background_cleared = Signal()
     background_failed = Signal(str)
@@ -63,6 +65,7 @@ class InstrumentRuntime(QObject):
     _spectrometer_temperature_requested = Signal()
     _spectrometer_capabilities_requested = Signal()
     _spectrometer_configuration_requested = Signal(object)
+    _spectrometer_prepare_requested = Signal(object)
     _connect_spectrometer_requested = Signal()
     _connect_spectrometer_selection_requested = Signal(str, str)
     _disconnect_spectrometer_requested = Signal()
@@ -152,6 +155,10 @@ class InstrumentRuntime(QObject):
             controller.configure_spectrometer,
             queued,
         )
+        self._spectrometer_prepare_requested.connect(
+            controller.prepare_spectrometer,
+            queued,
+        )
         self._connect_spectrometer_requested.connect(
             controller.connect_spectrometer,
             queued,
@@ -176,6 +183,10 @@ class InstrumentRuntime(QObject):
         )
         controller.spectrometer_temperature_ready.connect(
             self.spectrometer_temperature_ready.emit
+        )
+        controller.spectrometer_prepared.connect(self.spectrometer_prepared.emit)
+        controller.spectrometer_prepare_failed.connect(
+            self.spectrometer_prepare_failed.emit
         )
         controller.background_ready.connect(self.background_ready.emit)
         controller.background_cleared.connect(self.background_cleared.emit)
@@ -266,17 +277,11 @@ class InstrumentRuntime(QObject):
             for key in ("spectrometer", "power_meter")
         )
         descriptions = [state.description for state in states if state.description]
-        errors = [state.error for state in states if state.error]
         message = "; ".join(descriptions)
-        if errors:
-            message += "\n\nUnavailable instrument(s):\n" + "\n".join(errors)
         if any(state.connected for state in states):
             self.connected.emit(message)
         else:
-            self.connection_failed.emit(
-                "No spectrometer or power meter connected."
-                + ("\n\n" + "\n".join(errors) if errors else "")
-            )
+            self.connection_failed.emit("No spectrometer or power meter connected.")
 
     @Slot(object)
     def _on_spectrometer_connection_changed(
@@ -470,6 +475,10 @@ class InstrumentRuntime(QObject):
     @Slot(object)
     def configure_spectrometer(self, values: object) -> None:
         self._spectrometer_configuration_requested.emit(values)
+
+    @Slot(object)
+    def prepare_spectrometer(self, settings: AcquisitionSettings) -> None:
+        self._spectrometer_prepare_requested.emit(replace(settings))
 
     @Slot()
     def connect_spectrometer(self) -> None:

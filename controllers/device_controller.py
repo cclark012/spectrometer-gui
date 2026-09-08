@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import traceback
 from dataclasses import replace
@@ -22,6 +24,7 @@ from core.time_utils import utc_now_iso
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
 from devices.errors import SpectrometerCommandError, SpectrometerCommunicationError
+from devices.newport_process_proxy import newport_connect_retry_delays
 from devices.protocols import PowerMeterAdapter, SpectrometerAdapter
 from devices.qepro_adapter import QEProSpectrometer
 from processing.background import BackgroundCorrector
@@ -47,6 +50,8 @@ class DeviceController(QObject):
     spectrometer_info_ready = Signal(object)
     spectrometer_capabilities_ready = Signal(object)
     spectrometer_temperature_ready = Signal(float)
+    spectrometer_prepared = Signal()
+    spectrometer_prepare_failed = Signal(str)
     spectrometer_connection_changed = Signal(object)
     status = Signal(str)
     error = Signal(str)
@@ -65,6 +70,9 @@ class DeviceController(QObject):
         self._last_invalid_power_status_s = 0.0
         self._capabilities: SpectrometerCapabilities | None = None
         self._info: SpectrometerInfo | None = None
+        self._active_spectrometer_backend = ""
+        self._spectrometer_connect_attempts = 0
+        self._power_meter_connect_attempts = 0
 
         self.snr_settings = SNRSettings()
         self._snr_acquisition_counter = 0
@@ -87,63 +95,67 @@ class DeviceController(QObject):
             if state.description
         ]
 
-        errors = [
-            state.error
-            for state in states
-            if state.error
-        ]
-
         if not any(state.connected for state in states):
-            self.connection_failed.emit(
-                "No spectrometer or power meter connected."
-                + (
-                    "\n\n" + "\n".join(errors)
-                    if errors
-                    else ""
-                )
-            )
+            self.connection_failed.emit("No spectrometer or power meter connected.")
             return
 
         message = "; ".join(messages)
-
-        if errors:
-            message += (
-                "\n\nUnavailable instrument(s):\n"
-                + "\n".join(errors)
-            )
-
         self.connected.emit(message)
 
     def _connect_spectrometer(
         self,
-    ) -> tuple[SpectrometerAdapter | None, str, str]:
-        try:
-            if self.config.spectrometer_mode == "disconnected":
-                return None, "Spectrometer: disconnected by configuration", ""
-            if self.config.spectrometer_mode == "emulated":
-                return EmulatedSpectrometer(), "Spectrometer: emulator", ""
-            if self.config.spectrometer_backend == "andor":
-                from devices.andor_adapter import AndorKymeraSpectrometer
+    ) -> tuple[SpectrometerAdapter | None, str, str, str]:
+        if self.config.spectrometer_mode == "disconnected":
+            return None, "Spectrometer: disconnected by configuration", "", ""
+        if self.config.spectrometer_mode == "emulated":
+            return EmulatedSpectrometer(), "Spectrometer: emulator", "", "emulator"
 
-                if self.config.andor_solis_dir is None:
-                    raise RuntimeError("Andor mode requires andor_solis_dir.")
-                return (
-                    AndorKymeraSpectrometer(
+        requested_backend = self.config.spectrometer_backend
+        backends = ("qepro", "andor") if requested_backend == "auto" else (requested_backend,)
+        errors: list[str] = []
+        for backend in backends:
+            try:
+                if backend == "andor":
+                    from devices.andor_adapter import AndorKymeraSpectrometer
+
+                    if self.config.andor_solis_dir is None:
+                        raise RuntimeError("Andor mode requires andor_solis_dir.")
+                    spectrometer = AndorKymeraSpectrometer(
                         self.config.andor_solis_dir,
                         camera_index=self.config.andor_camera_index,
                         spectrograph_index=self.config.andor_spectrograph_index,
-                    ),
-                    "Spectrometer: Andor iDus + Kymera",
-                    "",
+                        camera_dll=self.config.andor_camera_dll,
+                    )
+                    camera_dll = getattr(
+                        getattr(spectrometer, "camera", None),
+                        "dll_path",
+                        None,
+                    )
+                    description = "Spectrometer: Andor iDus + Kymera"
+                    if camera_dll is not None:
+                        description += f" ({camera_dll.name})"
+                    return (
+                        spectrometer,
+                        description,
+                        "\n".join(errors),
+                        "andor",
+                    )
+
+                if backend != "qepro":
+                    raise RuntimeError(f"Unknown spectrometer backend: {backend!r}")
+                qepro = QEProSpectrometer(
+                    serial_number=self.config.qepro_serial_number or None
                 )
-            qepro = QEProSpectrometer(
-                serial_number=self.config.qepro_serial_number or None
-            )
-            serial = str(qepro.serial_number).strip()
-            description = "Spectrometer: QEPro" + (f" {serial}" if serial else "")
-            return qepro, description, ""
-        except Exception:
-            error = "Spectrometer connection failed:\n" + traceback.format_exc()
+                serial = str(qepro.serial_number).strip()
+                description = "Spectrometer: QEPro" + (f" {serial}" if serial else "")
+                return qepro, description, "\n".join(errors), "qepro"
+            except Exception:
+                errors.append(
+                    f"{backend.upper()} connection attempt failed:\n"
+                    + traceback.format_exc()
+                )
+
+        error = "\n".join(errors)
 
         if self.config.spectrometer_fallback_emulator:
             try:
@@ -151,23 +163,27 @@ class DeviceController(QObject):
                     EmulatedSpectrometer(),
                     "Spectrometer: emulator fallback",
                     error,
+                    "emulator",
                 )
             except Exception:
                 error += "\nSpectrometer emulator fallback failed:\n" + traceback.format_exc()
 
-        return None, "", error
+        return None, "", error, requested_backend
 
     def _connect_spectrometer_now(
         self,
     ) -> InstrumentConnectionState:
         self._close_spectrometer()
 
-        spectrometer, message, error = (
+        initial_attempt = self._spectrometer_connect_attempts == 0
+        self._spectrometer_connect_attempts += 1
+        spectrometer, message, error, actual_backend = (
             self._connect_spectrometer()
         )
 
         self.spec = spectrometer
         self.spec_available = spectrometer is not None
+        self._active_spectrometer_backend = actual_backend if self.spec_available else ""
 
         if self.spec_available:
             try:
@@ -191,20 +207,34 @@ class DeviceController(QObject):
                 if isinstance(spectrometer, EmulatedSpectrometer)
                 else self.config.spectrometer_mode
             ),
-            backend=self.config.spectrometer_backend,
+            backend=actual_backend or self.config.spectrometer_backend,
+            event=(
+                "connected"
+                if self.spec_available
+                else "startup_unavailable" if initial_attempt else "connect_failed"
+            ),
         )
 
         self.spectrometer_connection_changed.emit(state)
         return state
 
-    def _connect_power_meter(self) -> tuple[PowerMeterAdapter | None, str, str]:
+    def _connect_power_meter(
+        self,
+        *,
+        initial_attempt: bool,
+    ) -> tuple[PowerMeterAdapter | None, str, str]:
         if self.config.power_meter_mode == "disconnected":
             return None, "Power meter: disconnected by configuration", ""
         if self.config.power_meter_mode == "emulated":
             return EmulatedPowerMeter(), "Power meter: emulator", ""
 
         errors: list[str] = []
-        retry_delays_s = (0.0, 0.75, 1.5, 3.0, 5.0)
+        # Missing optional hardware is a normal startup mode, so do one quick
+        # discovery attempt at launch. A manual reconnect is different: give
+        # the powered-on meter several fresh-process enumeration attempts.
+        retry_delays_s = newport_connect_retry_delays(
+            initial_attempt=initial_attempt,
+        )
         total_attempts = len(retry_delays_s)
         for attempt, delay_s in enumerate(retry_delays_s, start=1):
             if delay_s > 0:
@@ -215,16 +245,24 @@ class DeviceController(QObject):
                 time.sleep(delay_s)
             meter: PowerMeterAdapter | None = None
             try:
-                from devices.newport_2936r_dotnet import Newport2936R
-
                 if self.config.newport_dll is None:
                     raise RuntimeError("Real Newport mode requires newport_dll.")
+                if self.config.newport_process_isolation:
+                    from devices.newport_process_proxy import Newport2936RProcess
 
-                meter = Newport2936R(
-                    self.config.newport_dll,
-                    channel=self.config.power_channel,
-                    units=2,
-                )
+                    meter = Newport2936RProcess(
+                        self.config.newport_dll,
+                        channel=self.config.power_channel,
+                        units=2,
+                    )
+                else:
+                    from devices.newport_2936r_dotnet import Newport2936R
+
+                    meter = Newport2936R(
+                        self.config.newport_dll,
+                        channel=self.config.power_channel,
+                        units=2,
+                    )
                 identity = str(meter.identify()).strip()
                 if not identity:
                     meter.close()
@@ -263,9 +301,11 @@ class DeviceController(QObject):
     ) -> InstrumentConnectionState:
         self._close_power_meter()
 
+        initial_attempt = self._power_meter_connect_attempts == 0
         meter, message, error = (
-            self._connect_power_meter()
+            self._connect_power_meter(initial_attempt=initial_attempt)
         )
+        self._power_meter_connect_attempts += 1
 
         self.pm = meter
         self.power_available = meter is not None
@@ -285,10 +325,49 @@ class DeviceController(QObject):
                 else self.config.power_meter_mode
             ),
             backend="newport_2936r",
+            event=(
+                "connected"
+                if self.power_available
+                else "startup_unavailable" if initial_attempt else "connect_failed"
+            ),
         )
 
         self.power_meter_connection_changed.emit(state)
         return state
+
+    def _detector_configuration_signature(
+        self,
+        settings: AcquisitionSettings,
+    ) -> str:
+        """Return a stable signature for scientifically compatible backgrounds."""
+
+        spectrometer = self._require_spectrometer()
+        wavelengths = np.asarray(
+            getattr(spectrometer, "wavelengths_nm", []),
+            dtype=np.float64,
+        )
+        grid_hash = hashlib.sha256(wavelengths.tobytes()).hexdigest()
+        control_schema = getattr(self._capabilities, "control_schema", {}) or {}
+        state: object = (
+            control_schema.get("state") if isinstance(control_schema, dict) else None
+        )
+        payload = {
+            "backend": str(
+                getattr(self._capabilities, "backend", "")
+                or self.config.spectrometer_backend
+            ),
+            "serial": str(getattr(spectrometer, "serial_number", "")),
+            "grid_sha256": grid_hash,
+            "integration_ms": int(settings.integration_ms),
+            "averages": int(settings.averages),
+            "averaging_mode": str(settings.averaging_mode),
+            "correct_dark": bool(settings.correct_dark),
+            "correct_nonlinearity": bool(settings.correct_nonlinearity),
+            "instrument_state": state,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def _last_error_line(error: str) -> str:
@@ -312,6 +391,7 @@ class DeviceController(QObject):
 
     @Slot()
     def disconnect_spectrometer(self) -> None:
+        backend = self._active_spectrometer_backend or self.config.spectrometer_backend
         self._close_spectrometer()
 
         self.spectrometer_connection_changed.emit(
@@ -320,7 +400,8 @@ class DeviceController(QObject):
                 connected=False,
                 description="Spectrometer disconnected.",
                 mode="disconnected",
-                backend=self.config.spectrometer_backend,
+                backend=backend,
+                event="disconnected",
             )
         )
 
@@ -346,6 +427,8 @@ class DeviceController(QObject):
                 correct_dark=bool(settings.correct_dark),
                 correct_nonlinearity=bool(settings.correct_nonlinearity),
                 averaging_mode=str(settings.averaging_mode),
+                configuration_signature=self._detector_configuration_signature(settings),
+                compatibility_policy="strict",
             )
             self.background.set_background(background)
             self.background_ready.emit(background)
@@ -409,6 +492,7 @@ class DeviceController(QObject):
         exc: SpectrometerCommunicationError,
     ) -> None:
         instrument_name = str(getattr(self.spec, "name", "spectrometer"))
+        backend = self._active_spectrometer_backend or self.config.spectrometer_backend
         self._close_spectrometer()
         state = InstrumentConnectionState(
             key="spectrometer",
@@ -417,7 +501,8 @@ class DeviceController(QObject):
             description=f"{instrument_name} connection lost.",
             error=str(exc),
             mode=self.config.spectrometer_mode,
-            backend=self.config.spectrometer_backend,
+            backend=backend,
+            event="connection_lost",
         )
         self.spectrometer_connection_changed.emit(state)
         self.status.emit(state.description)
@@ -469,6 +554,7 @@ class DeviceController(QObject):
             error=message,
             mode=self.config.power_meter_mode,
             backend="newport_2936r",
+            event="connection_lost",
         )
         self.power_meter_connection_changed.emit(state)
         self.status.emit(state.description)
@@ -659,6 +745,7 @@ class DeviceController(QObject):
                 description="Power meter disconnected.",
                 mode="disconnected",
                 backend="newport_2936r",
+                event="disconnected",
             )
         )
 
@@ -678,6 +765,26 @@ class DeviceController(QObject):
         )
 
     @Slot(object)
+    def prepare_spectrometer(self, settings: AcquisitionSettings) -> None:
+        """Apply settings and consume one warm-up acquisition before gating."""
+
+        try:
+            self._acquire_spectrometer(
+                replace(
+                    settings,
+                    subtract_background=False,
+                    measure_power=False,
+                    gated=None,
+                )
+            )
+            self.spectrometer_prepared.emit()
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.spectrometer_prepare_failed.emit(str(exc))
+        except Exception:
+            self.spectrometer_prepare_failed.emit(traceback.format_exc())
+
+    @Slot(object)
     def acquire(self, settings: AcquisitionSettings) -> None:
         try:
             # This worker owns only the spectrum transaction. InstrumentRuntime
@@ -688,7 +795,11 @@ class DeviceController(QObject):
             acquisition_started_s = time.perf_counter()
             acquisition = self._acquire_spectrometer(settings)
             acquisition_finished_s = time.perf_counter()
-            intensities = np.asarray(acquisition.intensities_counts, dtype=float)
+            raw_intensities = np.asarray(
+                acquisition.intensities_counts,
+                dtype=float,
+            ).copy()
+            intensities = raw_intensities.copy()
 
             background_subtracted = False
             background_timestamp_utc = ""
@@ -703,6 +814,9 @@ class DeviceController(QObject):
                     wavelengths_nm=acquisition.wavelengths_nm,
                     intensities_counts=intensities,
                     integration_ms=int(settings.integration_ms),
+                    configuration_signature=self._detector_configuration_signature(
+                        settings
+                    ),
                 )
 
             self._snr_acquisition_counter += 1
@@ -739,6 +853,25 @@ class DeviceController(QObject):
                 intensities = boxcar_smooth(intensities, settings.boxcar_width)
 
             p_after = PowerSnapshot.missing()
+            capabilities = self._capabilities
+            backend = str(
+                getattr(capabilities, "backend", "")
+                or self.config.spectrometer_backend
+            )
+            model = str(
+                getattr(capabilities, "model", "")
+                or getattr(self.spec, "name", type(self.spec).__name__)
+            )
+            serial = str(
+                getattr(capabilities, "serial_number", "")
+                or getattr(self.spec, "serial_number", "")
+            )
+            spectrograph_serial = ""
+            control_schema = getattr(capabilities, "control_schema", {}) or {}
+            if isinstance(control_schema, dict):
+                spectrograph = control_schema.get("spectrograph", {})
+                if isinstance(spectrograph, dict):
+                    spectrograph_serial = str(spectrograph.get("serial_number", ""))
 
             record = SpectrumRecord(
                 timestamp_utc=utc_now_iso(),
@@ -752,12 +885,18 @@ class DeviceController(QObject):
                 boxcar_width=int(settings.boxcar_width),
                 correct_dark=bool(settings.correct_dark),
                 correct_nonlinearity=bool(settings.correct_nonlinearity),
-                field_value=float(settings.field_value),
+                field_value=float(settings.field_value) if settings.field_value is not None else None, # noqa
                 acquisition_started_s=acquisition_started_s,
                 acquisition_finished_s=acquisition_finished_s,
+                acquisition_timing=acquisition.timing,
                 snr=snr_metrics,
                 run_identifier=str(settings.run_identifier),
                 notes=str(settings.notes),
+                spectrometer_backend=backend,
+                spectrometer_model=model,
+                spectrometer_serial=serial,
+                spectrograph_serial=spectrograph_serial,
+                raw_intensities_counts=raw_intensities,
                 signal_max_counts=float(acquisition.signal_max_counts),
                 spectrometer_max_intensity=float(
                     getattr(self.spec, "max_intensity", float("nan"))
@@ -836,6 +975,7 @@ class DeviceController(QObject):
         self.spec_available = False
         self._capabilities = None
         self._info = None
+        self._active_spectrometer_backend = ""
 
         if spectrometer is not None:
             close = getattr(spectrometer, "close", None)
