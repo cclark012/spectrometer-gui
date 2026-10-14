@@ -4,6 +4,8 @@ from dataclasses import replace
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QScrollArea,
+    QWidget,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -28,13 +30,29 @@ class SNRSettingsDialog(QDialog):
         self.resize(520, 620)
         self._settings = replace(settings)
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        contents = QWidget()
+        root = QVBoxLayout(contents)
+        scroll.setWidget(contents)
+        outer.addWidget(scroll)
 
         estimation = QGroupBox("Estimation")
         estimation_form = QFormLayout(estimation)
 
         self.enabled = QCheckBox()
         self.enabled.setChecked(bool(settings.enabled))
+        self.method = QComboBox()
+        for label, key in (("Automatic block standard deviation", "automatic_std"),
+                           ("Automatic block MAD (robust, approximate)", "automatic_mad"),
+                           ("Manual signal and noise windows", "manual")):
+            self.method.addItem(label, key)
+        self.method.setCurrentIndex(max(0, self.method.findData(settings.method)))
+        self.block_size = QComboBox()
+        for size in (8, 16):
+            self.block_size.addItem(str(size) + " pixels", size)
+        self.block_size.setCurrentIndex(max(0, self.block_size.findData(settings.block_size)))
         self.signal_start = self._wavelength_spin(settings.signal_start_nm)
         self.signal_stop = self._wavelength_spin(settings.signal_stop_nm)
         self.noise1_start = self._wavelength_spin(settings.noise1_start_nm)
@@ -68,6 +86,8 @@ class SNRSettingsDialog(QDialog):
         self.update_every_n.setValue(int(settings.update_every_n_spectra))
 
         estimation_form.addRow("Enable SNR estimation", self.enabled)
+        estimation_form.addRow("Method", self.method)
+        estimation_form.addRow("Automatic block size", self.block_size)
         estimation_form.addRow("Signal start", self.signal_start)
         estimation_form.addRow("Signal stop", self.signal_stop)
         estimation_form.addRow("Noise 1 start", self.noise1_start)
@@ -150,12 +170,15 @@ class SNRSettingsDialog(QDialog):
         root.addWidget(suggestions)
 
         note = QLabel(
-            "SNR is calculated from the unsmoothed spectrum. Acquisition suggestions "
-            "should initially be displayed for review rather than applied automatically."
+            "Noise uses unsmoothed data. Automatic mode averages locally detrended block noise "
+            "(10% trimmed mean) and uses the maximum of a smoothed spectrum above its 10th percentile. "
+            "A sloping background, correlated noise or dense narrow lines can bias this single-frame estimate. "
+            "Use manual windows for selected bands. Integrated SNR in automatic mode covers the whole spectrum."
         )
         note.setWordWrap(True)
         root.addWidget(note)
 
+        self.method.currentIndexChanged.connect(self._update_enabled_state)
         self.use_noise2.toggled.connect(self._update_enabled_state)
         self.auto_suggest.toggled.connect(self._update_enabled_state)
         self._update_enabled_state()
@@ -166,7 +189,7 @@ class SNRSettingsDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        outer.addWidget(buttons)
 
     @staticmethod
     def _wavelength_spin(value: float) -> QDoubleSpinBox:
@@ -179,7 +202,12 @@ class SNRSettingsDialog(QDialog):
         return spin
 
     def _update_enabled_state(self) -> None:
-        use_noise2 = self.use_noise2.isChecked()
+        manual = self.method.currentData() == "manual"
+        self.block_size.setEnabled(not manual)
+        for widget in (self.signal_start, self.signal_stop, self.noise1_start, self.noise1_stop,
+                       self.use_noise2, self.baseline_order, self.minimum_noise_pixels, self.peak_percentile):
+            widget.setEnabled(manual)
+        use_noise2 = manual and self.use_noise2.isChecked()
         self.noise2_start.setEnabled(use_noise2)
         self.noise2_stop.setEnabled(use_noise2)
         suggest = self.auto_suggest.isChecked()
@@ -197,6 +225,8 @@ class SNRSettingsDialog(QDialog):
         return max(a0, b0) < min(a1, b1)
 
     def _validate(self) -> str | None:
+        if self.method.currentData() != "manual":
+            return None
         intervals = {
             "signal": (self.signal_start.value(), self.signal_stop.value()),
             "noise 1": (self.noise1_start.value(), self.noise1_stop.value()),
@@ -225,6 +255,8 @@ class SNRSettingsDialog(QDialog):
         return replace(
             self._settings,
             enabled=bool(self.enabled.isChecked()),
+            method=str(self.method.currentData()),
+            block_size=int(self.block_size.currentData()),
             signal_start_nm=float(self.signal_start.value()),
             signal_stop_nm=float(self.signal_stop.value()),
             noise1_start_nm=float(self.noise1_start.value()),

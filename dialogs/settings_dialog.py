@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QColorDialog,
+    QScrollArea,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -169,6 +171,21 @@ class AppSettingsDialog(QDialog):
         self.reject_overrange_check = self._checked(
             self._power_settings.reject_overrange
         )
+        self.wrong_channel_warning_check = self._checked(
+            self._power_settings.wrong_channel_warning_enabled
+        )
+        self.wrong_channel_threshold_uw_spin = QDoubleSpinBox()
+        self.wrong_channel_threshold_uw_spin.setRange(0.0, 1.0e12)
+        self.wrong_channel_threshold_uw_spin.setDecimals(3)
+        self.wrong_channel_threshold_uw_spin.setValue(
+            float(self._power_settings.wrong_channel_threshold_w) * 1.0e6
+        )
+        self.wrong_channel_threshold_uw_spin.setSuffix(" µW")
+        self.wrong_channel_consecutive_spin = QSpinBox()
+        self.wrong_channel_consecutive_spin.setRange(1, 1000)
+        self.wrong_channel_consecutive_spin.setValue(
+            int(self._power_settings.wrong_channel_consecutive)
+        )
 
         form.addRow("Mode", self.power_mode_combo)
         form.addRow("Add spectrum readings to trace", self.append_spectrum_power_check)
@@ -182,6 +199,9 @@ class AppSettingsDialog(QDialog):
         form.addRow("Reject range-changing", self.reject_range_change_check)
         form.addRow("Reject saturated", self.reject_saturated_check)
         form.addRow("Reject overrange", self.reject_overrange_check)
+        form.addRow("Warn for signal on other channel", self.wrong_channel_warning_check)
+        form.addRow("Other-channel threshold", self.wrong_channel_threshold_uw_spin)
+        form.addRow("Consecutive readings", self.wrong_channel_consecutive_spin)
 
         note = QLabel(
             "Spectra-only mode stops background polling but retains the power "
@@ -300,6 +320,41 @@ class AppSettingsDialog(QDialog):
         self.spectrum_y_min_spin = self._axis_spin(settings.spectrum_y_min)
         self.spectrum_y_max_spin = self._axis_spin(settings.spectrum_y_max)
 
+        self.extra_plot_controls = {}
+        for name, label in (("smoothed", "Smoothed"), ("unsmoothed", "Unsmoothed"), ("background", "Background")):
+            color = self._color_combo(getattr(settings, name + "_color"))
+            width = self._line_width_spin(getattr(settings, name + "_line_width"))
+            self.extra_plot_controls[name + "_color"] = color
+            self.extra_plot_controls[name + "_line_width"] = width
+            form.addRow(label + " color", color)
+            form.addRow(label + " width", width)
+        for name in ("spectrum", "smoothed", "unsmoothed", "background", "monitor", "power"):
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 1.0)
+            spin.setSingleStep(0.05)
+            spin.setValue(getattr(settings, name + "_alpha"))
+            self.extra_plot_controls[name + "_alpha"] = spin
+            form.addRow(name.title() + " opacity", spin)
+        for name in ("spectrum", "monitor", "power"):
+            for axis in ("x", "y"):
+                key = name + "_" + axis + "_margin"
+                spin = QDoubleSpinBox()
+                spin.setRange(0.0, 0.5)
+                spin.setSingleStep(0.01)
+                spin.setValue(getattr(settings, key))
+                spin.setToolTip("Fraction of data span added at each end in auto range.")
+                self.extra_plot_controls[key] = spin
+                form.addRow(name.title() + " " + axis + " margin", spin)
+        for key in ("show_grid", "show_legend"):
+            check = self._checked(getattr(settings, key))
+            self.extra_plot_controls[key] = check
+            form.addRow(key.replace("_", " ").title(), check)
+        spin = QDoubleSpinBox()
+        spin.setRange(0, 1)
+        spin.setSingleStep(0.05)
+        spin.setValue(settings.grid_alpha)
+        self.extra_plot_controls["grid_alpha"] = spin
+        form.addRow("Grid opacity", spin)
         form.addRow("Spectrum color", self.spectrum_color_combo)
         form.addRow("Monitor color", self.monitor_color_combo)
         form.addRow("Power color", self.power_color_combo)
@@ -322,7 +377,10 @@ class AppSettingsDialog(QDialog):
         form.addRow("Spectrum x max", self.spectrum_x_max_spin)
         form.addRow("Spectrum y min", self.spectrum_y_min_spin)
         form.addRow("Spectrum y max", self.spectrum_y_max_spin)
-        return tab
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(tab)
+        return scroll
 
     @staticmethod
     def _checked(value: bool) -> QCheckBox:
@@ -365,9 +423,26 @@ class AppSettingsDialog(QDialog):
             ("White", "w"),
             ("Black", "k"),
             ("Magenta", "m"),
+            ("Orange", "#e69f00"), ("Sky blue", "#56b4e9"),
+            ("Teal", "#009e73"), ("Purple", "#cc79a7"),
+            ("Vermilion", "#d55e00"), ("Gray", "#999999"),
         ):
             combo.addItem(label, value)
+        if combo.findData(current) < 0:
+            combo.addItem(current, current)
         AppSettingsDialog._set_combo_data(combo, current)
+        combo.addItem("Choose custom color…", None)
+        def choose(index):
+            if combo.itemData(index) is None:
+                color = QColorDialog.getColor(parent=combo)
+                if color.isValid():
+                    value = color.name()
+                    if combo.findData(value) < 0:
+                        combo.insertItem(combo.count() - 1, value, value)
+                    combo.setCurrentIndex(combo.findData(value))
+                else:
+                    combo.setCurrentIndex(combo.findData(current))
+        combo.activated.connect(choose)
         return combo
 
     def _browse_save_directory(self) -> None:
@@ -417,6 +492,13 @@ class AppSettingsDialog(QDialog):
             reject_range_changing=self.reject_range_change_check.isChecked(),
             reject_detector_saturated=self.reject_saturated_check.isChecked(),
             reject_overrange=self.reject_overrange_check.isChecked(),
+            wrong_channel_warning_enabled=self.wrong_channel_warning_check.isChecked(),
+            wrong_channel_threshold_w=(
+                float(self.wrong_channel_threshold_uw_spin.value()) * 1.0e-6
+            ),
+            wrong_channel_consecutive=int(
+                self.wrong_channel_consecutive_spin.value()
+            ),
         )
 
         warning_settings = replace(
@@ -429,8 +511,13 @@ class AppSettingsDialog(QDialog):
             popup_cooldown_s=float(self.warning_cooldown_spin.value()),
         )
 
+        extra = {key: (widget.currentData() if isinstance(widget, QComboBox)
+                       else widget.isChecked() if isinstance(widget, QCheckBox)
+                       else widget.value())
+                 for key, widget in self.extra_plot_controls.items()}
         plot_style_settings = replace(
             self._plot_style_settings,
+            **extra,
             spectrum_color=str(self.spectrum_color_combo.currentData()),
             monitor_color=str(self.monitor_color_combo.currentData()),
             power_color=str(self.power_color_combo.currentData()),

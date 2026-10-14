@@ -116,9 +116,9 @@ class BackgroundCorrector:
         *,
         wavelengths_nm: NDArray[np.float64],
         intensities_counts: NDArray[np.float64],
-        integration_ms: int,
+        integration_ms: float,
         configuration_signature: str = "",
-    ) -> tuple[NDArray[np.float64], bool, str, int]:
+    ) -> tuple[NDArray[np.float64], bool, str, float]:
         wavelengths = np.asarray(wavelengths_nm, dtype=float)
         intensities = np.asarray(intensities_counts, dtype=float)
 
@@ -126,11 +126,11 @@ class BackgroundCorrector:
             raise ValueError("wavelengths and intensities must be one-dimensional")
         if wavelengths.shape != intensities.shape:
             raise ValueError("wavelengths and intensities must have equal shapes")
-        if int(integration_ms) <= 0:
+        if not np.isfinite(float(integration_ms)) or float(integration_ms) <= 0:
             raise ValueError("integration time must be positive")
 
         if self.background is None:
-            return intensities.copy(), False, "", 0
+            return intensities.copy(), False, "", 0.0
 
         expected_signature = str(self.background.configuration_signature)
         actual_signature = str(configuration_signature)
@@ -147,5 +147,5 @@ class BackgroundCorrector:
             corrected,
             True,
             self.background.timestamp_utc,
-            int(self.background.integration_ms),
+            float(self.background.integration_ms),
         )

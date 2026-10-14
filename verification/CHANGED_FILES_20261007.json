@@ -1,0 +1,245 @@
+{
+  "baseline": "spectrometer-gui-20261006.zip",
+  "files": [
+    {
+      "path": "ARCHITECTURE.md",
+      "status": "modified",
+      "sha256": "23188f9f8fa87303fb1d7e77ac66ef91132de3f06eff2a3975ce8b35ec720226"
+    },
+    {
+      "path": "CHANGELOG_20261007.md",
+      "status": "added",
+      "sha256": "0ce101d7f8dc856949dc3e6eac0ecb8269aa50ff0e8cbee5ec5aa15015878ba8"
+    },
+    {
+      "path": "ChatGPTMemory100726_1.json",
+      "status": "added",
+      "sha256": "aaabb63bf0980804e768770101b20f9711cfd0d25548a6983e71474846e1d6b7"
+    },
+    {
+      "path": "README.md",
+      "status": "modified",
+      "sha256": "d58884620871990dc1db1af548ac2346554b7db54cb9484d7a4b7cb99b19e028"
+    },
+    {
+      "path": "REVIEW_20261007.md",
+      "status": "added",
+      "sha256": "6afad22ab56f3531d0ab09aa924217341272b0bc58bad4a3bac29a6b256f8b93"
+    },
+    {
+      "path": "benchmarks/automatic_snr.py",
+      "status": "added",
+      "sha256": "363c111e9e77e3142d0848598c1223af3bb9b69048e00e7d50a697ca4e375e25"
+    },
+    {
+      "path": "controllers/device_controller.py",
+      "status": "modified",
+      "sha256": "dabb55743ebd3e39510b16d8b112f8ecd6c4be26b45a50a6e713ed239c068843"
+    },
+    {
+      "path": "core/settings.py",
+      "status": "modified",
+      "sha256": "7ccdd938be2615723b551e5a25c39e5acd1a22007355079bab50a0e77a09bee7"
+    },
+    {
+      "path": "core/version.py",
+      "status": "modified",
+      "sha256": "1491520050f76c7d726cc90cf1ea045e3dbebfb34ee28376600a27c629456f10"
+    },
+    {
+      "path": "dialogs/settings_dialog.py",
+      "status": "modified",
+      "sha256": "0d2ced3f87d3046c150a9dbee3f5efcf92c0d0d2ae80e8c8d177fc5807f18baa"
+    },
+    {
+      "path": "dialogs/snr_settings_dialog.py",
+      "status": "modified",
+      "sha256": "8cffb950690f59a4c8bc96da601a7b5ce8349e776181e0400716bacfbdc48137"
+    },
+    {
+      "path": "docs/CHANGELOG_20261006_TO_20261007.docx",
+      "status": "added",
+      "sha256": "0903250def873bed588caf11835bc710d3771a7a13b179d27092d770d69fa671"
+    },
+    {
+      "path": "docs/FUTURE_FEATURES_20261007.md",
+      "status": "added",
+      "sha256": "d8ffe9a70dffb516b574bc59f5a8dcf98c69e78ee38ec33144c7ed2a1ce8e54d"
+    },
+    {
+      "path": "docs/GUI_FEATURES_DESIGN_AND_ARCHITECTURE_20261007.docx",
+      "status": "added",
+      "sha256": "4393f8be4bf18742eb4b22f0722e7ff8c9be052d835782a28b4f89214d072451"
+    },
+    {
+      "path": "docs/GUI_FEATURES_DESIGN_AND_ARCHITECTURE_20261007.md",
+      "status": "added",
+      "sha256": "bb31eb74f4ff482ebf221019e22dc16482f8cca93a904c12ca01546fa3652feb"
+    },
+    {
+      "path": "docs/IMPLEMENTATION_AND_VERIFICATION_20261007.docx",
+      "status": "added",
+      "sha256": "a07207791498dbf71f66c0f5a9d6eacd3268594c955668deb8414d9bc71d31a4"
+    },
+    {
+      "path": "docs/OUTSTANDING_TASKS_AND_KNOWN_ISSUES_20261007.docx",
+      "status": "added",
+      "sha256": "52a27b81b98757b01ae92216eb1bc08d7c1a21dd1c6113096622200c19520148"
+    },
+    {
+      "path": "docs/OUTSTANDING_TASKS_AND_KNOWN_ISSUES_20261007.md",
+      "status": "added",
+      "sha256": "1703f7d889b0ada73c5a554c5ac660c15628f5d16693fe3617369461841988c4"
+    },
+    {
+      "path": "io_utils/analysis_io.py",
+      "status": "added",
+      "sha256": "b0fa9894fd146354013c59778fda35355d9258fcfc9f4547175f8209b233df7f"
+    },
+    {
+      "path": "io_utils/background_io.py",
+      "status": "modified",
+      "sha256": "3e7d36b32ac5daaeb717f34bb08adb7a61b12370500ee5b06d8ad1fb091a2ab1"
+    },
+    {
+      "path": "io_utils/spectrum_io.py",
+      "status": "modified",
+      "sha256": "dcee2065670dad6c3415c95d4f91869413d32cc71044fc612acb7d8d2fc7faab"
+    },
+    {
+      "path": "panels/acquisition_panel.py",
+      "status": "modified",
+      "sha256": "3f22c9c7194db99ccdfbcfffc4456b8ef9748bee8bb9be89d678a3b0c4ef15b7"
+    },
+    {
+      "path": "panels/analysis_panel.py",
+      "status": "added",
+      "sha256": "3c64b8eaa020173a50ebd6824da5bc85d9f9848e2e18e62d15af38d85d5dbeea"
+    },
+    {
+      "path": "panels/laser_panel.py",
+      "status": "modified",
+      "sha256": "94e56a449ca9e3b3603062e6741e458dd416d9c3d888da7744e41d15ec3ca592"
+    },
+    {
+      "path": "panels/main_window.py",
+      "status": "modified",
+      "sha256": "a6f59975d95cc1006bf9d799bca0b69db279dcec93b95b7cab8343a7f198fb35"
+    },
+    {
+      "path": "panels/monitor_panel.py",
+      "status": "modified",
+      "sha256": "53b639f0b22060550f3dd819b4ed779815a6c1471b5145498a5e3e5e92073892"
+    },
+    {
+      "path": "panels/monitor_views.py",
+      "status": "modified",
+      "sha256": "2ffe81868d96985806ab1976aea79d481b05043100a82ff7a3994a116b28b756"
+    },
+    {
+      "path": "panels/plot_options.py",
+      "status": "added",
+      "sha256": "5c45555a4f210b0cee6811f84641e77214f17069b8986986def37fbd35907ed7"
+    },
+    {
+      "path": "panels/power_panel.py",
+      "status": "modified",
+      "sha256": "f94b4e7c554ccb6205d37674182a7ac6f29cc626f543da23af8ad593ec8ca839"
+    },
+    {
+      "path": "panels/spectrum_panel.py",
+      "status": "modified",
+      "sha256": "9e28652c036d5264d49cb3d4f5d24b613917bdc6fecb0c50418c1a491a6716ac"
+    },
+    {
+      "path": "processing/automatic_snr.py",
+      "status": "added",
+      "sha256": "92a15d03d9efe8905a910d96e29554c2b87dda47bf50291d962d8005e988d12b"
+    },
+    {
+      "path": "processing/data/grating1_detector1_coefficients.csv",
+      "status": "added",
+      "sha256": "a6fe0e4c12e40640b2af882534662401c70a27f7b902b5d42ed8d45ecddfd5f0"
+    },
+    {
+      "path": "processing/snr.py",
+      "status": "modified",
+      "sha256": "ba19dc84e1ccb24cbfe881441d1c5ad0976e16181edb58d2078df4a790be8f1b"
+    },
+    {
+      "path": "processing/spectral_analysis.py",
+      "status": "added",
+      "sha256": "46b1285a84fe84125ba88353e4f14bb223970f070a78902fbb81da9b244224ae"
+    },
+    {
+      "path": "pyproject.toml",
+      "status": "modified",
+      "sha256": "94eed350d37ee7efe48d755dc02482988e5cbc570c9761c168b54c1bd6f5fc00"
+    },
+    {
+      "path": "tests/test_automatic_snr.py",
+      "status": "added",
+      "sha256": "06df16d4ac9e6b79f2dff2c55377ac1d99f7853d2a046d46915e2deb41925458"
+    },
+    {
+      "path": "tests/test_control_state_logic.py",
+      "status": "added",
+      "sha256": "bf207bd6f14aa85fdea7b21f4799b3e90c0115c5542754aaab87953fc7dfb781"
+    },
+    {
+      "path": "tests/test_device_processing_changes.py",
+      "status": "modified",
+      "sha256": "83a0d93682222d34ebb4e1f7604a03783561d5bc3356300fd8332be78d6952d4"
+    },
+    {
+      "path": "tests/test_gui_changes.py",
+      "status": "modified",
+      "sha256": "9de2ef4f9bb8b7e0a0eb2e9dd6273fcbde8a5fff5b0f599d3be78e93706498d9"
+    },
+    {
+      "path": "tests/test_spectral_analysis.py",
+      "status": "added",
+      "sha256": "04694e0308fc04dd993494995e6652da76150b2a9259598a1e065bbf98f9d3dd"
+    },
+    {
+      "path": "tests/test_spectrum_io.py",
+      "status": "modified",
+      "sha256": "faa27ec4397498cf96539505fab5c7c31108c6e58a5ae059beea255090e552ad"
+    },
+    {
+      "path": "verification/ANDOR_CONNECTION_COMPARISON_20261007.json",
+      "status": "added",
+      "sha256": "8c5bfb814b40916f7dd74d347cc875f68f56de8f8bc95122afbbb21600e7d5ec"
+    },
+    {
+      "path": "verification/RESULTS_20261007.json",
+      "status": "added",
+      "sha256": "48725ec5692e10cdc61039b275815e5f2793c4a404da14291ca60549844f3191"
+    },
+    {
+      "path": "verification/SNR_BENCHMARK_20261007.json",
+      "status": "added",
+      "sha256": "896124a26e264b8b27d1d020308ac4162caaa76e1cbe5f00f4aa0dda57eb7de4"
+    },
+    {
+      "path": "verification/SNR_BENCHMARK_INITIAL_20261007.json",
+      "status": "added",
+      "sha256": "530b7c34b576d16468375a7066bbb6fc455037b36c7999897320c6af2344cfd8"
+    },
+    {
+      "path": "verification/compare_connections.py",
+      "status": "added",
+      "sha256": "f0fcecd166967dd700bb65562ef4e41cb4c7e1a2313da7c8b3eaf8f1fc429c38"
+    },
+    {
+      "path": "verification/gui_smoke.py",
+      "status": "added",
+      "sha256": "c35e233b1193f8d450b45eff975890c8b560a42030b5980647442a2bf69bd1c2"
+    },
+    {
+      "path": "verification/gui_smoke_environment/report.json",
+      "status": "added",
+      "sha256": "75807dcf5842de4de7d3149dc59a9bdac5051878b52a73b8e5a0c170819f7016"
+    }
+  ]
+}

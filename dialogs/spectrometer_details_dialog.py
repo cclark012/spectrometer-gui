@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -33,6 +33,12 @@ class SpectrometerDetailsDialog(QDialog):
         super().__init__(parent)
 
         self.capabilities = capabilities
+        self._configuration_pending = False
+        self._configuration_dirty = False
+        self._loading_readback = False
+        self._configuration_status = QLabel()
+        self._configuration_status.setWordWrap(True)
+        self._apply_button: QPushButton | None = None
 
         self.setWindowTitle("Spectrometer Details")
         self.resize(650, 520)
@@ -48,7 +54,7 @@ class SpectrometerDetailsDialog(QDialog):
         self.tec_target_spin = QDoubleSpinBox()
         self.tec_target_spin.setRange(-50.0, 50.0)
         self.tec_target_spin.setDecimals(2)
-        self.tec_target_spin.setValue(-10.0)
+        self.tec_target_spin.setValue(0.0)
         self.tec_target_spin.setSuffix(" °C")
         self.tec_target_spin.setEnabled(bool(capabilities.tec_supported))
         if capabilities.backend == "andor":
@@ -57,6 +63,14 @@ class SpectrometerDetailsDialog(QDialog):
             temperature_max = int(camera_schema.get("temperature_max_c", 50))
             if temperature_min < temperature_max:
                 self.tec_target_spin.setRange(temperature_min, temperature_max)
+            cooler_enabled = camera_schema.get("cooler_enabled")
+            if cooler_enabled is not None:
+                self.tec_enabled_check.blockSignals(True)
+                self.tec_enabled_check.setChecked(bool(cooler_enabled))
+                self.tec_enabled_check.blockSignals(False)
+            target_c = camera_schema.get("temperature_target_c")
+            if target_c is not None and math.isfinite(float(target_c)):
+                self.tec_target_spin.setValue(float(target_c))
 
         self.set_tec_button = QPushButton("Set TEC Target")
         self.set_tec_button.setEnabled(bool(capabilities.tec_supported))
@@ -93,8 +107,14 @@ class SpectrometerDetailsDialog(QDialog):
                 self._build_andor_controls(capabilities.control_schema)
             )
             layout.addWidget(andor_scroll, stretch=2)
+            self._configuration_status.setText(
+                "Edit settings, then use Apply and verify. Closing without "
+                "applying discards the edits."
+            )
+            layout.addWidget(self._configuration_status)
 
         text = QTextEdit()
+        self._capability_text = text
         text.setReadOnly(True)
 
         lines = [
@@ -124,7 +144,15 @@ class SpectrometerDetailsDialog(QDialog):
         text.setPlainText("\n".join(lines))
         layout.addWidget(text, stretch=1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        button_flags = QDialogButtonBox.StandardButton.Close
+        if self._andor_widgets:
+            button_flags |= QDialogButtonBox.StandardButton.Apply
+        buttons = QDialogButtonBox(button_flags)
+        self._apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply)
+        if self._apply_button is not None:
+            self._apply_button.setText("Apply and verify")
+            self._apply_button.setEnabled(False)
+            self._apply_button.clicked.connect(self._emit_andor_configuration)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
@@ -134,6 +162,13 @@ class SpectrometerDetailsDialog(QDialog):
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _horizontal_speed_text(speed_mhz: float) -> str:
+        speed_mhz = float(speed_mhz)
+        if 0.0 < speed_mhz < 1.0:
+            return f"{speed_mhz:.4g} MHz ({speed_mhz * 1000.0:.4g} kHz)"
+        return f"{speed_mhz:.4g} MHz"
 
     def _build_andor_controls(self, schema: dict[str, object]) -> QGroupBox:
         group = QGroupBox("Andor acquisition and Kymera controls")
@@ -217,8 +252,18 @@ class SpectrometerDetailsDialog(QDialog):
             )
         focus.setRange(0, max(focus_maximum, focus_position))
         focus.setValue(focus_position)
-        focus.setEnabled(bool(spectrograph.get("focus_mirror_present", False)))
-        if focus.isEnabled():
+        focus_present = bool(spectrograph.get("focus_mirror_present", False))
+        focus_writable = bool(
+            spectrograph.get("focus_mirror_position_writable", False)
+        )
+        focus.setEnabled(focus_present and focus_writable)
+        if focus_present and not focus_writable:
+            focus.setToolTip(
+                "Current focus readback. GUI writes are disabled because the lab "
+                "Kymera rejected an apparently valid target; run the dedicated "
+                "small-step control probe before enabling motor writes."
+            )
+        if focus_present:
             form.addRow("Focus mirror", focus)
 
         ad_channel = QComboBox()
@@ -241,7 +286,7 @@ class SpectrometerDetailsDialog(QDialog):
             horizontal_speed.clear()
             key = f"{int(ad_channel.currentData() or 0)}:{int(amplifier.currentData() or 0)}"
             for index, speed in enumerate(horizontal_schema.get(key, ())):
-                horizontal_speed.addItem(f"{float(speed):.4g} MHz", index)
+                horizontal_speed.addItem(self._horizontal_speed_text(speed), index)
             self._set_combo_data(horizontal_speed, previous)
 
         ad_channel.currentIndexChanged.connect(refresh_horizontal_speed)
@@ -283,16 +328,30 @@ class SpectrometerDetailsDialog(QDialog):
         form.addRow("Preamp gain", preamp_gain)
 
         binning = QComboBox()
-        detector_pixels = max(1, int(camera.get("detector_pixels_x", 1)))
-        for value in range(1, detector_pixels + 1):
-            if detector_pixels % value == 0:
-                binning.addItem(f"{value} pixel{'s' if value != 1 else ''}", value)
+        valid_binnings = tuple(
+            int(value) for value in camera.get("horizontal_binnings", (1,))
+        )
+        for value in valid_binnings:
+            binning.addItem(f"{value} pixel{'s' if value != 1 else ''}", value)
         self._set_combo_data(binning, int(camera_state.get("horizontal_binning", 1)))
+        binning.setEnabled(len(valid_binnings) > 1)
         binning.setToolTip(
-            "Horizontal binning changes the Kymera calibration geometry. Andor's "
-            "SDK2 guide recommends a value of 1 for iDus cameras."
+            "The lab iDus rejected horizontal binning above 1 in full-vertical-"
+            "binning mode. Only settings explicitly verified by the adapter are "
+            "offered; horizontal binning is not inferred from detector width."
         )
         form.addRow("Horizontal binning", binning)
+
+        self._timing_labels = {}
+        for key, title in (("minimum_exposure_ms", "Single-scan applied minimum"),
+                           ("minimum_frame_period_ms", "Minimum frame period"),
+                           ("readout_time_ms", "SDK readout time"),
+                           ("keep_clean_time_ms", "SDK keep-clean time")):
+            label = QLabel()
+            label.setToolTip("Applied configuration readback. Frame period includes readout; it is not an exposure lower bound. Apply edits to refresh.")
+            self._timing_labels[key] = label
+            form.addRow(title, label)
+        self._refresh_timing_labels(camera)
 
         advanced_offsets = QCheckBox("Apply offsets below")
         grating_offset = QSpinBox()
@@ -345,8 +404,6 @@ class SpectrometerDetailsDialog(QDialog):
         message.setWordWrap(True)
         form.addRow("Step-and-Glue", message)
 
-        apply_button = QPushButton("Apply Andor Settings")
-        form.addRow("", apply_button)
         self._andor_widgets = {
             "grating": grating,
             "center": center,
@@ -364,11 +421,39 @@ class SpectrometerDetailsDialog(QDialog):
             "detector_offset": detector_offset,
             "entrance_port": entrance_port,
             "exit_port": exit_port,
+            "group": group,
         }
-        apply_button.clicked.connect(self._emit_andor_configuration)
+        for combo in (
+            grating,
+            filter_position,
+            *flipper_widgets.values(),
+            ad_channel,
+            amplifier,
+            horizontal_speed,
+            vertical_speed,
+            preamp_gain,
+            binning,
+            entrance_port,
+            exit_port,
+        ):
+            combo.currentIndexChanged.connect(self._mark_configuration_dirty)
+        for spin in (center, focus, grating_offset, detector_offset):
+            spin.valueChanged.connect(self._mark_configuration_dirty)
+        advanced_offsets.toggled.connect(self._mark_configuration_dirty)
         return group
 
-    def _emit_andor_configuration(self) -> None:
+    @Slot()
+    def _mark_configuration_dirty(self, *_args) -> None:
+        if self._loading_readback or self._configuration_pending:
+            return
+        self._configuration_dirty = True
+        if self._apply_button is not None:
+            self._apply_button.setEnabled(True)
+        self._configuration_status.setText(
+            "Settings have changed but have not been sent to the instruments."
+        )
+
+    def _configuration_payload(self) -> dict[str, object]:
         widgets = self._andor_widgets
         camera = {
             "ad_channel": int(widgets["ad"].currentData() or 0),
@@ -397,6 +482,127 @@ class SpectrometerDetailsDialog(QDialog):
                 "exit_port": int(widgets["exit_port"].currentData()),
                 "offset": int(widgets["detector_offset"].value()),
             }
-        self.configuration_requested.emit(
-            {"camera": camera, "spectrograph": spectrograph}
+        return {"camera": camera, "spectrograph": spectrograph}
+
+    @Slot()
+    def _emit_andor_configuration(self) -> None:
+        if self._configuration_pending or not self._andor_widgets:
+            return
+        payload = self._configuration_payload()
+        self._configuration_pending = True
+        group = self._andor_widgets.get("group")
+        if group is not None:
+            group.setEnabled(False)
+        if self._apply_button is not None:
+            self._apply_button.setEnabled(False)
+        self._configuration_status.setText(
+            "Applying settings and waiting for instrument readback…"
         )
+        self.configuration_requested.emit(payload)
+
+    @Slot(object)
+    def configuration_applied(self, capabilities: SpectrometerCapabilities) -> None:
+        if not self._configuration_pending:
+            return
+        self.capabilities = capabilities
+        lines = self._capability_text.toPlainText().splitlines()
+        lines = [f"Integration limits: {capabilities.integration_time_min_us} - {capabilities.integration_time_max_us} us" if line.startswith("Integration limits:") else line for line in lines]
+        self._capability_text.setPlainText("\n".join(lines))
+        self._load_andor_readback(capabilities.control_schema)
+        self._refresh_timing_labels(dict(capabilities.control_schema.get("camera", {})))
+        self._configuration_pending = False
+        self._configuration_dirty = False
+        group = self._andor_widgets.get("group")
+        if group is not None:
+            group.setEnabled(True)
+        if self._apply_button is not None:
+            self._apply_button.setEnabled(False)
+        state = dict(capabilities.control_schema.get("state", {}))
+        spectrograph = dict(state.get("spectrograph", {}))
+        summary = (
+            f"grating {spectrograph.get('grating', '--')}, "
+            f"center {float(spectrograph.get('center_wavelength_nm', float('nan'))):g} nm"
+        )
+        self._configuration_status.setText(
+            "Settings applied and verified with the available instrument "
+            f"readback ({summary})."
+        )
+
+    def _refresh_timing_labels(self, camera) -> None:
+        for key, label in self._timing_labels.items():
+            value = float(camera.get(key, float("nan")))
+            label.setText(f"{value:.6g} ms" if math.isfinite(value) else "Unavailable")
+
+    @Slot(str)
+    def configuration_failed(self, message: str) -> None:
+        if not self._configuration_pending:
+            return
+        self._configuration_pending = False
+        group = self._andor_widgets.get("group")
+        if group is not None:
+            group.setEnabled(True)
+        if self._apply_button is not None:
+            self._apply_button.setEnabled(True)
+        last_line = next(
+            (line.strip() for line in reversed(str(message).splitlines()) if line.strip()),
+            "Unknown instrument error.",
+        )
+        self._configuration_status.setText(f"Settings were not applied: {last_line}")
+
+    def _load_andor_readback(self, schema: dict[str, object]) -> None:
+        if not self._andor_widgets:
+            return
+        state = dict(schema.get("state", {}))
+        camera = dict(state.get("camera", {}))
+        spectrograph = dict(state.get("spectrograph", {}))
+        widgets = self._andor_widgets
+        self._loading_readback = True
+        try:
+            combo_values = {
+                "grating": spectrograph.get("grating"),
+                "filter": spectrograph.get("filter_position"),
+                "ad": camera.get("ad_channel"),
+                "amplifier": camera.get("output_amplifier"),
+                "hs": camera.get("horizontal_speed_index"),
+                "vs": camera.get("vertical_speed_index"),
+                "gain": camera.get("preamp_gain_index"),
+                "binning": camera.get("horizontal_binning"),
+            }
+            for name, value in combo_values.items():
+                combo = widgets[name]
+                if value is not None and combo.count():
+                    self._set_combo_data(combo, int(value))
+            if spectrograph.get("center_wavelength_nm") is not None:
+                widgets["center"].setValue(
+                    float(spectrograph["center_wavelength_nm"])
+                )
+            if spectrograph.get("focus_mirror_position") is not None:
+                widgets["focus"].setValue(
+                    int(spectrograph["focus_mirror_position"])
+                )
+            flippers = dict(spectrograph.get("flipper_positions", {}))
+            for key, combo in widgets["flippers"].items():
+                if key in flippers:
+                    self._set_combo_data(combo, int(flippers[key]))
+        finally:
+            self._loading_readback = False
+
+    def reject(self) -> None:
+        if self._configuration_pending:
+            self._configuration_status.setText(
+                "Wait for the instrument settings transaction to finish before closing."
+            )
+            return
+        if self._configuration_dirty:
+            from PySide6.QtWidgets import QMessageBox
+
+            result = QMessageBox.question(
+                self,
+                "Discard unapplied spectrometer settings?",
+                "The edited settings have not been applied. Close and discard them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                return
+        super().reject()

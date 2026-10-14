@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 
 import numpy as np
 
@@ -35,7 +36,11 @@ class EmulatedSpectrometer:
         correct_dark: bool,
         correct_nonlinearity: bool,
         averaging_mode: str = "software",
+        continuous_session: str = "",
+        continuous_target_midpoint_s: float = float("nan"),
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> SpectralAcquisition:
+        del continuous_session, continuous_target_midpoint_s
         mode = str(averaging_mode).strip().lower()
         if mode not in {"software", "device"}:
             raise ValueError(
@@ -47,15 +52,18 @@ class EmulatedSpectrometer:
         integration_ms = integration_us / 1000.0
         self.set_hardware_averages(averages if mode == "device" else 1)
 
-        # Match the wall-clock behavior of N integrations without adding an
-        # arbitrary cap that makes the emulator unrealistically fast.
         timing_started_s = time.perf_counter()
-        time.sleep(integration_ms * averages / 1000.0)
-        timing_finished_s = time.perf_counter()
+        if progress_callback is not None:
+            progress_callback(0, averages, mode)
 
         running_mean: np.ndarray | None = None
         signal_max = float("-inf")
+        sample_windows_s: list[tuple[float, float]] = []
         for index in range(averages):
+            frame_started_s = time.perf_counter()
+            time.sleep(integration_ms / 1000.0)
+            frame_finished_s = time.perf_counter()
+            sample_windows_s.append((frame_started_s, frame_finished_s))
             values = self._single_spectrum(
                 integration_ms=integration_ms,
                 correct_dark=correct_dark,
@@ -66,9 +74,12 @@ class EmulatedSpectrometer:
                 running_mean = values.astype(float, copy=True)
             else:
                 running_mean += (values - running_mean) / float(index + 1)
+            if progress_callback is not None:
+                progress_callback(index + 1, averages, mode)
 
         if running_mean is None:
             raise RuntimeError("No spectra were acquired.")
+        timing_finished_s = time.perf_counter()
 
         return SpectralAcquisition(
             wavelengths_nm=self.wavelengths_nm.copy(),
@@ -81,8 +92,9 @@ class EmulatedSpectrometer:
                 midpoint_estimate_s=0.5 * (timing_started_s + timing_finished_s),
                 uncertainty_s=0.5 * (timing_finished_s - timing_started_s),
                 basis="emulator_exposure_bounds",
-                sample_windows_s=((timing_started_s, timing_finished_s),),
+                sample_windows_s=tuple(sample_windows_s),
             ),
+            applied_integration_ms=float(integration_ms),
         )
 
     def _single_spectrum(
@@ -181,3 +193,13 @@ class EmulatedSpectrometer:
 
     def close(self) -> None:
         pass
+
+    def stop_continuous_acquisition(self) -> None:
+        pass
+
+    def software_provenance(self) -> dict[str, str]:
+        return {
+            "adapter": "emulated_spectrometer",
+            "adapter_version": "2026.09.10",
+            "vendor_runtime": "none",
+        }

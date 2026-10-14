@@ -7,7 +7,12 @@ from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 
 from controllers.device_controller import DeviceController
 from controllers.laser_controller import LaserController
-from core.records import InstrumentConnectionState, PowerSnapshot, SpectrumRecord
+from core.records import (
+    InstrumentConnectionState,
+    PowerReadRequest,
+    PowerSnapshot,
+    SpectrumRecord,
+)
 from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSettings, SNRSettings
 
 logger = logging.getLogger(__name__)
@@ -30,12 +35,15 @@ class InstrumentRuntime(QObject):
 
     spectrum_ready = Signal(object)
     acquisition_failed = Signal(str)
+    acquisition_progress = Signal(int, int, str, str)
     power_ready = Signal(object)
     power_read_complete = Signal(str, object)
     power_read_failed = Signal(str, str)
     power_meter_wavelength_ready = Signal(int)
     spectrometer_info_ready = Signal(object)
     spectrometer_capabilities_ready = Signal(object)
+    spectrometer_configuration_applied = Signal(object)
+    spectrometer_configuration_failed = Signal(str)
     spectrometer_temperature_ready = Signal(float)
     spectrometer_prepared = Signal()
     spectrometer_prepare_failed = Signal(str)
@@ -66,6 +74,7 @@ class InstrumentRuntime(QObject):
     _spectrometer_capabilities_requested = Signal()
     _spectrometer_configuration_requested = Signal(object)
     _spectrometer_prepare_requested = Signal(object)
+    _spectrometer_stream_stop_requested = Signal()
     _connect_spectrometer_requested = Signal()
     _connect_spectrometer_selection_requested = Signal(str, str)
     _disconnect_spectrometer_requested = Signal()
@@ -75,6 +84,7 @@ class InstrumentRuntime(QObject):
     _power_settings_requested = Signal(object)
     _power_meter_wavelength_requested = Signal(int)
     _power_read_once_requested = Signal(str)
+    _acquisition_power_read_requested = Signal(object)
     _connect_power_meter_requested = Signal()
     _connect_power_meter_selection_requested = Signal(str)
     _disconnect_power_meter_requested = Signal()
@@ -159,6 +169,10 @@ class InstrumentRuntime(QObject):
             controller.prepare_spectrometer,
             queued,
         )
+        self._spectrometer_stream_stop_requested.connect(
+            controller.stop_spectrometer_stream,
+            queued,
+        )
         self._connect_spectrometer_requested.connect(
             controller.connect_spectrometer,
             queued,
@@ -177,9 +191,16 @@ class InstrumentRuntime(QObject):
         )
         controller.spectrum_ready.connect(self._on_spectrometer_ready)
         controller.acquisition_failed.connect(self._on_spectrometer_failed)
+        controller.acquisition_progress.connect(self.acquisition_progress.emit)
         controller.spectrometer_info_ready.connect(self.spectrometer_info_ready.emit)
         controller.spectrometer_capabilities_ready.connect(
             self.spectrometer_capabilities_ready.emit
+        )
+        controller.spectrometer_configuration_applied.connect(
+            self.spectrometer_configuration_applied.emit
+        )
+        controller.spectrometer_configuration_failed.connect(
+            self.spectrometer_configuration_failed.emit
         )
         controller.spectrometer_temperature_ready.connect(
             self.spectrometer_temperature_ready.emit
@@ -209,6 +230,10 @@ class InstrumentRuntime(QObject):
             queued,
         )
         self._power_read_once_requested.connect(controller.read_power_once, queued)
+        self._acquisition_power_read_requested.connect(
+            controller.read_power_request,
+            queued,
+        )
         self._connect_power_meter_requested.connect(
             controller.connect_power_meter,
             queued,
@@ -333,7 +358,12 @@ class InstrumentRuntime(QObject):
         if settings.measure_power and self._power_meter_connected:
             self._acquisition_phase = "before_power"
             self._internal_power_tag = self._new_internal_power_tag("before")
-            self._power_read_once_requested.emit(self._internal_power_tag)
+            self._acquisition_power_read_requested.emit(
+                PowerReadRequest(
+                    tag=self._internal_power_tag,
+                    required_channels=tuple(settings.power_channels),
+                )
+            )
             return
 
         self._acquisition_phase = "spectrum"
@@ -394,7 +424,12 @@ class InstrumentRuntime(QObject):
             self._acquisition_record = record
             self._acquisition_phase = "after_power"
             self._internal_power_tag = self._new_internal_power_tag("after")
-            self._power_read_once_requested.emit(self._internal_power_tag)
+            self._acquisition_power_read_requested.emit(
+                PowerReadRequest(
+                    tag=self._internal_power_tag,
+                    required_channels=tuple(settings.power_channels),
+                )
+            )
             return
 
         self._reset_acquisition()
@@ -479,6 +514,10 @@ class InstrumentRuntime(QObject):
     @Slot(object)
     def prepare_spectrometer(self, settings: AcquisitionSettings) -> None:
         self._spectrometer_prepare_requested.emit(replace(settings))
+
+    @Slot()
+    def stop_spectrometer_stream(self) -> None:
+        self._spectrometer_stream_stop_requested.emit()
 
     @Slot()
     def connect_spectrometer(self) -> None:

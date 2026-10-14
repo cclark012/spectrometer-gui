@@ -27,6 +27,7 @@ class FakeDataBuffer:
     def clear(self) -> None:
         self.clear_count += 1
         del self.spectrometer.frames[: self.completed_frames]
+        self.completed_frames = 0
 
 
 class FakeSpectrometer:
@@ -77,6 +78,7 @@ def make_adapter(spec: FakeSpectrometer | None = None) -> QEProSpectrometer:
     adapter._applied_integration_us = None
     adapter._applied_device_averages = None
     adapter._applied_read_corrections = None
+    adapter._applied_average_request = None
     adapter._data_buffer_checked = False
     adapter._data_buffer_feature = None
     return adapter
@@ -139,6 +141,30 @@ def test_top_level_device_averaging_method_is_used() -> None:
     assert result.device_averaging_used
     assert adapter.spec.last_averages == 5
     assert adapter.spec.last_integration_us == 10_000
+
+
+def test_software_averaging_reports_each_completed_frame() -> None:
+    adapter = make_adapter()
+    adapter._applied_integration_us = 10_000
+    adapter._applied_device_averages = 1
+    adapter._applied_read_corrections = (False, False)
+    progress = []
+
+    adapter.acquire_spectrum(
+        integration_ms=10,
+        averages=3,
+        correct_dark=False,
+        correct_nonlinearity=False,
+        averaging_mode="software",
+        progress_callback=lambda *values: progress.append(values),
+    )
+
+    assert progress == [
+        (0, 3, "software"),
+        (1, 3, "software"),
+        (2, 3, "software"),
+        (3, 3, "software"),
+    ]
 
 
 def test_first_frame_after_integration_change_is_discarded() -> None:
@@ -210,9 +236,34 @@ def test_setting_change_clears_all_completed_buffer_frames() -> None:
         correct_nonlinearity=False,
     )
 
-    assert buffer.clear_count == 1
+    assert buffer.clear_count == 2
     np.testing.assert_array_equal(result.intensities_counts, [10.0, 20.0, 30.0])
     assert spec.intensity_read_count == 2
+
+
+def test_software_average_count_change_flushes_buffered_frame() -> None:
+    spec = FakeSpectrometer()
+    spec.frames = [
+        np.asarray([100.0, 100.0, 100.0]),
+        np.asarray([10.0, 20.0, 30.0]),
+        np.asarray([20.0, 30.0, 40.0]),
+    ]
+    adapter = make_adapter(spec)
+    adapter._applied_integration_us = 10_000
+    adapter._applied_device_averages = 1
+    adapter._applied_read_corrections = (False, False)
+    adapter._applied_average_request = (1, "software")
+
+    result = adapter.acquire_spectrum(
+        integration_ms=10,
+        averages=2,
+        correct_dark=False,
+        correct_nonlinearity=False,
+        averaging_mode="software",
+    )
+
+    np.testing.assert_array_equal(result.intensities_counts, [15.0, 25.0, 35.0])
+    assert spec.intensity_read_count == 3
 
 
 def test_unknown_averaging_mode_fails() -> None:

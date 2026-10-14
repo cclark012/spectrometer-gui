@@ -6,6 +6,9 @@ import importlib
 def test_optional_hardware_diagnostics_are_import_safe() -> None:
     for module_name in (
         "troubleshooting.andor_dll_matrix_probe",
+        "troubleshooting.andor_controls_probe",
+        "troubleshooting.andor_stream_gap_probe",
+        "troubleshooting.andor_timing_probe",
         "troubleshooting.list_ports_verbose",
         "troubleshooting.newport_dotnet_smoketest",
         "troubleshooting.newport_keyed_smoketest",

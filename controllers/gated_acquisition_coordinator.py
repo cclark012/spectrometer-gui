@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
@@ -18,7 +19,11 @@ from core.records import SpectrumRecord
 from core.settings import AcquisitionSettings
 from planning.gated_sequence import build_gated_plan
 from processing.gated_averaging import GatedSeriesAccumulator
-from processing.gated_timing import RobustTimingGuard
+from processing.gated_timing import (
+    FixedTimingWindowGuard,
+    RetainedTraceGoal,
+    RobustTimingGuard,
+)
 
 
 class GatedAcquisitionCoordinator(QObject):
@@ -49,7 +54,8 @@ class GatedAcquisitionCoordinator(QObject):
         self._awaiting_laser = False
         self._awaiting_spectrum = False
         self._current_action: GatedAction | None = None
-        self._actions: deque[GatedAction] = deque()
+        self._actions: Iterator[GatedAction] = iter(())
+        self._next_action: GatedAction | None = None
         self._settings = GatedAcquisitionSettings()
         self._laser: LaserChannelInfo | None = None
         self._pending_frame: GatedFrameMetadata | None = None
@@ -64,13 +70,23 @@ class GatedAcquisitionCoordinator(QObject):
         self._timer_callback = None
         self._timer_deadline_ns: int | None = None
         self._timing_guard = RobustTimingGuard(mode="off")
+        self._timing_baselines: dict[str, deque[float]] = {}
+        self._timing_bias_reported: set[str] = set()
+        self._resolved_timing_guard_mode = "off"
+        self._retained_goal: RetainedTraceGoal | None = None
+        self._maximum_frame_attempts = 0
 
     @property
     def active(self) -> bool:
         return self._active
 
-    def preview(self, settings: GatedAcquisitionSettings) -> GatedPlan:
-        plan = build_gated_plan(settings)
+    def preview(
+        self,
+        settings: GatedAcquisitionSettings,
+        *,
+        spectrum_pixels: int = 0,
+    ) -> GatedPlan:
+        plan = build_gated_plan(settings, spectrum_pixels=spectrum_pixels)
         self.plan_ready.emit(plan)
         return plan
 
@@ -79,16 +95,21 @@ class GatedAcquisitionCoordinator(QObject):
         *,
         settings: GatedAcquisitionSettings,
         laser: LaserChannelInfo,
+        plan: GatedPlan | None = None,
+        spectrum_pixels: int = 0,
     ) -> GatedPlan:
         if self._active:
             raise RuntimeError("A gated acquisition is already active.")
-        plan = build_gated_plan(settings)
+        supplied_plan = plan is not None
+        if plan is None:
+            plan = build_gated_plan(settings, spectrum_pixels=spectrum_pixels)
         if plan.frame_count < 1:
             raise ValueError("The gated plan contains no spectrum frames.")
 
         self._settings = settings
         self._laser = laser
-        self._actions = deque(plan.actions)
+        self._actions = iter(plan.actions)
+        self._next_action = next(self._actions, None)
         self._abort_requested = False
         self._awaiting_laser = False
         self._awaiting_spectrum = False
@@ -96,32 +117,53 @@ class GatedAcquisitionCoordinator(QObject):
         self._pending_frame = None
         self._transition_time_s = None
         self._transition_time_ns = None
-        self._sequence_id = next(
-            (
-                action.frame.sequence_id
-                for action in plan.actions
-                if action.frame is not None
-            ),
-            "",
-        )
+        self._sequence_id = str(plan.sequence_id)
         self._accumulator = (
             GatedSeriesAccumulator()
             if settings.output_mode == "averaged_series"
             else None
         )
-        self._timing_guard = RobustTimingGuard(
-            mode=settings.timing_guard_mode,
-            sigma=settings.timing_guard_sigma,
-            warmup=settings.timing_guard_warmup,
-            max_rejected_fraction=settings.timing_guard_max_rejected_fraction,
-            min_evaluated=settings.timing_guard_min_evaluated,
+        self._resolved_timing_guard_mode = (
+            "discard"
+            if settings.timing_guard_mode == "auto"
+            and settings.output_mode == "averaged_series"
+            else "flag"
+            if settings.timing_guard_mode == "auto"
+            else settings.timing_guard_mode
         )
+        if self._resolved_timing_guard_mode == "retain":
+            self._timing_guard = FixedTimingWindowGuard(
+                reference=settings.timing_guard_reference,
+                tolerance_ms=settings.timing_guard_tolerance_ms,
+            )
+            self._retained_goal = RetainedTraceGoal(
+                target_per_trace=int(settings.cycles),
+                expected_trace_count=max(1, int(plan.trace_count)),
+            )
+        else:
+            self._timing_guard = RobustTimingGuard(
+                mode=self._resolved_timing_guard_mode,
+                sigma=settings.timing_guard_sigma,
+                warmup=settings.timing_guard_warmup,
+                max_rejected_fraction=settings.timing_guard_max_rejected_fraction,
+                min_evaluated=settings.timing_guard_min_evaluated,
+                baseline_store=self._timing_baselines,
+            )
+            self._retained_goal = None
+        self._maximum_frame_attempts = int(plan.frame_count)
+        self._timing_bias_reported.clear()
         self._set_active(True)
-        self.plan_ready.emit(plan)
-        self.status_requested.emit(
-            f"Gated acquisition started: {plan.frame_count} frame(s).",
-            10_000,
-        )
+        if not supplied_plan:
+            self.plan_ready.emit(plan)
+        if self._retained_goal is None:
+            start_message = f"Gated acquisition started: {plan.frame_count} frame(s)."
+        else:
+            start_message = (
+                "Gated timing retention started: target "
+                f"{plan.target_frame_count} valid frame(s), up to "
+                f"{plan.frame_count} attempt(s)."
+            )
+        self.status_requested.emit(start_message, 10_000)
         QTimer.singleShot(0, self._advance)
         return plan
 
@@ -153,7 +195,34 @@ class GatedAcquisitionCoordinator(QObject):
     def apply_metadata(self, settings: AcquisitionSettings) -> AcquisitionSettings:
         if not self._active or self._pending_frame is None:
             return settings
-        return replace(settings, gated=self._pending_frame)
+        target_midpoint_s = float("nan")
+        if (
+            self._pending_frame.laser_state == "off"
+            and self._transition_time_s is not None
+        ):
+            target_delay_ms = float(self._pending_frame.requested_delay_ms)
+            if self._resolved_timing_guard_mode == "retain":
+                # Ask the detector stream for the first candidate at the lower
+                # edge of the two-sided acceptance window. The coordinator
+                # still performs the authoritative lower/upper-bound decision.
+                target_delay_ms -= float(
+                    self._settings.timing_guard_tolerance_ms
+                )
+            if (
+                self._resolved_timing_guard_mode == "retain"
+                and self._settings.timing_guard_reference == "exposure_start"
+            ):
+                # SDK2's stream selector accepts a midpoint target. Shift that
+                # target by half the requested exposure when the user defines
+                # the acceptance window on exposure start. The returned frame
+                # is still evaluated against the adapter's applied timing.
+                target_delay_ms += 0.5 * max(0.0, float(settings.integration_ms))
+            target_midpoint_s = self._transition_time_s + target_delay_ms * 1.0e-3
+        return replace(
+            settings,
+            gated=self._pending_frame,
+            continuous_target_midpoint_s=target_midpoint_s,
+        )
 
     @Slot(str, int, bool)
     def on_laser_enabled_set(self, port: str, channel: int, enabled: bool) -> None:
@@ -249,8 +318,17 @@ class GatedAcquisitionCoordinator(QObject):
                 exposure_sample_windows_elapsed_ms=exposure_sample_windows_ms,
             )
 
+        baseline_key = (
+            f"{record.spectrometer_backend or 'unknown'}:"
+            f"{record.gated.mode}"
+            if record.gated is not None
+            else ""
+        )
         decision = (
-            self._timing_guard.evaluate(record.gated)
+            self._timing_guard.evaluate(
+                record.gated,
+                baseline_key=baseline_key,
+            )
             if record.gated is not None
             else None
         )
@@ -259,10 +337,33 @@ class GatedAcquisitionCoordinator(QObject):
                 record.gated,
                 timing_error_ms=decision.residual_ms,
                 timing_quality=decision.quality,
+                timing_reference=(
+                    str(self._settings.timing_guard_reference)
+                    if self._resolved_timing_guard_mode == "retain"
+                    else "exposure_midpoint"
+                ),
                 timing_center_ms=decision.center_ms,
                 timing_robust_sigma_ms=decision.robust_sigma_ms,
                 timing_threshold_ms=decision.threshold_ms,
             )
+            if (
+                math.isfinite(decision.center_ms)
+                and abs(decision.center_ms)
+                >= max(
+                    0.5,
+                    decision.threshold_ms
+                    if math.isfinite(decision.threshold_ms)
+                    else 0.5,
+                )
+                and baseline_key not in self._timing_bias_reported
+            ):
+                self._timing_bias_reported.add(baseline_key)
+                self.status_requested.emit(
+                    "Gated timing has a stable offset of "
+                    f"{decision.center_ms:+.3f} ms for {baseline_key}. "
+                    "It is recorded as a warning and is not itself discarded.",
+                    15_000,
+                )
 
         if self._timing_guard.should_abort:
             self._pending_frame = None
@@ -277,15 +378,25 @@ class GatedAcquisitionCoordinator(QObject):
 
         accepted = decision is None or decision.accepted
         if not accepted:
-            self.status_requested.emit(
-                "Discarded a gated frame whose observed timing was a robust outlier.",
-                10_000,
-            )
+            if self._retained_goal is None:
+                message = (
+                    "Discarded a gated frame whose observed timing was a robust "
+                    "outlier."
+                )
+            else:
+                message = (
+                    "Discarded a gated timing attempt outside the fixed window; "
+                    f"retained {self._retained_goal.total_accepted}/"
+                    f"{self._retained_goal.total_target}."
+                )
+            self.status_requested.emit(message, 10_000)
         elif self._settings.output_mode == "averaged_series":
             try:
                 if self._accumulator is None:
                     raise RuntimeError("The gated-series accumulator is unavailable.")
                 self._accumulator.add(record)
+                if self._retained_goal is not None and record.gated is not None:
+                    self._retained_goal.accept(record.gated)
             except Exception as exc:
                 self._fail(f"Could not average gated frame: {exc}")
                 return True
@@ -293,12 +404,16 @@ class GatedAcquisitionCoordinator(QObject):
             self.autosave_requested.emit(record)
         self._pending_frame = None
 
+        if self._retained_goal is not None and self._retained_goal.complete:
+            self._finish_complete()
+            return True
+
         if self._abort_requested:
             self._finish_aborted()
         else:
             next_is_frame = bool(
-                self._actions
-                and self._actions[0].kind in {"acquire", "acquire_at_delay"}
+                self._next_action is not None
+                and self._next_action.kind in {"acquire", "acquire_at_delay"}
             )
             self._schedule(
                 (
@@ -358,11 +473,20 @@ class GatedAcquisitionCoordinator(QObject):
             return
         if self._awaiting_laser or self._awaiting_spectrum:
             return
-        if not self._actions:
-            self._finish_complete()
+        if self._next_action is None:
+            if self._retained_goal is not None and not self._retained_goal.complete:
+                self._fail(
+                    "Gated timing retention reached its finite attempt limit: "
+                    f"retained {self._retained_goal.total_accepted} valid frame(s) "
+                    f"from {self._timing_guard.evaluated_count} evaluated attempt(s). "
+                    "Widen the timing tolerance or increase the attempt multiplier."
+                )
+            else:
+                self._finish_complete()
             return
 
-        action = self._actions.popleft()
+        action = self._next_action
+        self._next_action = next(self._actions, None)
         self._current_action = action
 
         if action.kind == "set_laser":
@@ -388,8 +512,15 @@ class GatedAcquisitionCoordinator(QObject):
             if self._transition_time_ns is None:
                 self._fail("The transition clock was unavailable for a delayed frame.")
                 return
-            deadline_ns = (
-                self._transition_time_ns + int(action.target_delay_ms) * 1_000_000
+            request_delay_ms = float(action.target_delay_ms)
+            if self._resolved_timing_guard_mode == "retain":
+                request_delay_ms = max(
+                    0.0,
+                    request_delay_ms
+                    - float(self._settings.timing_guard_tolerance_ms),
+                )
+            deadline_ns = self._transition_time_ns + int(
+                round(request_delay_ms * 1_000_000.0)
             )
             self._schedule_at(
                 deadline_ns,
@@ -406,6 +537,14 @@ class GatedAcquisitionCoordinator(QObject):
     def _request_frame(self, action: GatedAction) -> None:
         if not self._active or action.frame is None:
             return
+        if (
+            self._retained_goal is not None
+            and self._retained_goal.is_satisfied(action.frame)
+        ):
+            # Other traces in the same repeated plan may still need samples.
+            # Skip completed traces without entering the instrument worker.
+            QTimer.singleShot(0, self._advance)
+            return
         elapsed_ms = float("nan")
         if self._transition_time_s is not None:
             elapsed_ms = 1000.0 * (time.perf_counter() - self._transition_time_s)
@@ -413,14 +552,28 @@ class GatedAcquisitionCoordinator(QObject):
         self._pending_frame = replace(
             action.frame,
             request_elapsed_since_transition_ms=elapsed_ms,
+            transition_timing_basis=(
+                "laser_command_readback_complete"
+                if self._transition_time_s is not None
+                else ""
+            ),
         )
         self._awaiting_spectrum = True
-        self.status_requested.emit(
-            f"Gated frame {action.frame.frame_index + 1}/"
-            f"{action.frame.frame_count}: {action.frame.label}",
-            10_000,
-        )
+        # Queue the time-sensitive acquisition before painting status text.
         self.spectrum_requested.emit()
+        if self._retained_goal is None:
+            message = (
+                f"Gated frame {action.frame.frame_index + 1}/"
+                f"{action.frame.frame_count}: {action.frame.label}"
+            )
+        else:
+            message = (
+                f"Gated attempt {self._timing_guard.evaluated_count + 1}/"
+                f"{self._maximum_frame_attempts}; retained "
+                f"{self._retained_goal.total_accepted}/"
+                f"{self._retained_goal.total_target}: {action.frame.label}"
+            )
+        self.status_requested.emit(message, 10_000)
 
     def _finish_complete(self) -> None:
         series = None
@@ -433,7 +586,18 @@ class GatedAcquisitionCoordinator(QObject):
                     series,
                     timing_evaluated_count=self._timing_guard.evaluated_count,
                     timing_rejected_count=self._timing_guard.rejected_count,
-                    timing_guard_method=self._settings.timing_guard_mode,
+                    timing_guard_method=self._resolved_timing_guard_mode,
+                    timing_reference=(
+                        str(self._settings.timing_guard_reference)
+                        if self._resolved_timing_guard_mode == "retain"
+                        else "exposure_midpoint"
+                    ),
+                    timing_tolerance_ms=(
+                        float(self._settings.timing_guard_tolerance_ms)
+                        if self._resolved_timing_guard_mode == "retain"
+                        else float("nan")
+                    ),
+                    timing_attempt_limit=int(self._maximum_frame_attempts),
                 )
             except Exception as exc:
                 self._fail(f"Could not finalize averaged gated series: {exc}")
@@ -456,22 +620,61 @@ class GatedAcquisitionCoordinator(QObject):
         self.completed.emit(sequence_id)
 
     def _finish_aborted(self) -> None:
+        series = self._finalize_partial_series()
         if self._laser is not None:
             self.laser_set_enabled_requested.emit(
                 str(self._laser.port), int(self._laser.channel), False
             )
         self._set_active(False)
         self.status_requested.emit("Gated acquisition aborted.", 10_000)
+        if series is not None:
+            self.series_ready.emit(series)
+            if self._settings.autosave_frames:
+                self.autosave_series_requested.emit(series)
         self.aborted.emit()
 
     def _fail(self, message: str, *, disable_laser: bool = True) -> None:
+        series = self._finalize_partial_series(failure_reason=str(message))
         if disable_laser and self._laser is not None:
             self.laser_set_enabled_requested.emit(
                 str(self._laser.port), int(self._laser.channel), False
             )
         self._set_active(False)
         self.status_requested.emit(message, 15_000)
+        if series is not None:
+            self.series_ready.emit(series)
+            if self._settings.autosave_frames:
+                self.autosave_series_requested.emit(series)
         self.failed.emit(message)
+
+    def _finalize_partial_series(self, *, failure_reason: str = ""):
+        if (
+            self._settings.output_mode != "averaged_series"
+            or self._accumulator is None
+            or self._accumulator.sample_count < 1
+        ):
+            return None
+        try:
+            return replace(
+                self._accumulator.finish(),
+                timing_evaluated_count=self._timing_guard.evaluated_count,
+                timing_rejected_count=self._timing_guard.rejected_count,
+                timing_guard_method=self._resolved_timing_guard_mode,
+                timing_reference=(
+                    str(self._settings.timing_guard_reference)
+                    if self._resolved_timing_guard_mode == "retain"
+                    else "exposure_midpoint"
+                ),
+                timing_tolerance_ms=(
+                    float(self._settings.timing_guard_tolerance_ms)
+                    if self._resolved_timing_guard_mode == "retain"
+                    else float("nan")
+                ),
+                timing_attempt_limit=int(self._maximum_frame_attempts),
+                failure_reason=str(failure_reason),
+            )
+        except Exception:
+            return None
 
     def _set_active(self, active: bool) -> None:
         self._active = bool(active)
@@ -479,7 +682,8 @@ class GatedAcquisitionCoordinator(QObject):
             self._timer.stop()
             self._timer_callback = None
             self._timer_deadline_ns = None
-            self._actions.clear()
+            self._actions = iter(())
+            self._next_action = None
             self._awaiting_laser = False
             self._awaiting_spectrum = False
             self._current_action = None
@@ -488,6 +692,8 @@ class GatedAcquisitionCoordinator(QObject):
             self._transition_time_ns = None
             self._sequence_id = ""
             self._accumulator = None
+            self._retained_goal = None
+            self._maximum_frame_attempts = 0
             self._abort_requested = False
         self.active_changed.emit(self._active)
 

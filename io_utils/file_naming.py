@@ -76,9 +76,10 @@ def build_spectrum_path(
             timestamp.strftime("%H%M%S") + f"{timestamp.microsecond // 1000:03d}"
         )
     if settings.include_field and record.field_value is not None:
-        if  math.isfinite(float(record.field_value)):
+        if math.isfinite(float(record.field_value)):
             parts.append(field_token(float(record.field_value)))
-    mean_power_w = float(record.mean_power_w(0))
+    selected_channel = int(record.power_channels[0]) if record.power_channels else 0
+    mean_power_w = float(record.mean_power_w(selected_channel))
     if settings.include_power and math.isfinite(mean_power_w):
         parts.append(power_token(mean_power_w))
 
@@ -127,14 +128,17 @@ def build_gated_series_path(
     directory.mkdir(parents=True, exist_ok=True)
     timestamp = parse_timestamp(str(series.timestamp_utc))
     parts = [sanitize_component(settings.base_name), "gated", sanitize_component(series.mode)]
+    if str(getattr(series, "failure_reason", "")).strip():
+        parts.append("FAILED")
     if settings.include_run_identifier and settings.run_identifier.strip():
         parts.append(sanitize_component(settings.run_identifier))
     if settings.include_date:
         parts.append(timestamp.strftime("%Y%m%d"))
     if settings.include_time:
         parts.append(timestamp.strftime("%H%M%S") + f"{timestamp.microsecond // 1000:03d}")
-    if settings.include_field and math.isfinite(float(series.field_value_mT)):
-        parts.append(field_token(float(series.field_value_mT)))
+    if settings.include_field and series.field_value_mT is not None:
+        if math.isfinite(float(series.field_value_mT)):
+            parts.append(field_token(float(series.field_value_mT)))
 
     return _finalize_path(
         directory=directory,

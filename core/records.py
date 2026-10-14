@@ -40,6 +40,15 @@ class AcquisitionTiming:
     uncertainty_s: float = float("nan")
     basis: str = ""
     sample_windows_s: tuple[tuple[float, float], ...] = ()
+    exposure_duration_s: float = float("nan")
+    readout_duration_s: float = float("nan")
+    keep_clean_duration_s: float = float("nan")
+    kinetic_cycle_s: float = float("nan")
+    acquisition_mode: str = "single_scan"
+    driver_frame_index: int = -1
+    discarded_frames_before: int = 0
+    discarded_frames_for_target: int = 0
+    pending_frames_after_wait: int = 0
 
 
 @dataclass(slots=True)
@@ -47,7 +56,7 @@ class BackgroundSpectrum:
     timestamp_utc: str
     wavelengths_nm: FloatArray
     counts_per_s: FloatArray
-    integration_ms: int
+    integration_ms: float
     averages: int
     correct_dark: bool
     correct_nonlinearity: bool
@@ -65,6 +74,7 @@ class SpectralAcquisition:
     signal_max_counts: float
     device_averaging_used: bool = False
     timing: AcquisitionTiming | None = None
+    applied_integration_ms: float | None = None
 
 
 @dataclass(slots=True)
@@ -100,6 +110,14 @@ class PowerSnapshot:
         """Return whether the snapshot contains at least one usable reading."""
 
         return any(np.isfinite(float(value)) for value in self.powers_w)
+
+
+@dataclass(frozen=True, slots=True)
+class PowerReadRequest:
+    """One tagged Newport read with acquisition-specific channel validation."""
+
+    tag: str
+    required_channels: tuple[int, ...] = (0,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,12 +164,16 @@ class SpectrumRecord:
     intensities_counts: FloatArray
     p_before: PowerSnapshot
     p_after: PowerSnapshot
-    integration_ms: int
+    integration_ms: float
     averages: int
     boxcar_width: int
     correct_dark: bool
     correct_nonlinearity: bool
     field_value: float | None
+    smoothing_window: str = "none"
+    smoothing_boundary: str = "nearest"
+    power_channels: tuple[int, ...] = (0,)
+    requested_integration_ms: float = float("nan")
     acquisition_started_s: float = float("nan")
     acquisition_finished_s: float = float("nan")
     acquisition_timing: AcquisitionTiming | None = None
@@ -167,11 +189,15 @@ class SpectrumRecord:
     spectrometer_model: str = ""
     spectrometer_serial: str = ""
     spectrograph_serial: str = ""
+    instrument_state: dict[str, object] = field(default_factory=dict)
+    software_provenance: dict[str, str] = field(default_factory=dict)
 
     # The processed array is retained for display/backward compatibility.
     # ``raw_intensities_counts`` preserves the adapter result before GUI-side
     # background subtraction or smoothing.
     raw_intensities_counts: FloatArray | None = None
+    unsmoothed_intensities_counts: FloatArray | None = None
+    parameter_scan: dict[str, object] = field(default_factory=dict)
 
     scan_active: bool = False
     scan_index: int = -1
@@ -194,7 +220,8 @@ class SpectrumRecord:
 
     background_subtracted: bool = False
     background_timestamp_utc: str = ""
-    background_integration_ms: int = 0
+    background_integration_ms: float = 0.0
+    background_signature: str = ""
 
     def mean_power_w(self, channel_index: int = 0) -> float:
         if channel_index < 0:

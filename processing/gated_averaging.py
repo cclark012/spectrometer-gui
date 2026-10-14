@@ -46,7 +46,7 @@ class GatedSeriesRecord:
     timestamp_utc: str
     wavelengths_nm: np.ndarray
     traces: tuple[GatedAverageTrace, ...]
-    integration_ms: int
+    integration_ms: float
     detector_averages: int
     field_value_mT: float | None
     laser_port: str
@@ -56,6 +56,34 @@ class GatedSeriesRecord:
     timing_evaluated_count: int = 0
     timing_rejected_count: int = 0
     timing_guard_method: str = "off"
+    timing_reference: str = "exposure_midpoint"
+    timing_basis: str = ""
+    transition_timing_basis: str = ""
+    timing_tolerance_ms: float = float("nan")
+    timing_attempt_limit: int = 0
+    detector_frames_discarded_for_target: int = 0
+    repeat_count: int = 1
+    pump_duration_ms: int | None = None
+    inter_frame_gap_ms: int | None = None
+    inter_repeat_gap_ms: int | None = None
+    failure_reason: str = ""
+    requested_integration_ms: float = float("nan")
+    averaging_mode: str = "software"
+    device_averaging_used: bool = False
+    correct_dark: bool = False
+    correct_nonlinearity: bool = False
+    smoothing_window: str = "none"
+    smoothing_width: int = 0
+    smoothing_boundary: str = "nearest"
+    power_channels: tuple[int, ...] = ()
+    spectrometer_backend: str = ""
+    spectrometer_model: str = ""
+    spectrometer_serial: str = ""
+    spectrograph_serial: str = ""
+    instrument_state: dict[str, object] = field(default_factory=dict)
+    software_provenance: dict[str, str] = field(default_factory=dict)
+    background_timestamp_utc: str = ""
+    background_signature: str = ""
 
 
 @dataclass(slots=True)
@@ -104,9 +132,25 @@ class _Group:
             float(gated.exposure_timing_uncertainty_ms)
         )
         self.timing_error_ms.append(float(gated.timing_error_ms))
-        self.power_w.append(
-            [float(value) for value in record.mean_power_snapshot().powers_w]
+        snapshot = record.mean_power_snapshot()
+        channels = tuple(
+            dict.fromkeys(
+                int(channel)
+                for channel in record.power_channels
+                if int(channel) >= 0
+            )
         )
+        if not channels and snapshot.powers_w:
+            channels = tuple(range(len(snapshot.powers_w)))
+        if snapshot.powers_w:
+            self.power_w.append(
+                [
+                    float(snapshot.powers_w[channel])
+                    if channel < len(snapshot.powers_w)
+                    else float("nan")
+                    for channel in channels
+                ]
+            )
 
 
 def _timing_statistics(values: list[float]) -> TimingStatistics:
@@ -154,6 +198,9 @@ class GatedSeriesAccumulator:
         self._wavelengths_nm: np.ndarray | None = None
         self._groups: dict[tuple[str, str, int], _Group] = {}
         self._first_record: SpectrumRecord | None = None
+        self._detector_frames_discarded_for_target = 0
+        self._timing_basis = ""
+        self._transition_timing_basis = ""
 
     @property
     def sample_count(self) -> int:
@@ -196,6 +243,15 @@ class GatedSeriesAccumulator:
             )
             self._groups[key] = group
         group.add(record)
+        if gated.exposure_timing_basis:
+            self._timing_basis = str(gated.exposure_timing_basis)
+        if gated.transition_timing_basis:
+            self._transition_timing_basis = str(gated.transition_timing_basis)
+        timing = record.acquisition_timing
+        if timing is not None:
+            self._detector_frames_discarded_for_target += max(
+                0, int(timing.discarded_frames_for_target)
+            )
 
     def finish(self) -> GatedSeriesRecord:
         if self._first_record is None or self._wavelengths_nm is None:
@@ -242,17 +298,67 @@ class GatedSeriesAccumulator:
             )
 
         first = self._first_record
+        first_gated = first.gated
+        power_channels = tuple(
+            dict.fromkeys(
+                int(channel)
+                for channel in first.power_channels
+                if int(channel) >= 0
+            )
+        )
+        maximum_power_channels = max(
+            (len(trace.mean_power_w) for trace in traces),
+            default=0,
+        )
+        if maximum_power_channels == 0:
+            power_channels = ()
+        elif not power_channels:
+            power_channels = tuple(range(maximum_power_channels))
         return GatedSeriesRecord(
             sequence_id=self._sequence_id,
             mode=self._mode,
             timestamp_utc=str(first.timestamp_utc),
             wavelengths_nm=self._wavelengths_nm.copy(),
             traces=tuple(traces),
-            integration_ms=int(first.integration_ms),
+            integration_ms=float(first.integration_ms),
             detector_averages=int(first.averages),
             field_value_mT=float(first.field_value) if first.field_value is not None else None,
             laser_port=str(first.laser_port),
             laser_box_id=str(first.laser_box_id),
             laser_channel=int(first.laser_channel),
             laser_wavelength_nm=float(first.laser_wavelength_nm),
+            detector_frames_discarded_for_target=(
+                self._detector_frames_discarded_for_target
+            ),
+            timing_basis=self._timing_basis,
+            transition_timing_basis=self._transition_timing_basis,
+            repeat_count=(
+                int(first_gated.repeat_count) if first_gated is not None else 1
+            ),
+            pump_duration_ms=(
+                first_gated.pump_duration_ms if first_gated is not None else None
+            ),
+            inter_frame_gap_ms=(
+                first_gated.inter_frame_gap_ms if first_gated is not None else None
+            ),
+            inter_repeat_gap_ms=(
+                first_gated.inter_repeat_gap_ms if first_gated is not None else None
+            ),
+            requested_integration_ms=float(first.requested_integration_ms),
+            averaging_mode=str(first.averaging_mode),
+            device_averaging_used=bool(first.device_averaging_used),
+            correct_dark=bool(first.correct_dark),
+            correct_nonlinearity=bool(first.correct_nonlinearity),
+            smoothing_window=str(first.smoothing_window),
+            smoothing_width=int(first.boxcar_width),
+            smoothing_boundary=str(first.smoothing_boundary),
+            power_channels=power_channels,
+            spectrometer_backend=str(first.spectrometer_backend),
+            spectrometer_model=str(first.spectrometer_model),
+            spectrometer_serial=str(first.spectrometer_serial),
+            spectrograph_serial=str(first.spectrograph_serial),
+            instrument_state=dict(first.instrument_state),
+            software_provenance=dict(first.software_provenance),
+            background_timestamp_utc=str(first.background_timestamp_utc),
+            background_signature=str(first.background_signature),
         )

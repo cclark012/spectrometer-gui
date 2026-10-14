@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QMainWindow, QSizePolicy, QToolBar, QWidget
+from PySide6.QtWidgets import QCheckBox, QLineEdit, QLabel, QMainWindow, QSizePolicy, QToolBar, QWidget
 
 
 @dataclass(slots=True)
@@ -255,6 +255,16 @@ def build_main_window_actions(window: QMainWindow) -> MainWindowActions:
     toolbar.addAction(save_action)
     toolbar.addAction(open_action)
 
+    toolbar.addSeparator()
+    toolbar.addWidget(QLabel("Base name "))
+    window.filename_edit = QLineEdit(window.file_name_settings.base_name)
+    window.filename_edit.setMaximumWidth(260)
+    window.filename_edit.setToolTip("Base name for subsequent saves; suffix options remain in File Settings.")
+    window.filename_edit.editingFinished.connect(window._toolbar_filename_changed)
+    toolbar.addWidget(window.filename_edit)
+    window.toolbar_autosave = QCheckBox("Autosave")
+    window.toolbar_autosave.toggled.connect(window._toolbar_autosave_changed)
+    toolbar.addWidget(window.toolbar_autosave)
     spacer = QWidget()
     spacer.setSizePolicy(
         QSizePolicy.Policy.Expanding,

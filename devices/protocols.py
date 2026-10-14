@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol
 
 from core.laser_models import LaserChannelInfo
@@ -19,8 +20,12 @@ class SpectrometerAdapter(Protocol):
         correct_dark: bool,
         correct_nonlinearity: bool,
         averaging_mode: str = "software",
+        continuous_session: str = "",
+        continuous_target_midpoint_s: float = float("nan"),
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> SpectralAcquisition: ...
 
+    def stop_continuous_acquisition(self) -> None: ...
     def capabilities(self) -> SpectrometerCapabilities: ...
     def get_ccd_temperature_c(self) -> float: ...
     def set_tec_target_c(self, temperature_c: float) -> None: ...

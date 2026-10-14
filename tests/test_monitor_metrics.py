@@ -89,3 +89,27 @@ def test_monitor_metrics_are_independent_of_wavelength_order() -> None:
     assert point.integrated_range_counts_nm == 400.0
     assert point.total_integrated_counts_nm == 400.0
     assert point.peak_wavelength_nm == 500.0
+
+
+def test_unrecorded_field_is_not_fabricated_as_zero() -> None:
+    record = SpectrumRecord(
+        timestamp_utc="now",
+        timestamp_s=0.0,
+        wavelengths_nm=np.array([400.0, 500.0]),
+        intensities_counts=np.array([1.0, 2.0]),
+        p_before=PowerSnapshot.missing(),
+        p_after=PowerSnapshot.missing(),
+        integration_ms=100,
+        averages=1,
+        boxcar_width=0,
+        correct_dark=False,
+        correct_nonlinearity=False,
+        field_value=None,
+    )
+
+    point = build_monitor_point(
+        record,
+        MonitorCaptureConfig(500.0, 400.0, 500.0, 0.0),
+    )
+
+    assert np.isnan(point.field_mT)

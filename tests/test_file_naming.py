@@ -4,7 +4,8 @@ import numpy as np
 
 from core.records import PowerSnapshot, SpectrumRecord
 from core.settings import FileNameSettings
-from io_utils.file_naming import build_spectrum_path
+from io_utils.file_naming import build_gated_series_path, build_spectrum_path
+from processing.gated_averaging import GatedSeriesRecord
 
 
 def _record() -> SpectrumRecord:
@@ -59,3 +60,33 @@ def test_nonfinite_optional_tokens_are_omitted(tmp_path: Path) -> None:
     )
 
     assert build_spectrum_path(settings, record).name == "sample.csv"
+
+
+def test_unrecorded_field_is_omitted_from_gated_series_name(tmp_path: Path) -> None:
+    settings = FileNameSettings(
+        save_directory=tmp_path,
+        base_name="sample",
+        include_date=False,
+        include_time=False,
+        include_field=True,
+        include_run_identifier=False,
+        include_enumeration=False,
+    )
+    series = GatedSeriesRecord(
+        sequence_id="sequence",
+        mode="delayed_after_off",
+        timestamp_utc="2026-09-09T00:00:00+00:00",
+        wavelengths_nm=np.asarray([500.0]),
+        traces=(),
+        integration_ms=10,
+        detector_averages=1,
+        field_value_mT=None,
+        laser_port="",
+        laser_box_id="",
+        laser_channel=-1,
+        laser_wavelength_nm=float("nan"),
+    )
+
+    assert build_gated_series_path(settings, series).name == (
+        "sample_gated_delayed_after_off.csv"
+    )

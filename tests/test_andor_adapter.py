@@ -7,12 +7,20 @@ import numpy as np
 import devices.andor_adapter as andor_adapter_module
 from devices.andor_adapter import AndorCommunicationError, AndorKymeraSpectrometer
 from devices.andor_sdk2 import AndorCameraSettings, AndorSDK2Error
+from devices.andor_spectrograph import AndorSpectrographError
 
 
 @dataclass(frozen=True)
 class FakeCameraCapabilities:
     model: str = "DU401A-BVF"
     serial_number: str = "CAM-1"
+    horizontal_speeds_mhz: dict[str, tuple[float, ...]] | None = None
+    vertical_speeds_us: tuple[float, ...] = (8.25, 16.25)
+    preamp_gains: tuple[float, ...] = (1.0,)
+
+    def __post_init__(self) -> None:
+        if self.horizontal_speeds_mhz is None:
+            object.__setattr__(self, "horizontal_speeds_mhz", {"0:0": (0.1,)})
 
     def as_control_schema(self):
         return {"model": self.model, "serial_number": self.serial_number}
@@ -26,6 +34,8 @@ class FakeCamera:
         self.output_pixel_count = 4
         self.effective_pixel_width_um = 26.0
         self.applied: list[AndorCameraSettings] = []
+        self.last_target_midpoint_s = float("nan")
+        self.stop_calls = 0
 
     def apply_settings(self, settings) -> None:
         self.settings = settings
@@ -33,8 +43,20 @@ class FakeCamera:
         self.output_pixel_count = 4 // settings.horizontal_binning
         self.effective_pixel_width_um = 26.0 * settings.horizontal_binning
 
-    def acquire(self, exposure_ms: float, averages: int) -> np.ndarray:
-        del exposure_ms, averages
+    def acquire(
+        self,
+        exposure_ms: float,
+        averages: int,
+        progress_callback=None,
+        *,
+        continuous_session: str = "",
+        continuous_target_midpoint_s: float = float("nan"),
+    ) -> np.ndarray:
+        del exposure_ms, continuous_session
+        self.last_target_midpoint_s = float(continuous_target_midpoint_s)
+        if progress_callback is not None:
+            progress_callback(0, averages, "software")
+            progress_callback(averages, averages, "software")
         return np.arange(self.output_pixel_count, dtype=float)
 
     def get_temperature_c(self) -> float:
@@ -48,6 +70,9 @@ class FakeCamera:
 
     def set_cooler_enabled(self, _enabled: bool) -> None:
         pass
+
+    def stop_continuous_acquisition(self) -> None:
+        self.stop_calls += 1
 
     def close(self) -> None:
         pass
@@ -121,6 +146,70 @@ def test_binning_updates_effective_geometry_and_calibration() -> None:
     assert adapter.wavelengths_nm.shape == (2,)
     assert spectrograph.grating == 2
     assert spectrograph.center == 850.0
+    assert camera.stop_calls == 1
+
+
+def test_spectrograph_grating_readback_precedes_wavelength_command() -> None:
+    class DelayedGratingSpectrograph(FakeSpectrograph):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pending_grating: int | None = None
+            self.events: list[str] = []
+
+        def state(self):
+            if self.pending_grating is not None:
+                self.events.append("grating_readback")
+                self.grating = self.pending_grating
+                self.pending_grating = None
+            return super().state()
+
+        def set_grating(self, value: int) -> None:
+            self.events.append("set_grating")
+            self.pending_grating = int(value)
+
+        def set_wavelength_nm(self, value: float) -> None:
+            self.events.append("set_wavelength")
+            super().set_wavelength_nm(value)
+
+    camera = FakeCamera()
+    spectrograph = DelayedGratingSpectrograph()
+    adapter = AndorKymeraSpectrometer(
+        ".",
+        camera=camera,
+        spectrograph=spectrograph,
+    )
+
+    adapter.apply_user_settings(
+        {
+            "camera": {},
+            "spectrograph": {"grating": 2, "center_wavelength_nm": 850.0},
+        }
+    )
+
+    assert spectrograph.events == [
+        "set_grating",
+        "grating_readback",
+        "set_wavelength",
+    ]
+
+
+def test_spectrograph_readback_mismatch_is_an_explicit_failure() -> None:
+    adapter = AndorKymeraSpectrometer(
+        ".",
+        camera=FakeCamera(),
+        spectrograph=FakeSpectrograph(),
+    )
+
+    try:
+        adapter._wait_for_spectrograph_readback(
+            {"grating": 2},
+            timeout_s=0.0,
+        )
+    except AndorSpectrographError as exc:
+        assert "requested 2" in str(exc)
+        assert "read back 1" in str(exc)
+    else:
+        raise AssertionError("A mismatched Kymera readback was accepted.")
 
 
 def test_acquisition_uses_calibrated_wavelength_grid() -> None:
@@ -139,6 +228,62 @@ def test_acquisition_uses_calibrated_wavelength_grid() -> None:
 
     np.testing.assert_allclose(result.wavelengths_nm, [400.0, 500.0, 600.0, 700.0])
     np.testing.assert_allclose(result.intensities_counts, [0.0, 1.0, 2.0, 3.0])
+
+
+def test_acquisition_reports_average_progress() -> None:
+    adapter = AndorKymeraSpectrometer(
+        ".",
+        camera=FakeCamera(),
+        spectrograph=FakeSpectrograph(),
+    )
+    progress = []
+
+    adapter.acquire_spectrum(
+        integration_ms=10,
+        averages=3,
+        correct_dark=False,
+        correct_nonlinearity=False,
+        progress_callback=lambda *values: progress.append(values),
+    )
+
+    assert progress == [(0, 3, "software"), (3, 3, "software")]
+
+
+def test_gated_midpoint_target_is_forwarded_to_sdk2_camera() -> None:
+    camera = FakeCamera()
+    adapter = AndorKymeraSpectrometer(
+        ".",
+        camera=camera,
+        spectrograph=FakeSpectrograph(),
+    )
+
+    adapter.acquire_spectrum(
+        integration_ms=10,
+        averages=1,
+        correct_dark=False,
+        correct_nonlinearity=False,
+        continuous_session="gated",
+        continuous_target_midpoint_s=123.456,
+    )
+
+    assert np.isclose(camera.last_target_midpoint_s, 123.456)
+
+
+def test_metadata_snapshot_uses_compact_readback_state() -> None:
+    adapter = AndorKymeraSpectrometer(
+        ".",
+        camera=FakeCamera(),
+        spectrograph=FakeSpectrograph(),
+    )
+
+    state = adapter.metadata_snapshot()
+
+    assert state["grating"] == 1
+    assert state["center_wavelength_nm"] == 500.0
+    assert state["horizontal_readout_mhz"] == 0.1
+    assert state["vertical_shift_us"] == 8.25
+    assert state["preamp_gain"] == 1.0
+    assert state["horizontal_binning"] == 1
 
 
 def test_unknown_spectrograph_setting_is_rejected_before_hardware_call() -> None:
@@ -163,8 +308,22 @@ class FailingAcquisitionCamera(FakeCamera):
         super().__init__()
         self.connected = bool(connected)
 
-    def acquire(self, exposure_ms: float, averages: int) -> np.ndarray:
-        del exposure_ms, averages
+    def acquire(
+        self,
+        exposure_ms: float,
+        averages: int,
+        progress_callback=None,
+        *,
+        continuous_session: str = "",
+        continuous_target_midpoint_s: float = float("nan"),
+    ) -> np.ndarray:
+        del (
+            exposure_ms,
+            averages,
+            progress_callback,
+            continuous_session,
+            continuous_target_midpoint_s,
+        )
         raise AndorSDK2Error("simulated acquisition failure")
 
     def health_check(self) -> str:

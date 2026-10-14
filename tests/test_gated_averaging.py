@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 
 from core.gated_acquisition import GatedFrameMetadata
-from core.records import PowerSnapshot, SpectrumRecord
+from core.records import AcquisitionTiming, PowerSnapshot, SpectrumRecord
 from processing.gated_averaging import GatedSeriesAccumulator
 
 
@@ -23,6 +23,18 @@ def _frame(value: float, *, repeat: int, observed_ms: float) -> SpectrumRecord:
         correct_dark=False,
         correct_nonlinearity=False,
         field_value=0.0,
+        power_channels=(0,),
+        spectrometer_backend="andor",
+        spectrometer_model="DU401_BVF + Kymera",
+        spectrometer_serial="26970",
+        spectrograph_serial="KY-4444",
+        acquisition_timing=AcquisitionTiming(
+            discarded_frames_for_target=1,
+        ),
+        instrument_state={"grating": 1},
+        software_provenance={"source_revision": "2026-09-10"},
+        background_timestamp_utc="2026-08-20T00:00:00+00:00",
+        background_signature="sha256:test",
         gated=GatedFrameMetadata(
             sequence_id="sequence",
             mode="interleaved_decay",
@@ -57,6 +69,12 @@ def test_repeated_frames_are_incrementally_averaged() -> None:
     assert np.isclose(trace.request_timing.p95_ms, 6.45)
     assert np.isclose(trace.request_timing.p99_ms, 6.49)
     assert trace.mean_power_w == (2.0e-3,)
+    assert series.power_channels == (0,)
+    assert series.spectrometer_serial == "26970"
+    assert series.instrument_state == {"grating": 1}
+    assert series.software_provenance == {"source_revision": "2026-09-10"}
+    assert series.background_signature == "sha256:test"
+    assert series.detector_frames_discarded_for_target == 2
 
 
 def test_wavelength_grid_changes_are_rejected() -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 Run this from the project root with Newport's application closed::
 
     python -m troubleshooting.newport_reconnect_probe \
-      --dll "C:\\Program Files\\Newport\\Newport Power Meter Application\\Samples\\PowerMeterCommands.dll" \
+      --dll "C:\\path\\to\\PowerMeterCommands.dll" \
       --output newport_reconnect_probe.json
 
 The script compares a reconnect in the already-loaded CLR against the GUI's new
@@ -148,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         report["pnp_snapshots"]["powered_off"] = _pnp_snapshot()
         off_attempt = _attempt(direct_factory, "while_powered_off")
         report["attempts"].append(off_attempt)
-        print(f"Powered-off check: {'unexpected PASS' if off_attempt['success'] else 'expected fail'}")
+        state = "unexpected PASS" if off_attempt["success"] else "expected fail"
+        print(f"Powered-off check: {state}")
 
         _wait_for_user(
             "Turn the 2936-R ON and wait until it appears in Device Manager/Newport software"

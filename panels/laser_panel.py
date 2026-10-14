@@ -147,6 +147,7 @@ class LaserPanel(QWidget):
             ["Use", "λ", "Set", "Min", "Max", "Nom", "On", "Ch", "Box", "Port"]
         )
         table.setMinimumWidth(250)
+        table.setMinimumHeight(60)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(22)
         header = table.horizontalHeader()
@@ -204,6 +205,7 @@ class LaserPanel(QWidget):
 
         self._apply_detail_column_visibility(self.show_details_check.isChecked())
         self.table.resizeColumnsToContents()
+        self._resize_laser_table()
 
         if selected_key is not None and selected_key in self._laser_by_key:
             self._set_selected_key(selected_key, emit=False)
@@ -213,6 +215,22 @@ class LaserPanel(QWidget):
             self.selected_detail_label.setText("Selected: no lasers found")
             self.cdrh_delay_check.setEnabled(False)
         self._apply_manual_control_state()
+
+    def _resize_laser_table(self) -> None:
+        screen = self.screen()
+        screen_height = screen.availableGeometry().height() if screen else 900
+        rows_height = sum(self.table.rowHeight(i) for i in range(self.table.rowCount()))
+        wanted = (self.table.horizontalHeader().sizeHint().height() + rows_height
+                  + self.table.horizontalScrollBar().sizeHint().height() + 2 * self.table.frameWidth())
+        self.table.setFixedHeight(max(60, min(wanted, int(screen_height * 0.34))))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._resize_laser_table()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._resize_laser_table()
 
     def _populate_row(self, row: int, laser: LaserChannelInfo) -> None:
         brush = QBrush(_row_color(laser.wavelength_nm))
