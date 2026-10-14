@@ -42,7 +42,8 @@ def save_gated_series_csv(path: Path, series: GatedSeriesRecord) -> None:
         writer.writerow(["# timing_guard_method", series.timing_guard_method])
         writer.writerow(["# timing_evaluated_count", series.timing_evaluated_count])
         writer.writerow(["# timing_rejected_count", series.timing_rejected_count])
-        writer.writerow(["# field_value_mT", f"{series.field_value_mT:.12e}"])
+        if series.field_value_mT is not None:
+            writer.writerow(["# field_value_mT", f"{series.field_value_mT:.12e}"])
         writer.writerow(["# laser_port", series.laser_port])
         writer.writerow(["# laser_box_id", series.laser_box_id])
         writer.writerow(["# laser_channel", series.laser_channel])

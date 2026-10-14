@@ -48,7 +48,7 @@ class GatedSeriesRecord:
     traces: tuple[GatedAverageTrace, ...]
     integration_ms: int
     detector_averages: int
-    field_value_mT: float
+    field_value_mT: float | None
     laser_port: str
     laser_box_id: str
     laser_channel: int
