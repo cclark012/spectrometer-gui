@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import math
+import time
+from dataclasses import replace
 from collections import deque
 
 import numpy as np
 import pyqtgraph as pg
+from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,6 +26,7 @@ from core.units import format_power_w
 
 
 class PowerPanel(QWidget):
+    channel_changed = Signal(int)
     clear_requested = Signal()
     save_requested = Signal()
     details_requested = Signal()
@@ -36,6 +40,8 @@ class PowerPanel(QWidget):
 
         self.power_trace: deque[PowerTracePoint] = deque(maxlen=int(max_points))
         self._sequence_busy = False
+        self._application_t0 = time.perf_counter()
+        self._time_offset_s = 0.0
 
         layout = QVBoxLayout(self)
 
@@ -51,6 +57,11 @@ class PowerPanel(QWidget):
         mode_row.addWidget(self.power_mode_combo)
         layout.addLayout(mode_row)
 
+        self.channel_combo = QComboBox()
+        self.channel_combo.addItems(["Channel 1", "Channel 2"])
+        self.channel_combo.currentIndexChanged.connect(self._channel_changed)
+        mode_row.addWidget(self.channel_combo)
+
         self.power_detail_label = QLabel("ch1: --\nch2: --")
         self.power_detail_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.power_detail_label)
@@ -65,15 +76,20 @@ class PowerPanel(QWidget):
         self.power_stats_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.power_stats_label)
 
-        self.power_plot = pg.PlotWidget()
+        self.power_plot = pg.PlotWidget(viewBox=PaddedViewBox())
         self.power_plot.setLabel("bottom", "Time (s)")
-        self.power_plot.setLabel("left", "Power ch1 (W)")
+        self.power_plot.setLabel("left", f"Power ch{self.channel_combo.currentIndex()+1} (W)")
         self.power_curve = self.power_plot.plot()
         for axis_name in ["bottom", "left"]:
             axis = self.power_plot.getAxis(axis_name)
             if hasattr(axis, "enableAutoSIPrefix"):
                 axis.enableAutoSIPrefix(False)
         layout.addWidget(self.power_plot)
+
+        self.reset_timer_button = QPushButton("Reset timer")
+        self.reset_timer_button.setToolTip("Set time zero to now; retain history at negative times. Full-run logging is unchanged.")
+        self.reset_timer_button.clicked.connect(self.reset_timer)
+        layout.addWidget(self.reset_timer_button)
 
         self.clear_button = QPushButton("Clear Power Trace")
         self.clear_button.clicked.connect(lambda _checked=False: self.clear_requested.emit())
@@ -148,7 +164,7 @@ class PowerPanel(QWidget):
     def append_point(self, point: PowerTracePoint) -> bool:
         if not any(math.isfinite(float(value)) for value in point.powers_w):
             return False
-        self.power_trace.append(point)
+        self.power_trace.append(replace(point, elapsed_s=point.elapsed_s-self._time_offset_s))
         self._plot_dirty = True
         return True
 
@@ -158,6 +174,20 @@ class PowerPanel(QWidget):
         self._plot_dirty = False
         self.redraw()
         self.redrawn.emit()
+
+    def _channel_changed(self, channel: int) -> None:
+        self.redraw()
+        self.channel_changed.emit(channel)
+
+    def set_application_t0(self, value: float) -> None:
+        self._application_t0 = value
+
+    def reset_timer(self) -> None:
+        offset = time.perf_counter() - self._application_t0
+        delta = offset - self._time_offset_s
+        self.power_trace = deque((replace(p, elapsed_s=p.elapsed_s-delta) for p in self.power_trace), maxlen=self.power_trace.maxlen)
+        self._time_offset_s = offset
+        self.redraw()
 
     def clear(self) -> None:
         self.power_trace.clear()
@@ -174,11 +204,13 @@ class PowerPanel(QWidget):
         x = []
         y = []
 
+        channel = self.channel_combo.currentIndex()
+        self.power_plot.setLabel("left", f"Power ch{channel+1} (W)")
         for point in self.power_trace:
-            if len(point.powers_w) < 1:
+            if len(point.powers_w) <= channel:
                 continue
 
-            p = float(point.powers_w[0])
+            p = float(point.powers_w[channel])
 
             if not math.isfinite(p):
                 continue
@@ -262,8 +294,10 @@ class PowerPanel(QWidget):
         self.auto_wavelength_check.setChecked(bool(enabled))
 
     def apply_plot_style(self, settings) -> None:
+        apply_plot_options(self.power_plot, settings, "power")
+        color = color_with_alpha(settings.power_color, settings.power_alpha)
         pen = (
-            pg.mkPen(settings.power_color, width=settings.power_line_width)
+            pg.mkPen(color, width=settings.power_line_width)
             if settings.power_show_line and settings.power_line_width > 0
             else None
         )
@@ -272,6 +306,8 @@ class PowerPanel(QWidget):
 
         self.power_curve.setPen(pen)
         self.power_curve.setSymbol(symbol)
+        self.power_curve.setSymbolPen(color)
+        self.power_curve.setSymbolBrush(color)
         self.power_curve.setSymbolSize(int(settings.symbol_size))
 
         font = self.font()
@@ -285,7 +321,7 @@ class PowerPanel(QWidget):
                 axis.enableAutoSIPrefix(False)
 
         self.power_plot.setLabel("bottom", "Time (s)")
-        self.power_plot.setLabel("left", "Power ch1 (W)")
+        self.power_plot.setLabel("left", f"Power ch{self.channel_combo.currentIndex()+1} (W)")
 
         if settings.power_auto_range:
             self.power_plot.enableAutoRange()
@@ -293,6 +329,7 @@ class PowerPanel(QWidget):
             self.power_plot.disableAutoRange()
 
     def load_preferences(self, settings: QSettings) -> None:
+        self.channel_combo.setCurrentIndex(max(0, min(1, get_int(settings, "power/display_channel", 0))))
         self.set_mode(get_str(settings, "power/mode", "live"))
 
         self.set_auto_wavelength_enabled(
@@ -304,6 +341,7 @@ class PowerPanel(QWidget):
         )
 
     def save_preferences(self, settings: QSettings) -> None:
+        settings.setValue("power/display_channel", self.channel_combo.currentIndex())
         settings.setValue("power/mode", str(self.power_mode_combo.currentData()))
         settings.setValue("power/auto_wavelength", self.auto_wavelength_check.isChecked())
         settings.setValue("power/wavelength_nm", self.pm_wavelength_spin.value())

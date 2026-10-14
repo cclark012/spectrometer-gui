@@ -4,11 +4,12 @@ import math
 
 import numpy as np
 import pyqtgraph as pg
+from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from core.records import MonitorTracePoint
-from processing.monitor_metrics import monitor_y
+from processing.monitor_metrics import monitor_y, monitor_power
 
 try:
     import pyqtgraph.opengl as gl
@@ -65,6 +66,7 @@ def format_range_value(value: float, units: str) -> str:
 def collect_field_power_quantity(
     points: list[MonitorTracePoint],
     quantity_mode: str,
+    channel: int = 0,
 ) -> tuple[list[float], list[float], list[float], str, str]:
     fields: list[float] = []
     powers: list[float] = []
@@ -73,9 +75,9 @@ def collect_field_power_quantity(
     units = ""
 
     for point in points:
-        quantity, label, units = monitor_y(point, quantity_mode)
+        quantity, label, units = monitor_y(point, quantity_mode, channel)
         field = float(point.field_mT)
-        power = float(point.power_ch1_W)
+        power = float(monitor_power(point, channel))
         if all(math.isfinite(value) for value in (field, power, quantity)):
             fields.append(field)
             powers.append(power)
@@ -97,7 +99,7 @@ class FieldPowerMapView(QWidget):
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
 
-        self.plot = pg.PlotWidget()
+        self.plot = pg.PlotWidget(viewBox=PaddedViewBox())
         self.plot.setLabel("bottom", "Magnetic field (mT)")
         self.plot.setLabel("left", "Power ch1 (W)")
         for axis_name in ("bottom", "left"):
@@ -113,11 +115,12 @@ class FieldPowerMapView(QWidget):
         self.scatter.setData([])
         self.info_label.setText("Field-power map: no finite monitor points")
 
-    def set_data(self, points: list[MonitorTracePoint], quantity_mode: str) -> None:
+    def set_data(self, points: list[MonitorTracePoint], quantity_mode: str, channel: int = 0) -> None:
         fields, powers, quantities, label, units = collect_field_power_quantity(
             points,
-            quantity_mode,
+            quantity_mode, channel,
         )
+        self.plot.setLabel("left", f"Power ch{channel + 1} (W)")
         if not fields:
             self.clear()
             return
@@ -313,10 +316,10 @@ if HAS_GL_3D:
                 f"{format_range_value(quantity_max, units)}]"
             )
 
-        def set_data(self, points: list[MonitorTracePoint], quantity_mode: str) -> None:
+        def set_data(self, points: list[MonitorTracePoint], quantity_mode: str, channel: int = 0) -> None:
             fields, powers, quantities, label, units = collect_field_power_quantity(
                 points,
-                quantity_mode,
+                quantity_mode, channel,
             )
             if not fields:
                 self.clear()

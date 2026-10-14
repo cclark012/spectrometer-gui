@@ -1,0 +1,188 @@
+{
+  "python": "3.12.14",
+  "numpy": "2.3.5",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "seed": 100726,
+  "iterations": 150,
+  "results": [
+    {
+      "size": 1024,
+      "method": "manual_windows",
+      "median_ms": 0.776564,
+      "p95_ms": 2.0074002999999996,
+      "noise_estimate": 5.418300989084308,
+      "true_noise": 5
+    },
+    {
+      "size": 1024,
+      "method": "auto_8_std",
+      "median_ms": 0.2200835,
+      "p95_ms": 0.419552399999999,
+      "noise_estimate": 4.81570461620803,
+      "true_noise": 5
+    },
+    {
+      "size": 1024,
+      "method": "auto_8_mad",
+      "median_ms": 0.37650300000000003,
+      "p95_ms": 1.157725899999996,
+      "noise_estimate": 4.5277621883904695,
+      "true_noise": 5
+    },
+    {
+      "size": 1024,
+      "method": "auto_16_std",
+      "median_ms": 0.2364795,
+      "p95_ms": 0.5794453999999996,
+      "noise_estimate": 5.1430983926410985,
+      "true_noise": 5
+    },
+    {
+      "size": 1024,
+      "method": "auto_16_mad",
+      "median_ms": 0.40962200000000004,
+      "p95_ms": 1.6368614499999998,
+      "noise_estimate": 5.317829794084768,
+      "true_noise": 5
+    },
+    {
+      "size": 2048,
+      "method": "manual_windows",
+      "median_ms": 1.031987,
+      "p95_ms": 2.586612949999999,
+      "noise_estimate": 4.933550515488696,
+      "true_noise": 5
+    },
+    {
+      "size": 2048,
+      "method": "auto_8_std",
+      "median_ms": 0.2866365,
+      "p95_ms": 1.1017033499999989,
+      "noise_estimate": 5.086716924473647,
+      "true_noise": 5
+    },
+    {
+      "size": 2048,
+      "method": "auto_8_mad",
+      "median_ms": 0.4555885,
+      "p95_ms": 1.3561080999999968,
+      "noise_estimate": 4.739749262843603,
+      "true_noise": 5
+    },
+    {
+      "size": 2048,
+      "method": "auto_16_std",
+      "median_ms": 0.33797,
+      "p95_ms": 1.2505477499999982,
+      "noise_estimate": 5.123833811523269,
+      "true_noise": 5
+    },
+    {
+      "size": 2048,
+      "method": "auto_16_mad",
+      "median_ms": 0.5295624999999999,
+      "p95_ms": 1.473934499999999,
+      "noise_estimate": 4.999012005161869,
+      "true_noise": 5
+    },
+    {
+      "size": 16384,
+      "method": "manual_windows",
+      "median_ms": 3.032198,
+      "p95_ms": 5.732628049999998,
+      "noise_estimate": 5.061831579411473,
+      "true_noise": 5
+    },
+    {
+      "size": 16384,
+      "method": "auto_8_std",
+      "median_ms": 14.3408455,
+      "p95_ms": 99.78889864999998,
+      "noise_estimate": 4.943500522312,
+      "true_noise": 5
+    },
+    {
+      "size": 16384,
+      "method": "auto_8_mad",
+      "median_ms": 81.39771,
+      "p95_ms": 417.4751653999999,
+      "noise_estimate": 4.552957510214288,
+      "true_noise": 5
+    },
+    {
+      "size": 16384,
+      "method": "auto_16_std",
+      "median_ms": 17.489725,
+      "p95_ms": 90.59611914999999,
+      "noise_estimate": 4.9712943654868065,
+      "true_noise": 5
+    },
+    {
+      "size": 16384,
+      "method": "auto_16_mad",
+      "median_ms": 21.302794,
+      "p95_ms": 75.63957404999998,
+      "noise_estimate": 4.793660099107925,
+      "true_noise": 5
+    }
+  ],
+  "accuracy": [
+    {
+      "block": 8,
+      "method": "std",
+      "slope": 0,
+      "mean_noise": 4.9561799338992465,
+      "std_noise": 0.0867431075952903
+    },
+    {
+      "block": 8,
+      "method": "std",
+      "slope": 1,
+      "mean_noise": 4.950626655992671,
+      "std_noise": 0.09622372552196118
+    },
+    {
+      "block": 8,
+      "method": "mad",
+      "slope": 0,
+      "mean_noise": 4.626738356858881,
+      "std_noise": 0.13365792987446545
+    },
+    {
+      "block": 8,
+      "method": "mad",
+      "slope": 1,
+      "mean_noise": 4.633140638591197,
+      "std_noise": 0.14599456331232966
+    },
+    {
+      "block": 16,
+      "method": "std",
+      "slope": 0,
+      "mean_noise": 4.9705489543384385,
+      "std_noise": 0.08503816958691353
+    },
+    {
+      "block": 16,
+      "method": "std",
+      "slope": 1,
+      "mean_noise": 4.9767089636198225,
+      "std_noise": 0.08785949567842423
+    },
+    {
+      "block": 16,
+      "method": "mad",
+      "slope": 0,
+      "mean_noise": 4.8375060626330955,
+      "std_noise": 0.12534469939892234
+    },
+    {
+      "block": 16,
+      "method": "mad",
+      "slope": 1,
+      "mean_noise": 4.8753041585412795,
+      "std_noise": 0.14296577585473064
+    }
+  ],
+  "limitations": "Synthetic independent Gaussian noise. Timing is local, not the lab PC. Sloping backgrounds still bias automatic signal baseline; dense narrow lines and correlated noise bias noise estimates."
+}

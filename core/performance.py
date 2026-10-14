@@ -132,7 +132,9 @@ class PerformanceMonitor(QObject):
         self._report_timer.stop()
         self._probe_timer.stop()
         if not self.enabled:
+            self._lag_ms = 0.0
             return
+        self._lag_ms = 0.0
         self._expected_probe_s = (
             time.perf_counter() + self._probe_timer.interval() / 1000.0
         )
@@ -163,12 +165,20 @@ class PerformanceMonitor(QObject):
     def _probe_event_loop(self) -> None:
         now = time.perf_counter()
         lag_ms = max(0.0, 1000.0 * (now - self._expected_probe_s))
-        # Exponential smoothing keeps the label readable while still exposing stalls.
-        self._lag_ms = 0.80 * self._lag_ms + 0.20 * lag_ms
+        # Show a new stall immediately, then recover within a few probes once
+        # the event loop is healthy. Slow symmetric lag smoothing made a resolved
+        # background/file-I/O stall look current for many seconds.
+        self._lag_ms = (
+            lag_ms
+            if lag_ms >= self._lag_ms
+            else 0.25 * self._lag_ms + 0.75 * lag_ms
+        )
         interval_s = self._probe_timer.interval() / 1000.0
         expected = self._expected_probe_s + interval_s
         # Do not carry a large stall forward indefinitely.
-        self._expected_probe_s = now + interval_s if now - expected > 5 * interval_s else expected
+        self._expected_probe_s = (
+            now + interval_s if now - expected > 5 * interval_s else expected
+        )
 
     def snapshot(self) -> PerformanceSnapshot:
         now = time.perf_counter()

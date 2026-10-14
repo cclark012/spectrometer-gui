@@ -1,0 +1,116 @@
+{
+  "baseline": "spectrometer-gui-20260914.zip",
+  "checks": [
+    {
+      "file": "devices/andor_adapter.py",
+      "check": "byte equality",
+      "passed": true,
+      "baseline_sha256": "d0954c0242e1a89902807a6d219cf9817f9cf035e2c4ca940374ce6d04617147",
+      "current_sha256": "d0954c0242e1a89902807a6d219cf9817f9cf035e2c4ca940374ce6d04617147"
+    },
+    {
+      "file": "devices/andor_sdk2.py",
+      "check": "byte equality",
+      "passed": true,
+      "baseline_sha256": "d3bb2e5afb38f56b7b118b1236fdd907d0489234f6e73d829f72e9ae1b558339",
+      "current_sha256": "d3bb2e5afb38f56b7b118b1236fdd907d0489234f6e73d829f72e9ae1b558339"
+    },
+    {
+      "file": "devices/andor_spectrograph.py",
+      "check": "byte equality",
+      "passed": true,
+      "baseline_sha256": "63580cd451f48a1015d328509e09dff2809591000f5ec50c5b1a2b75f080da9b",
+      "current_sha256": "63580cd451f48a1015d328509e09dff2809591000f5ec50c5b1a2b75f080da9b"
+    },
+    {
+      "file": "controllers/instrument_runtime.py",
+      "check": "byte equality",
+      "passed": true,
+      "baseline_sha256": "733d664992729838bb3c79c586e0d077d46ba3e8ba347dff2a7c5873f183b31a",
+      "current_sha256": "733d664992729838bb3c79c586e0d077d46ba3e8ba347dff2a7c5873f183b31a"
+    },
+    {
+      "file": "core/configuration.py",
+      "check": "byte equality",
+      "passed": true,
+      "baseline_sha256": "27005ee70d948027da8f4a57dfd7355aa5fcf0cdd84d8c26cff8cd309c2fb28d",
+      "current_sha256": "27005ee70d948027da8f4a57dfd7355aa5fcf0cdd84d8c26cff8cd309c2fb28d"
+    },
+    {
+      "file": "config/lab_defaults.json",
+      "check": "byte equality",
+      "passed": true,
+      "baseline_sha256": "04c886366734e7efc456b83b490342557498c6b4a727f48d65d96e99efc266df",
+      "current_sha256": "04c886366734e7efc456b83b490342557498c6b4a727f48d65d96e99efc266df"
+    },
+    {
+      "file": "gui.py",
+      "check": "byte equality",
+      "passed": true,
+      "baseline_sha256": "e5bb7e93090f8b403e88e1343960010e654d22c5ab678304e4c99e7d3b211653",
+      "current_sha256": "e5bb7e93090f8b403e88e1343960010e654d22c5ab678304e4c99e7d3b211653"
+    },
+    {
+      "file": "core/settings.py",
+      "member": "DeviceConfig",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "controllers/device_controller.py",
+      "member": "DeviceController._connect_spectrometer",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "controllers/device_controller.py",
+      "member": "DeviceController._connect_spectrometer_now",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "controllers/device_controller.py",
+      "member": "DeviceController.connect_spectrometer",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "controllers/device_controller.py",
+      "member": "DeviceController.connect_spectrometer_selection",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "controllers/device_controller.py",
+      "member": "DeviceController.disconnect_spectrometer",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "controllers/device_controller.py",
+      "member": "DeviceController._close_spectrometer",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "panels/main_window.py",
+      "member": "MainWindow._connect_instrument",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "panels/main_window.py",
+      "member": "MainWindow._disconnect_instrument",
+      "check": "AST equality",
+      "passed": true
+    },
+    {
+      "file": "panels/main_window.py",
+      "member": "MainWindow._reconnect_all_instruments",
+      "check": "AST equality",
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "scope": "Source equality, not hardware connectivity or SDK validation. No I2C implementation added."
+}

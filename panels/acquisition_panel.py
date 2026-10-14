@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -20,15 +21,19 @@ from PySide6.QtWidgets import (
 from core.preferences import get_bool, get_int, get_str
 from core.settings import AcquisitionSettings
 from core.snr_records import SNRMetrics
+from panels.smoothing_preview import KernelPreview, SmoothingPreviewDialog
 
 
 class AcquisitionPanel(QWidget):
     acquire_requested = Signal()
     background_requested = Signal()
     background_clear_requested = Signal()
+    background_save_requested = Signal()
+    background_plot_changed = Signal(bool)
     live_changed = Signal(bool)
     recommend_acquisition_requested = Signal()
     auto_tune_acquisition_requested = Signal()
+    power_channels_changed = Signal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -42,7 +47,6 @@ class AcquisitionPanel(QWidget):
         form = QGridLayout()
         form.setHorizontalSpacing(8)
         form.setVerticalSpacing(5)
-        form.setRowStretch(1, 1)
         form.setColumnStretch(3, 1)
 
         self.live_check = QCheckBox()
@@ -69,6 +73,19 @@ class AcquisitionPanel(QWidget):
             "Turn this off for maximum spectrometer throughput while keeping the "
             "power meter connected."
         )
+        self.measure_power_check.toggled.connect(
+            self._on_measure_power_toggled
+        )
+
+        self.power_channel_1_check = QCheckBox("Ch 1")
+        self.power_channel_1_check.setChecked(True)
+        self.power_channel_2_check = QCheckBox("Ch 2")
+        for checkbox in (self.power_channel_1_check, self.power_channel_2_check):
+            checkbox.setToolTip(
+                "Associate this Newport channel with spectrum acquisitions. "
+                "At least one channel is required while Measure power is enabled."
+            )
+            checkbox.toggled.connect(self._ensure_power_channel_selection)
 
         self.take_background_button = QPushButton("Take Background")
         self.take_background_button.clicked.connect(
@@ -85,15 +102,38 @@ class AcquisitionPanel(QWidget):
         self.averages.setValue(5)
         # self.averages.setMaximumWidth(90)
 
-        averaging_row = QHBoxLayout()
-        averaging_row.addWidget(self.averages)
-        averaging_row.addWidget(self.averaging_mode_combo)
-        averaging_row.setSpacing(5)
-
         self.boxcar_width = QSpinBox()
-        self.boxcar_width.setRange(0, 501)
-        self.boxcar_width.setValue(0)
+        self.boxcar_width.setRange(1, 501)
+        self.boxcar_width.setValue(5)
         self.boxcar_width.setMaximumWidth(90)
+
+        self.smoothing_window_combo = QComboBox()
+        for label, value in (
+            ("None", "none"),
+            ("Boxcar", "boxcar"),
+            ("Hann", "hann"),
+            ("Hamming", "hamming"),
+            ("Gaussian", "gaussian"),
+            ("Triangle", "triangle"),
+            ("Blackman", "blackman"),
+            ("Cosine", "cosine"),
+            ("Sine", "sine"),
+        ):
+            self.smoothing_window_combo.addItem(label, value)
+        self.smoothing_boundary_combo = QComboBox()
+        for label, value in (
+            ("Nearest", "nearest"),
+            ("Reflect", "reflect"),
+            ("Wrap", "wrap"),
+            ("Constant zero", "constant"),
+        ):
+            self.smoothing_boundary_combo.addItem(label, value)
+        self.smoothing_preview = KernelPreview()
+        self.smoothing_window_combo.currentIndexChanged.connect(
+            self._update_smoothing_controls
+        )
+        self.boxcar_width.valueChanged.connect(self._update_smoothing_controls)
+        self.smoothing_preview.clicked.connect(self._show_smoothing_preview)
 
         self.dark_check = QCheckBox()
         self.dark_check.setChecked(True)
@@ -103,6 +143,11 @@ class AcquisitionPanel(QWidget):
 
         self.record_field = QCheckBox()
         self.record_field.setChecked(True)
+        self.record_field.setToolTip(
+            "When enabled, associate the entered magnetic field with acquired "
+            "spectra, gated-series output, monitors, and automatic file names. "
+            "A value of 0 mT is recorded; unchecked means not applicable."
+        )
 
         self.field_input = QSpinBox()
         self.field_input.setRange(-100_000, 100_000)
@@ -110,6 +155,7 @@ class AcquisitionPanel(QWidget):
         self.field_input.setValue(0)
         self.field_input.setSuffix(" mT")
         self.field_input.setMaximumWidth(112)
+        self.record_field.toggled.connect(self._apply_control_state)
 
         self._snr_enabled = False
 
@@ -142,52 +188,47 @@ class AcquisitionPanel(QWidget):
         recommendation_row.addWidget(self.auto_tune_button)
         recommendation_row.setSpacing(5)
 
-        live_label = QLabel()
-        live_label.setText("Live")
-        electric_dark_label = QLabel()
-        electric_dark_label.setText("Electric Dark")
-        nonlinearity_label = QLabel()
-        nonlinearity_label.setText("Nonlinearity")
-        sub_background_label = QLabel()
-        sub_background_label.setText("Subtract Background")
-        labels = [
-            live_label, electric_dark_label, nonlinearity_label, sub_background_label
-        ]
-
-        checks = [
-            self.live_check, self.dark_check,
-            self.nonlinearity_check, self.subtract_background_check
-        ]
-
-        options = QHBoxLayout()
-        for label, check in zip(labels, checks, strict=True):
-            options.addWidget(label)
-            options.addWidget(check)
-        options.setSpacing(5)
-
-        form.addLayout(options, 0, 0, 1, 4)
+        live_row = QHBoxLayout()
+        live_row.addWidget(QLabel("Live"))
+        live_row.addWidget(self.live_check)
+        live_row.addStretch(1)
+        form.addLayout(live_row, 0, 0, 1, 4)
+        self.save_background_button = QPushButton("Save background")
+        self.save_background_button.clicked.connect(lambda: self.background_save_requested.emit())
+        self.plot_background_check = QCheckBox("Plot background")
+        self.plot_background_check.toggled.connect(self.background_plot_changed.emit)
+        self._background_available = False
         background_row = QHBoxLayout()
         background_row.addWidget(self.take_background_button)
         background_row.addWidget(self.clear_background_button)
+        background_row.addWidget(QLabel("Subtract"))
+        background_row.addWidget(self.subtract_background_check)
+        background_row.addStretch(1)
         background_row.setSpacing(5)
         form.addWidget(QLabel("Exposure"), 1, 0)
         form.addWidget(self.integration_ms, 1, 1)
-        form.addWidget(QLabel("SNR"), 1, 2)
-        form.addWidget(self.snr_label, 1, 3, 1, 1)
-        form.addWidget(QLabel("Averaging"), 2, 0)
-        form.addLayout(averaging_row, 2, 1, 1, 3)
-        form.addWidget(QLabel("Boxcar"), 3, 0)
-        form.addWidget(self.boxcar_width, 3, 1)
-        form.addWidget(QLabel("Field"), 3, 2)
-        form.addWidget(self.field_input, 3, 3)
-        form.addWidget(QLabel("Measure power"), 4, 0)
-        form.addWidget(self.measure_power_check, 4, 1)
-        form.addWidget(QLabel("Record field"), 4, 2)
-        form.addWidget(self.record_field, 4, 3)
-        form.addWidget(QLabel("Tuning"), 5, 0)
-        form.addLayout(recommendation_row, 5, 1, 1, 3)
-        form.addWidget(QLabel("Background"), 6, 0)
-        form.addLayout(background_row, 6, 1, 1, 3)
+        form.addWidget(QLabel("Averages"), 1, 2)
+        form.addWidget(self.averages, 1, 3)
+        form.addWidget(QLabel("Smoothing"), 2, 0)
+        form.addWidget(self.smoothing_window_combo, 2, 1)
+        smoothing_row = QHBoxLayout()
+        smoothing_row.addWidget(QLabel("Width"))
+        smoothing_row.addWidget(self.boxcar_width)
+        smoothing_row.addWidget(self.smoothing_preview)
+        smoothing_row.addStretch(1)
+        form.addLayout(smoothing_row, 2, 2, 1, 2)
+        form.addWidget(QLabel("SNR"), 3, 0)
+        form.addWidget(self.snr_label, 3, 1, 1, 3)
+        form.addWidget(QLabel("Tuning"), 4, 0)
+        form.addLayout(recommendation_row, 4, 1, 1, 3)
+        form.addWidget(QLabel("Background"), 5, 0)
+        background_tools = QHBoxLayout()
+        background_tools.addWidget(self.save_background_button)
+        background_tools.addWidget(self.plot_background_check)
+        background_layout = QVBoxLayout()
+        background_layout.addLayout(background_row)
+        background_layout.addLayout(background_tools)
+        form.addLayout(background_layout, 5, 1, 1, 3)
         layout.addLayout(form)
 
         self.acquire_button = QPushButton("Take Spectrum")
@@ -196,7 +237,47 @@ class AcquisitionPanel(QWidget):
         )
         layout.addWidget(self.acquire_button)
 
+        self.advanced_group = QGroupBox("Advanced acquisition options")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(False)
+        advanced_group_layout = QVBoxLayout(self.advanced_group)
+        advanced_group_layout.setContentsMargins(6, 4, 6, 6)
+        self.advanced_contents = QWidget()
+        advanced_group_layout.addWidget(self.advanced_contents)
+        advanced_layout = QGridLayout(self.advanced_contents)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.setHorizontalSpacing(8)
+        advanced_layout.setVerticalSpacing(5)
+        advanced_layout.addWidget(QLabel("Averaging backend"), 0, 0)
+        advanced_layout.addWidget(self.averaging_mode_combo, 0, 1, 1, 3)
+        advanced_layout.addWidget(QLabel("Boundary"), 1, 0)
+        advanced_layout.addWidget(self.smoothing_boundary_combo, 1, 1)
+        correction_row = QHBoxLayout()
+        correction_row.addWidget(QLabel("Electric dark"))
+        correction_row.addWidget(self.dark_check)
+        correction_row.addWidget(QLabel("Nonlinearity"))
+        correction_row.addWidget(self.nonlinearity_check)
+        correction_row.addStretch(1)
+        advanced_layout.addLayout(correction_row, 2, 0, 1, 4)
+        power_row = QHBoxLayout()
+        power_row.addWidget(self.measure_power_check)
+        power_row.addWidget(self.power_channel_1_check)
+        power_row.addWidget(self.power_channel_2_check)
+        power_row.addStretch(1)
+        advanced_layout.addWidget(QLabel("Measure power"), 3, 0)
+        advanced_layout.addLayout(power_row, 3, 1, 1, 3)
+        field_row = QHBoxLayout()
+        field_row.addWidget(self.record_field)
+        field_row.addWidget(self.field_input)
+        field_row.addStretch(1)
+        advanced_layout.addWidget(QLabel("Magnetic field"), 4, 0)
+        advanced_layout.addLayout(field_row, 4, 1, 1, 3)
+        self.advanced_group.toggled.connect(self.advanced_contents.setVisible)
+        self.advanced_contents.hide()
+        layout.addWidget(self.advanced_group)
+
         layout.addStretch(1)
+        self._update_smoothing_controls()
         self._apply_control_state()
 
     def settings(self, *, run_identifier: str = "", notes: str = "") -> AcquisitionSettings:
@@ -214,10 +295,50 @@ class AcquisitionPanel(QWidget):
             field_value=float(self.field_input.value()) if self.record_field.isChecked() else None,
             run_identifier=str(run_identifier),
             notes=str(notes),
+            smoothing_window=str(self.smoothing_window_combo.currentData()),
+            smoothing_boundary=str(self.smoothing_boundary_combo.currentData()),
             averaging_mode=str(self.averaging_mode_combo.currentData()),
             subtract_background=bool(self.subtract_background_check.isChecked()),
             measure_power=bool(self.measure_power_check.isChecked()),
+            power_channels=self.selected_power_channels(),
         )
+
+    def selected_power_channels(self) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, checkbox in enumerate(
+                (self.power_channel_1_check, self.power_channel_2_check)
+            )
+            if checkbox.isChecked()
+        )
+
+    def _ensure_power_channel_selection(self, *_args) -> None:
+        if self.measure_power_check.isChecked() and not self.selected_power_channels():
+            self.power_channel_1_check.blockSignals(True)
+            self.power_channel_1_check.setChecked(True)
+            self.power_channel_1_check.blockSignals(False)
+        self.power_channels_changed.emit(self.selected_power_channels())
+        self._apply_control_state()
+
+    def _on_measure_power_toggled(self, _enabled: bool) -> None:
+        self._ensure_power_channel_selection()
+
+    def _update_smoothing_controls(self, *_args) -> None:
+        window = str(self.smoothing_window_combo.currentData() or "none")
+        # All acquisition/sequence gating belongs to one implementation.
+        self._apply_control_state()
+        self.boxcar_width.setToolTip(
+            "Gaussian width is FWHM in pixels. Other widths are window length in pixels."
+        )
+        self.smoothing_preview.set_kernel(window, int(self.boxcar_width.value()))
+
+    def _show_smoothing_preview(self) -> None:
+        dialog = SmoothingPreviewDialog(
+            str(self.smoothing_window_combo.currentData() or "none"),
+            int(self.boxcar_width.value()),
+            self,
+        )
+        dialog.exec()
 
     def is_live_enabled(self) -> bool:
         return bool(self.live_check.isChecked())
@@ -227,6 +348,13 @@ class AcquisitionPanel(QWidget):
 
     def set_acquiring(self, acquiring: bool) -> None:
         self._acquiring = bool(acquiring)
+        self._apply_control_state()
+
+    def set_background_available(self, available: bool) -> None:
+        self._background_available = available
+        if not available:
+            self.subtract_background_check.setChecked(False)
+            self.plot_background_check.setChecked(False)
         self._apply_control_state()
 
     def set_sequence_owner(self, owner: str | None) -> None:
@@ -257,15 +385,34 @@ class AcquisitionPanel(QWidget):
             self.integration_ms,
             self.averaging_mode_combo,
             self.averages,
-            self.boxcar_width,
+            self.smoothing_window_combo,
+            self.smoothing_boundary_combo,
             self.dark_check,
             self.nonlinearity_check,
             self.subtract_background_check,
             self.measure_power_check,
+            self.power_channel_1_check,
+            self.power_channel_2_check,
             self.record_field,
-            self.field_input,
+            self.advanced_group,
         ):
             widget.setEnabled(parameters_enabled)
+        available = getattr(self, "_background_available", False)
+        self.subtract_background_check.setEnabled(parameters_enabled and available)
+        self.subtract_background_check.setToolTip("Capture a compatible background first." if not available else "Strict configuration matching is enforced.")
+        self.save_background_button.setEnabled(available)
+        self.plot_background_check.setEnabled(available)
+        self.boxcar_width.setEnabled(
+            parameters_enabled
+            and str(self.smoothing_window_combo.currentData()) != "none"
+        )
+        for checkbox in (self.power_channel_1_check, self.power_channel_2_check):
+            checkbox.setEnabled(
+                parameters_enabled and self.measure_power_check.isChecked()
+            )
+        self.field_input.setEnabled(
+            parameters_enabled and self.record_field.isChecked()
+        )
         self.dark_check.setEnabled(
             parameters_enabled and self._dark_correction_supported
         )
@@ -297,7 +444,13 @@ class AcquisitionPanel(QWidget):
             self.nonlinearity_check.setToolTip("")
         self._apply_control_state()
 
-    def set_integration_limits_us(self, min_us: int, max_us: int) -> None:
+    def set_integration_limits_us(
+        self,
+        min_us: int,
+        max_us: int,
+        *,
+        minimum_frame_period_ms: float | None = None,
+    ) -> None:
         min_us = int(min_us or 0)
         max_us = int(max_us or 0)
 
@@ -313,9 +466,18 @@ class AcquisitionPanel(QWidget):
         self.integration_ms.setRange(min_ms, max_ms)
         self.integration_ms.setValue(min(max(old_value, min_ms), max_ms))
 
-        self.integration_ms.setToolTip(
-            f"Allowed integration range: {min_ms} to {max_ms} ms"
-        )
+        tooltip = f"Allowed exposure range: {min_ms} to {max_ms} ms."
+        if (
+            minimum_frame_period_ms is not None
+            and math.isfinite(float(minimum_frame_period_ms))
+            and float(minimum_frame_period_ms) > 0.0
+        ):
+            tooltip += (
+                " The current full-detector readout needs at least "
+                f"{float(minimum_frame_period_ms):.6g} ms per frame; this is a "
+                "throughput limit, not necessarily a minimum exposure."
+            )
+        self.integration_ms.setToolTip(tooltip)
 
     def set_snr(
         self,
@@ -396,8 +558,29 @@ class AcquisitionPanel(QWidget):
             get_int(settings, "acquisition/averages", self.averages.value())
         )
         self.boxcar_width.setValue(
-            get_int(settings, "acquisition/boxcar_width", self.boxcar_width.value())
+            max(1, get_int(settings, "acquisition/boxcar_width", self.boxcar_width.value()))
         )
+        smoothing_window = get_str(
+            settings,
+            "acquisition/smoothing_window",
+            (
+                "boxcar"
+                if settings.contains("acquisition/boxcar_width")
+                and get_int(settings, "acquisition/boxcar_width", 0) > 1
+                else "none"
+            ),
+        )
+        index = self.smoothing_window_combo.findData(smoothing_window)
+        if index >= 0:
+            self.smoothing_window_combo.setCurrentIndex(index)
+        smoothing_boundary = get_str(
+            settings,
+            "acquisition/smoothing_boundary",
+            "nearest",
+        )
+        index = self.smoothing_boundary_combo.findData(smoothing_boundary)
+        if index >= 0:
+            self.smoothing_boundary_combo.setCurrentIndex(index)
         self.dark_check.setChecked(
             get_bool(settings, "acquisition/correct_dark", self.dark_check.isChecked())
         )
@@ -425,12 +608,35 @@ class AcquisitionPanel(QWidget):
         self.record_field.setChecked(
             get_bool(settings, "acquisition/record_field", True)
         )
+        self.power_channel_1_check.blockSignals(True)
+        self.power_channel_2_check.blockSignals(True)
+        self.power_channel_1_check.setChecked(
+            get_bool(settings, "acquisition/power_channel_1", True)
+        )
+        self.power_channel_2_check.setChecked(
+            get_bool(settings, "acquisition/power_channel_2", False)
+        )
+        self.power_channel_1_check.blockSignals(False)
+        self.power_channel_2_check.blockSignals(False)
+        self.advanced_group.setChecked(
+            get_bool(settings, "acquisition/advanced_expanded", False)
+        )
+        self._ensure_power_channel_selection()
+        self._update_smoothing_controls()
 
     def save_preferences(self, settings: QSettings) -> None:
         settings.setValue("acquisition/live_enabled", self.live_check.isChecked())
         settings.setValue("acquisition/integration_ms", self.integration_ms.value())
         settings.setValue("acquisition/averages", self.averages.value())
         settings.setValue("acquisition/boxcar_width", self.boxcar_width.value())
+        settings.setValue(
+            "acquisition/smoothing_window",
+            str(self.smoothing_window_combo.currentData()),
+        )
+        settings.setValue(
+            "acquisition/smoothing_boundary",
+            str(self.smoothing_boundary_combo.currentData()),
+        )
         settings.setValue("acquisition/correct_dark", self.dark_check.isChecked())
         settings.setValue(
             "acquisition/correct_nonlinearity",
@@ -452,4 +658,16 @@ class AcquisitionPanel(QWidget):
         settings.setValue(
             "acquisition/record_field",
             self.record_field.isChecked(),
+        )
+        settings.setValue(
+            "acquisition/power_channel_1",
+            self.power_channel_1_check.isChecked(),
+        )
+        settings.setValue(
+            "acquisition/power_channel_2",
+            self.power_channel_2_check.isChecked(),
+        )
+        settings.setValue(
+            "acquisition/advanced_expanded",
+            self.advanced_group.isChecked(),
         )

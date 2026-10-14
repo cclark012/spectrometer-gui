@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
 import traceback
 from dataclasses import replace
@@ -13,6 +14,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from core.records import (
     BackgroundSpectrum,
     InstrumentConnectionState,
+    PowerReadRequest,
     PowerSnapshot,
     SpectralAcquisition,
     SpectrometerCapabilities,
@@ -21,6 +23,7 @@ from core.records import (
 )
 from core.settings import AcquisitionSettings, DeviceConfig, PowerMonitorSettings, SNRSettings
 from core.time_utils import utc_now_iso
+from core.version import APPLICATION_VERSION, SOURCE_REVISION
 from devices.emulated_power_meter import EmulatedPowerMeter
 from devices.emulated_spectrometer import EmulatedSpectrometer
 from devices.errors import SpectrometerCommandError, SpectrometerCommunicationError
@@ -28,13 +31,14 @@ from devices.newport_process_proxy import newport_connect_retry_delays
 from devices.protocols import PowerMeterAdapter, SpectrometerAdapter
 from devices.qepro_adapter import QEProSpectrometer
 from processing.background import BackgroundCorrector
-from processing.smoothing import boxcar_smooth
+from processing.smoothing import smooth_spectrum
 from processing.snr import estimate_snr
 from validation.power_validation import power_snapshot_valid
 
 
 class DeviceController(QObject):
     acquisition_failed = Signal(str)
+    acquisition_progress = Signal(int, int, str, str)
     connected = Signal(str)
     connection_failed = Signal(str)
     spectrum_ready = Signal(object)
@@ -49,9 +53,12 @@ class DeviceController(QObject):
     power_meter_connection_changed = Signal(object)
     spectrometer_info_ready = Signal(object)
     spectrometer_capabilities_ready = Signal(object)
+    spectrometer_configuration_applied = Signal(object)
+    spectrometer_configuration_failed = Signal(str)
     spectrometer_temperature_ready = Signal(float)
     spectrometer_prepared = Signal()
     spectrometer_prepare_failed = Signal(str)
+    spectrometer_stream_stopped = Signal()
     spectrometer_connection_changed = Signal(object)
     status = Signal(str)
     error = Signal(str)
@@ -73,6 +80,10 @@ class DeviceController(QObject):
         self._active_spectrometer_backend = ""
         self._spectrometer_connect_attempts = 0
         self._power_meter_connect_attempts = 0
+        self._configuration_signature_key: tuple[object, ...] | None = None
+        self._configuration_signature_value = ""
+        self._wavelength_grid_cache_key: tuple[int, int, str] | None = None
+        self._wavelength_grid_sha256 = ""
 
         self.snr_settings = SNRSettings()
         self._snr_acquisition_counter = 0
@@ -338,6 +349,8 @@ class DeviceController(QObject):
     def _detector_configuration_signature(
         self,
         settings: AcquisitionSettings,
+        *,
+        applied_integration_ms: float | None = None,
     ) -> str:
         """Return a stable signature for scientifically compatible backgrounds."""
 
@@ -346,7 +359,17 @@ class DeviceController(QObject):
             getattr(spectrometer, "wavelengths_nm", []),
             dtype=np.float64,
         )
-        grid_hash = hashlib.sha256(wavelengths.tobytes()).hexdigest()
+        grid_key = (
+            id(spectrometer),
+            id(getattr(spectrometer, "wavelengths_nm", None)),
+            wavelengths.dtype.str,
+        )
+        if self._wavelength_grid_cache_key != grid_key:
+            self._wavelength_grid_sha256 = hashlib.sha256(
+                wavelengths.tobytes()
+            ).hexdigest()
+            self._wavelength_grid_cache_key = grid_key
+        grid_hash = self._wavelength_grid_sha256
         control_schema = getattr(self._capabilities, "control_schema", {}) or {}
         state: object = (
             control_schema.get("state") if isinstance(control_schema, dict) else None
@@ -358,16 +381,49 @@ class DeviceController(QObject):
             ),
             "serial": str(getattr(spectrometer, "serial_number", "")),
             "grid_sha256": grid_hash,
-            "integration_ms": int(settings.integration_ms),
+            "integration_ms": float(
+                settings.integration_ms
+                if applied_integration_ms is None
+                else applied_integration_ms
+            ),
             "averages": int(settings.averages),
             "averaging_mode": str(settings.averaging_mode),
             "correct_dark": bool(settings.correct_dark),
             "correct_nonlinearity": bool(settings.correct_nonlinearity),
             "instrument_state": state,
         }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        cache_key = (
+            id(spectrometer),
+            grid_hash,
+            serialized,
+        )
+        if cache_key != self._configuration_signature_key:
+            self._configuration_signature_value = hashlib.sha256(
+                serialized.encode("utf-8")
+            ).hexdigest()
+            self._configuration_signature_key = cache_key
+        return self._configuration_signature_value
+
+    def _software_provenance(self) -> dict[str, str]:
+        provenance = {
+            "gui_version": APPLICATION_VERSION,
+            "source_revision": SOURCE_REVISION,
+            "python": sys.version.split()[0],
+        }
+        provider = getattr(self.spec, "software_provenance", None)
+        if callable(provider):
+            provenance.update(
+                {str(key): str(value) for key, value in provider().items()}
+            )
+        return provenance
+
+    def _instrument_metadata_snapshot(self) -> dict[str, object]:
+        provider = getattr(self.spec, "metadata_snapshot", None)
+        if not callable(provider):
+            return {}
+        snapshot = provider()
+        return dict(snapshot) if isinstance(snapshot, dict) else {}
 
     @staticmethod
     def _last_error_line(error: str) -> str:
@@ -415,19 +471,27 @@ class DeviceController(QObject):
     def capture_background(self, settings: AcquisitionSettings) -> None:
         try:
             acquisition = self._acquire_spectrometer(
-                replace(settings, subtract_background=False)
+                replace(settings, subtract_background=False),
+                operation="background",
             )
-            integration_s = max(float(settings.integration_ms) * 1.0e-3, 1.0e-12)
+            applied_integration_ms = self._applied_integration_ms(
+                acquisition,
+                requested_ms=float(settings.integration_ms),
+            )
+            integration_s = max(applied_integration_ms * 1.0e-3, 1.0e-12)
             background = BackgroundSpectrum(
                 timestamp_utc=utc_now_iso(),
                 wavelengths_nm=acquisition.wavelengths_nm,
                 counts_per_s=acquisition.intensities_counts / integration_s,
-                integration_ms=int(settings.integration_ms),
+                integration_ms=applied_integration_ms,
                 averages=int(settings.averages),
                 correct_dark=bool(settings.correct_dark),
                 correct_nonlinearity=bool(settings.correct_nonlinearity),
                 averaging_mode=str(settings.averaging_mode),
-                configuration_signature=self._detector_configuration_signature(settings),
+                configuration_signature=self._detector_configuration_signature(
+                    settings,
+                    applied_integration_ms=applied_integration_ms,
+                ),
                 compatibility_policy="strict",
             )
             self.background.set_background(background)
@@ -435,6 +499,8 @@ class DeviceController(QObject):
             self.status.emit("Background spectrum captured.")
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
+            self.background_failed.emit(str(exc))
+        except ValueError as exc:
             self.background_failed.emit(str(exc))
         except Exception:
             self.background_failed.emit(traceback.format_exc())
@@ -449,6 +515,8 @@ class DeviceController(QObject):
     def set_tec_target_c(self, temperature_c: float) -> None:
         try:
             self._require_spectrometer().set_tec_target_c(float(temperature_c))
+            self._capabilities = None
+            self._emit_spectrometer_info()
             self.status.emit(f"TEC target set to {float(temperature_c):.2f} °C.")
         except (SpectrometerCommandError, ValueError) as exc:
             # A rejected/guarded target is an operation failure, not proof that
@@ -464,6 +532,8 @@ class DeviceController(QObject):
     def set_tec_enabled(self, enabled: bool) -> None:
         try:
             self._require_spectrometer().set_tec_enabled(bool(enabled))
+            self._capabilities = None
+            self._emit_spectrometer_info()
             self.status.emit(f"TEC {'enabled' if enabled else 'disabled'}.")
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
@@ -595,7 +665,12 @@ class DeviceController(QObject):
     def set_power_monitor_settings(self, settings: PowerMonitorSettings) -> None:
         self.power_monitor_settings = replace(settings)
 
-    def _read_power_validated(self, *, required: bool) -> PowerSnapshot | None:
+    def _read_power_validated(
+        self,
+        *,
+        required: bool,
+        required_channels: tuple[int, ...] | None = None,
+    ) -> PowerSnapshot | None:
         if not self.power_available or self.pm is None:
             if required:
                 raise RuntimeError("Power meter is not connected.")
@@ -618,7 +693,15 @@ class DeviceController(QObject):
                     exc,
                 ) from exc
             last_snapshot = snapshot
-            valid, reason = power_snapshot_valid(snapshot, self.power_monitor_settings)
+            validation_settings = self.power_monitor_settings
+            if required_channels is not None:
+                validation_settings = replace(
+                    validation_settings,
+                    required_power_channels=tuple(
+                        int(channel) for channel in required_channels
+                    ),
+                )
+            valid, reason = power_snapshot_valid(snapshot, validation_settings)
             if valid:
                 return snapshot
 
@@ -666,6 +749,25 @@ class DeviceController(QObject):
         except Exception as exc:
             message = str(exc)
             self.power_read_failed.emit(str(tag), message)
+            self.error.emit(message)
+
+    @Slot(object)
+    def read_power_request(self, request: PowerReadRequest) -> None:
+        tag = str(request.tag)
+        try:
+            channels = tuple(int(channel) for channel in request.required_channels)
+            if not channels:
+                raise ValueError(
+                    "Select at least one Newport channel when Measure power is enabled."
+                )
+            snapshot = self._read_power_validated(
+                required=True,
+                required_channels=channels,
+            )
+            self.power_read_complete.emit(tag, snapshot)
+        except Exception as exc:
+            message = str(exc)
+            self.power_read_failed.emit(tag, message)
             self.error.emit(message)
 
     @Slot(int)
@@ -754,15 +856,61 @@ class DeviceController(QObject):
     def _acquire_spectrometer(
         self,
         settings: AcquisitionSettings,
+        *,
+        operation: str = "acquisition",
     ) -> SpectralAcquisition:
         spectrometer = self._require_spectrometer()
+
+        def report_progress(completed: int, total: int, mode: str) -> None:
+            self.acquisition_progress.emit(
+                int(completed),
+                max(1, int(total)),
+                str(mode),
+                str(operation),
+            )
+
         return spectrometer.acquire_spectrum(
             integration_ms=int(settings.integration_ms),
             averages=int(settings.averages),
             correct_dark=bool(settings.correct_dark),
             correct_nonlinearity=bool(settings.correct_nonlinearity),
             averaging_mode=str(settings.averaging_mode),
+            continuous_session=str(settings.continuous_session),
+            continuous_target_midpoint_s=float(
+                settings.continuous_target_midpoint_s
+            ),
+            progress_callback=report_progress,
         )
+
+    @Slot()
+    def stop_spectrometer_stream(self) -> None:
+        if not self.spec_available or self.spec is None:
+            self.spectrometer_stream_stopped.emit()
+            return
+        try:
+            spectrometer = self._require_spectrometer()
+            stop = getattr(spectrometer, "stop_continuous_acquisition", None)
+            if callable(stop):
+                stop()
+            self.spectrometer_stream_stopped.emit()
+        except SpectrometerCommunicationError as exc:
+            self._handle_spectrometer_connection_loss(exc)
+            self.error.emit(str(exc))
+        except RuntimeError as exc:
+            self.error.emit(str(exc))
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+    @staticmethod
+    def _applied_integration_ms(
+        acquisition: SpectralAcquisition,
+        *,
+        requested_ms: float,
+    ) -> float:
+        value = acquisition.applied_integration_ms
+        if value is None or not np.isfinite(float(value)) or float(value) <= 0.0:
+            return float(requested_ms)
+        return float(value)
 
     @Slot(object)
     def prepare_spectrometer(self, settings: AcquisitionSettings) -> None:
@@ -775,11 +923,15 @@ class DeviceController(QObject):
                     subtract_background=False,
                     measure_power=False,
                     gated=None,
-                )
+                    continuous_target_midpoint_s=float("nan"),
+                ),
+                operation="preparation",
             )
             self.spectrometer_prepared.emit()
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
+            self.spectrometer_prepare_failed.emit(str(exc))
+        except ValueError as exc:
             self.spectrometer_prepare_failed.emit(str(exc))
         except Exception:
             self.spectrometer_prepare_failed.emit(traceback.format_exc())
@@ -793,8 +945,15 @@ class DeviceController(QObject):
             self._require_spectrometer()
             p_before = PowerSnapshot.missing()
             acquisition_started_s = time.perf_counter()
-            acquisition = self._acquire_spectrometer(settings)
+            acquisition = self._acquire_spectrometer(
+                settings,
+                operation="acquisition",
+            )
             acquisition_finished_s = time.perf_counter()
+            applied_integration_ms = self._applied_integration_ms(
+                acquisition,
+                requested_ms=float(settings.integration_ms),
+            )
             raw_intensities = np.asarray(
                 acquisition.intensities_counts,
                 dtype=float,
@@ -804,6 +963,7 @@ class DeviceController(QObject):
             background_subtracted = False
             background_timestamp_utc = ""
             background_integration_ms = 0
+            background_signature = ""
             if settings.subtract_background:
                 (
                     intensities,
@@ -813,11 +973,16 @@ class DeviceController(QObject):
                 ) = self.background.apply(
                     wavelengths_nm=acquisition.wavelengths_nm,
                     intensities_counts=intensities,
-                    integration_ms=int(settings.integration_ms),
+                    integration_ms=applied_integration_ms,
                     configuration_signature=self._detector_configuration_signature(
-                        settings
+                        settings,
+                        applied_integration_ms=applied_integration_ms,
                     ),
                 )
+                if background_subtracted and self.background.background is not None:
+                    background_signature = str(
+                        self.background.background.configuration_signature
+                    )
 
             self._snr_acquisition_counter += 1
             snr_metrics = None
@@ -838,6 +1003,8 @@ class DeviceController(QObject):
                 snr_metrics = estimate_snr(
                     acquisition.wavelengths_nm,
                     intensities,
+                    method=snr_settings.method,
+                    block_size=snr_settings.block_size,
                     signal_start_nm=snr_settings.signal_start_nm,
                     signal_stop_nm=snr_settings.signal_stop_nm,
                     noise_intervals_nm=noise_intervals,
@@ -849,8 +1016,17 @@ class DeviceController(QObject):
                     ),
                 )
 
-            if settings.boxcar_width > 1:
-                intensities = boxcar_smooth(intensities, settings.boxcar_width)
+            unsmoothed_intensities = np.asarray(intensities, dtype=float).copy()
+            if (
+                str(settings.smoothing_window).strip().lower() != "none"
+                and settings.boxcar_width > 1
+            ):
+                intensities = smooth_spectrum(
+                    intensities,
+                    window=settings.smoothing_window,
+                    width=settings.boxcar_width,
+                    boundary=settings.smoothing_boundary,
+                )
 
             p_after = PowerSnapshot.missing()
             capabilities = self._capabilities
@@ -878,14 +1054,23 @@ class DeviceController(QObject):
                 timestamp_s=acquisition_finished_s,
                 wavelengths_nm=np.asarray(acquisition.wavelengths_nm, dtype=float),
                 intensities_counts=intensities,
+                unsmoothed_intensities_counts=unsmoothed_intensities,
                 p_before=p_before,
                 p_after=p_after,
-                integration_ms=int(settings.integration_ms),
+                integration_ms=applied_integration_ms,
                 averages=int(settings.averages),
                 boxcar_width=int(settings.boxcar_width),
                 correct_dark=bool(settings.correct_dark),
                 correct_nonlinearity=bool(settings.correct_nonlinearity),
-                field_value=float(settings.field_value) if settings.field_value is not None else None, # noqa
+                field_value=(
+                    float(settings.field_value)
+                    if settings.field_value is not None
+                    else None
+                ),
+                smoothing_window=str(settings.smoothing_window),
+                smoothing_boundary=str(settings.smoothing_boundary),
+                power_channels=tuple(int(value) for value in settings.power_channels),
+                requested_integration_ms=float(settings.integration_ms),
                 acquisition_started_s=acquisition_started_s,
                 acquisition_finished_s=acquisition_finished_s,
                 acquisition_timing=acquisition.timing,
@@ -896,6 +1081,8 @@ class DeviceController(QObject):
                 spectrometer_model=model,
                 spectrometer_serial=serial,
                 spectrograph_serial=spectrograph_serial,
+                instrument_state=self._instrument_metadata_snapshot(),
+                software_provenance=self._software_provenance(),
                 raw_intensities_counts=raw_intensities,
                 signal_max_counts=float(acquisition.signal_max_counts),
                 spectrometer_max_intensity=float(
@@ -919,12 +1106,16 @@ class DeviceController(QObject):
                 device_averaging_used=bool(acquisition.device_averaging_used),
                 background_subtracted=bool(background_subtracted),
                 background_timestamp_utc=str(background_timestamp_utc),
-                background_integration_ms=int(background_integration_ms),
+                background_integration_ms=float(background_integration_ms),
+                background_signature=background_signature,
             )
             self.spectrum_ready.emit(record)
 
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
+            self.acquisition_failed.emit(str(exc))
+
+        except ValueError as exc:
             self.acquisition_failed.emit(str(exc))
 
         except Exception:
@@ -943,6 +1134,8 @@ class DeviceController(QObject):
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
             self.error.emit(str(exc))
+        except (ValueError, RuntimeError) as exc:
+            self.error.emit(str(exc))
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -956,14 +1149,28 @@ class DeviceController(QObject):
                     f"{type(spectrometer).__name__} has no advanced control interface."
                 )
             apply_settings(values)
-            self._capabilities = None
-            self._emit_spectrometer_info()
-            self.status.emit("Advanced spectrometer settings applied and calibration refreshed.")
+            self._configuration_signature_key = None
+            # Configuration is a transactional user action. Unlike the
+            # connection-time capability display, a failed refresh must not be
+            # replaced by a generic fallback and described as a successful apply.
+            self._capabilities = spectrometer.capabilities()
+            self.spectrometer_capabilities_ready.emit(self._capabilities)
+            self.spectrometer_configuration_applied.emit(self._capabilities)
+            self.status.emit(
+                "Advanced spectrometer settings applied; available readback and "
+                "calibration were refreshed."
+            )
         except SpectrometerCommunicationError as exc:
             self._handle_spectrometer_connection_loss(exc)
+            self.spectrometer_configuration_failed.emit(str(exc))
+            self.error.emit(str(exc))
+        except (SpectrometerCommandError, ValueError, RuntimeError, TypeError) as exc:
+            self.spectrometer_configuration_failed.emit(str(exc))
             self.error.emit(str(exc))
         except Exception:
-            self.error.emit(traceback.format_exc())
+            message = traceback.format_exc()
+            self.spectrometer_configuration_failed.emit(message)
+            self.error.emit(message)
 
     @Slot()
     def shutdown(self) -> None:
@@ -976,6 +1183,10 @@ class DeviceController(QObject):
         self._capabilities = None
         self._info = None
         self._active_spectrometer_backend = ""
+        self._configuration_signature_key = None
+        self._configuration_signature_value = ""
+        self._wavelength_grid_cache_key = None
+        self._wavelength_grid_sha256 = ""
 
         if spectrometer is not None:
             close = getattr(spectrometer, "close", None)

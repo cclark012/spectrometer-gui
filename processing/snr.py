@@ -135,9 +135,11 @@ def estimate_snr(
     wavelengths_nm: Iterable[float],
     intensities_counts: Iterable[float],
     *,
-    signal_start_nm: float,
-    signal_stop_nm: float,
-    noise_intervals_nm: Iterable[tuple[float, float]],
+    signal_start_nm: float = 400.0,
+    signal_stop_nm: float = 750.0,
+    noise_intervals_nm: Iterable[tuple[float, float]] = (),
+    method: str = "manual",
+    block_size: int = 16,
     baseline_order: int = 1,
     minimum_noise_pixels: int = 20,
     peak_percentile: float = 99.5,
@@ -151,6 +153,12 @@ def estimate_snr(
     when drift or correlated noise dominates.
     """
 
+    if method in {"automatic_std", "automatic_mad"}:
+        from processing.automatic_snr import estimate_automatic_snr
+        return estimate_automatic_snr(wavelengths_nm, intensities_counts,
+            block_size=block_size, noise_method=method.rsplit("_", 1)[1], full_scale_counts=full_scale_counts)
+    if method != "manual":
+        return SNRMetrics.invalid("Unknown SNR method")
     try:
         x, y = _prepare_xy(wavelengths_nm, intensities_counts)
         signal_mask = _interval_mask(x, signal_start_nm, signal_stop_nm)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 
 SEQUENCE_LABELS: dict[str, str] = {
+    "parameter_scan": "parameter scan",
     "manual": "manual acquisition",
     "live": "live acquisition",
     "background": "background capture",
@@ -14,7 +15,7 @@ SEQUENCE_LABELS: dict[str, str] = {
 }
 
 AUTOMATED_SEQUENCE_OWNERS = frozenset(
-    {"power_scan", "calibration", "gated", "auto_tune"}
+    {"power_scan", "calibration", "gated", "auto_tune", "parameter_scan"}
 )
 
 

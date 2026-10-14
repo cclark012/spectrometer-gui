@@ -1,0 +1,197 @@
+[
+  {
+    "path": "ARCHITECTURE.md",
+    "status": "modified",
+    "sha256": "246929553e44dfba6f4689fe4f1671727f7d19a024c5e55083055a85edef2dcc"
+  },
+  {
+    "path": "CHANGELOG_20261006.md",
+    "status": "added",
+    "sha256": "ca11cbaf00aec7e204ecd93b61098352d7f605bf9d87efa8286e242d0a7bd9b5"
+  },
+  {
+    "path": "ChatGPTMemory091426_1_20261006_1.json",
+    "status": "added",
+    "sha256": "8abd95ca5eaafbdb2f789976440ec5751873d4b54016b6185d286920400bb85a"
+  },
+  {
+    "path": "README.md",
+    "status": "modified",
+    "sha256": "485ff13b901c1d72b7dc5764eb94bdd0941f488afa2c7350dd7971a735f38993"
+  },
+  {
+    "path": "REVIEW_20261006.md",
+    "status": "added",
+    "sha256": "425a70e880e368cbb0f68c35ab1dd5e1ef8fc19fb2c3f0a1ec53c70fed713856"
+  },
+  {
+    "path": "controllers/device_controller.py",
+    "status": "modified",
+    "sha256": "c4dca45cb0c3b23e83b75ab0dd5fe7f1e382a604112553404f84f2263ad80c2f"
+  },
+  {
+    "path": "controllers/file_io_controller.py",
+    "status": "modified",
+    "sha256": "69e07c05ba6f6286b668c3f26e337ccf9ed2aebd3480275feb7d0670d07528dd"
+  },
+  {
+    "path": "controllers/parameter_scan_coordinator.py",
+    "status": "added",
+    "sha256": "b097a55a59590523c9384e590c5ee350bbe5e30a33097aa7022e29b24021ecd1"
+  },
+  {
+    "path": "controllers/temperature_runtime.py",
+    "status": "added",
+    "sha256": "19c455535943547921bb1141c2b14715016aad20ea1902e2e087f1cced100cda"
+  },
+  {
+    "path": "core/records.py",
+    "status": "modified",
+    "sha256": "903c5aff055f2d15edaef33caf2e239e67991753d4ebbc7d82b1613c0e94d6d9"
+  },
+  {
+    "path": "core/sequence_arbiter.py",
+    "status": "modified",
+    "sha256": "a4fb286a1c5c60415f4f8b812236cf49eef9357a6b957b6feb49877acb92f262"
+  },
+  {
+    "path": "core/version.py",
+    "status": "modified",
+    "sha256": "03fbbaa6c6b7bc7cfcbc882f5bb7940fcdbc1412a729fa860b51b4b60ead03d3"
+  },
+  {
+    "path": "devices/lakeshore_335.py",
+    "status": "added",
+    "sha256": "7a28ff0c1f4ee39be4872442f1c7cbc01023e153c1333130307bce22e16723e5"
+  },
+  {
+    "path": "dialogs/spectrometer_details_dialog.py",
+    "status": "modified",
+    "sha256": "36f0917f6d9cd81a73b27791b3dd1930b44be691fcde3c23488859b43b7b5674"
+  },
+  {
+    "path": "docs/FUTURE_FEATURES_20261006.md",
+    "status": "added",
+    "sha256": "78eaa85e0489be6d39450896eecde7ef2553e23b606043dc781dc9a829cb09ac"
+  },
+  {
+    "path": "io_utils/background_io.py",
+    "status": "added",
+    "sha256": "2ffc0ba95cde3260c9336f755389dcb644c7f2d88be203eec0255d752b39e851"
+  },
+  {
+    "path": "io_utils/spectrum_io.py",
+    "status": "modified",
+    "sha256": "57399d889d41fcc8d5e2dabef92a3c2b5115f26ee7f7849570e754607186f1a1"
+  },
+  {
+    "path": "panels/acquisition_panel.py",
+    "status": "modified",
+    "sha256": "f3637e58acdacb2ebca1819cbcff15e98c3d882bd134efca9c5fda18f08c040a"
+  },
+  {
+    "path": "panels/laser_panel.py",
+    "status": "modified",
+    "sha256": "d1c90d0cc93d80afb42e731b99db60f9bfbb69d76199f7cce48caaab79597147"
+  },
+  {
+    "path": "panels/main_window.py",
+    "status": "modified",
+    "sha256": "407dd61a7b34cb019b096220534de622dfae4a9af38fb4bb1f21b29d64298693"
+  },
+  {
+    "path": "panels/main_window_actions.py",
+    "status": "modified",
+    "sha256": "37de697997861e20527d92e725ecef26c9e1584a64d2fa1964bbbe50bc914d79"
+  },
+  {
+    "path": "panels/monitor_panel.py",
+    "status": "modified",
+    "sha256": "95375d6193c0a48662e4edfdc01ba4ac0b896bf934e348b8dceb1fcbcedd4e5e"
+  },
+  {
+    "path": "panels/monitor_views.py",
+    "status": "modified",
+    "sha256": "46bc8b900d6b73e96795b1e4483eaf2f9cca25ecc1a9164deac4abbb5b5c6828"
+  },
+  {
+    "path": "panels/parameter_scan_panel.py",
+    "status": "added",
+    "sha256": "63dfeefb32a2839494502c4d86af3b351df8cfb7d3074699a38c23530e43fd8f"
+  },
+  {
+    "path": "panels/power_panel.py",
+    "status": "modified",
+    "sha256": "69fbf34cfc4e76472f8d64986700c858929b564872f496eb9fb5226fcabff740"
+  },
+  {
+    "path": "panels/spectrum_panel.py",
+    "status": "modified",
+    "sha256": "9a3ffb9ef1fc30ddb8a11e613ec92dd531f3e0ba3b4736027ae9127499e04354"
+  },
+  {
+    "path": "panels/temperature_panel.py",
+    "status": "added",
+    "sha256": "d527896e1ccdd73ec148710386af5b7ff909d48752c475139103de994a1ace57"
+  },
+  {
+    "path": "planning/parameter_scan.py",
+    "status": "added",
+    "sha256": "cf2c356f20b475a368106f183f54370fb1051637a4da48dc99b7d69c79837ffd"
+  },
+  {
+    "path": "processing/monitor_metrics.py",
+    "status": "modified",
+    "sha256": "bc1210a4d737aa485f0fae87145a634e4ea2c6da1adafcd0c4dac9c039c04708"
+  },
+  {
+    "path": "tests/test_device_processing_changes.py",
+    "status": "added",
+    "sha256": "b0cfaad7b3a612137a37affdb9b8005027b89c7179eb72c3d6722bf6f7da8995"
+  },
+  {
+    "path": "tests/test_gui_changes.py",
+    "status": "added",
+    "sha256": "e6e1a5cdc41c0d4a65abbead45e6204ea75406d249e545df1e203ede1853e923"
+  },
+  {
+    "path": "tests/test_lakeshore_335.py",
+    "status": "added",
+    "sha256": "2f2daf7fa46c710075319466b2928099dbd4e93e3d6f4fcc66cbe9b719d11dce"
+  },
+  {
+    "path": "tests/test_monitor_channel_selection.py",
+    "status": "added",
+    "sha256": "f1b5d9925d8a2ef4558a0f12feaffb60ab1fcd82a33f43dbec16f3ee5c7b6d1a"
+  },
+  {
+    "path": "tests/test_new_data_io.py",
+    "status": "added",
+    "sha256": "34e96ce0d1cc57ce4276f7375542364add869183dcf9e4563c3ab147157237e5"
+  },
+  {
+    "path": "tests/test_parameter_coordinator.py",
+    "status": "added",
+    "sha256": "47ea7282b32ce729b8a76626e496c9e54456c2e9565c0738fc1e9760e180e7e5"
+  },
+  {
+    "path": "tests/test_parameter_scan.py",
+    "status": "added",
+    "sha256": "68bb4d894bb3336ec6d2c40ab9c27d7627ee5f49fe501c3d469e16684d82a5a9"
+  },
+  {
+    "path": "tests/test_spectrum_io.py",
+    "status": "modified",
+    "sha256": "009a133292049346009adfe9bd9e1ce1cbe4b174a41ee1e1183f0e558944809a"
+  },
+  {
+    "path": "verification/offline_test_runner.py",
+    "status": "added",
+    "sha256": "834e846661fad74c1c935cd335cd4169ef9367038863da0da839f17cde6cca02"
+  },
+  {
+    "path": "verification/scan_logic_runner.py",
+    "status": "added",
+    "sha256": "7883484727907f5534a415a15e48cff673f3545fc5573a9f91cd0b02710011e5"
+  }
+]

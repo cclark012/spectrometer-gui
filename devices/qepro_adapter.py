@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from importlib.metadata import PackageNotFoundError, version
 import math
 import time
 from typing import Any, NoReturn
@@ -19,6 +20,7 @@ class QEProSpectrometer:
     DEFAULT_TEC_TARGET_MIN_C = -20.0
     DEFAULT_TEC_TARGET_MAX_C = 40.0
     VALID_AVERAGING_MODES = {"software", "device"}
+    ADAPTER_VERSION = "2026.09.10"
 
     def __init__(self, serial_number: str | None = None) -> None:
         from seabreeze.spectrometers import Spectrometer
@@ -52,6 +54,7 @@ class QEProSpectrometer:
         self._applied_integration_us: int | None = None
         self._applied_device_averages: int | None = None
         self._applied_read_corrections: tuple[bool, bool] | None = None
+        self._applied_average_request: tuple[int, str] | None = None
         self._data_buffer_checked = False
         self._data_buffer_feature: object | None = None
         self.tec_target_min_c = self.DEFAULT_TEC_TARGET_MIN_C
@@ -533,7 +536,11 @@ class QEProSpectrometer:
         correct_dark: bool,
         correct_nonlinearity: bool,
         averaging_mode: str = "software",
+        continuous_session: str = "",
+        continuous_target_midpoint_s: float = float("nan"),
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> SpectralAcquisition:
+        del continuous_session, continuous_target_midpoint_s
         mode = str(averaging_mode).strip().lower()
         if mode not in self.VALID_AVERAGING_MODES:
             raise ValueError(
@@ -579,7 +586,18 @@ class QEProSpectrometer:
             self._applied_read_corrections is not None
             and correction_signature != self._applied_read_corrections
         )
-        if integration_changed or device_averaging_changed or correction_changed:
+        average_request = (averages, mode)
+        previous_average_request = getattr(self, "_applied_average_request", None)
+        average_request_changed = (
+            previous_average_request is not None
+            and average_request != previous_average_request
+        )
+        if (
+            integration_changed
+            or device_averaging_changed
+            or correction_changed
+            or average_request_changed
+        ):
             # Empty every completed frame first, then discard one synchronization
             # read for a frame that may already have been integrating when the
             # settings changed.  Returning only the next read prevents stale
@@ -589,14 +607,25 @@ class QEProSpectrometer:
                 correct_dark=correct_dark,
                 correct_nonlinearity=correct_nonlinearity,
             )
+            # Frames can complete while the synchronization read is in
+            # progress. Drain once more so the next read cannot return an
+            # older completed frame from before the new request definition.
+            self._clear_data_buffer()
         self._applied_read_corrections = correction_signature
+        self._applied_average_request = average_request
+
+        applied_mode = "device" if device_averaging_used else "software"
+        if progress_callback is not None:
+            # Emitted after buffer synchronization so the visible average
+            # count covers only frames that contribute to the returned result.
+            progress_callback(0, averages, applied_mode)
 
         if device_averaging_used:
             values, started_s, finished_s = self._read_intensities_timed(
                 correct_dark=correct_dark,
                 correct_nonlinearity=correct_nonlinearity,
             )
-            return SpectralAcquisition(
+            result = SpectralAcquisition(
                 wavelengths_nm=self.wavelengths_nm.copy(),
                 intensities_counts=values,
                 signal_max_counts=self._signal_max(values),
@@ -607,7 +636,12 @@ class QEProSpectrometer:
                     averaged=averages > 1,
                     sample_windows_s=((started_s, finished_s),),
                 ),
+                applied_integration_ms=float(integration_us) / 1000.0,
             )
+            if progress_callback is not None:
+                # SeaBreeze does not expose intermediate device-buffer counts.
+                progress_callback(averages, averages, applied_mode)
+            return result
 
         running_mean: np.ndarray | None = None
         signal_max = float("-inf")
@@ -628,6 +662,8 @@ class QEProSpectrometer:
                 running_mean = values.astype(float, copy=True)
             else:
                 running_mean += (values - running_mean) / float(index + 1)
+            if progress_callback is not None:
+                progress_callback(index + 1, averages, applied_mode)
 
         if running_mean is None:
             raise RuntimeError("No spectra were acquired.")
@@ -643,9 +679,24 @@ class QEProSpectrometer:
                 averaged=averages > 1,
                 sample_windows_s=tuple(sample_windows_s),
             ),
+            applied_integration_ms=float(integration_us) / 1000.0,
         )
 
     def close(self) -> None:
         close = getattr(self.spec, "close", None)
         if callable(close):
             close()
+
+    def stop_continuous_acquisition(self) -> None:
+        """QEPro streaming is owned internally by SeaBreeze."""
+
+    def software_provenance(self) -> dict[str, str]:
+        try:
+            seabreeze_version = version("seabreeze")
+        except PackageNotFoundError:
+            seabreeze_version = "unknown"
+        return {
+            "adapter": "qepro_seabreeze",
+            "adapter_version": self.ADAPTER_VERSION,
+            "vendor_runtime": f"seabreeze {seabreeze_version}",
+        }

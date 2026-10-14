@@ -1,0 +1,2280 @@
+--- /dev/null
++++ b/benchmarks/automatic_snr.py
+@@ -0,0 +1,43 @@
++"""Reproducible seeded speed and noise-bias comparison. No hardware required."""
++import json
++import platform
++import time
++import numpy as np
++from processing.automatic_snr import estimate_automatic_snr, block_noise
++from processing.snr import estimate_snr
++
++
++def run():
++    rng = np.random.default_rng(100726)
++    results = []
++    for size in (1024, 2048, 16384):
++        x = np.linspace(400, 1000, size)
++        # Broad PL peak, sloping offset and uncorrelated Gaussian noise sigma=5.
++        y = 100 + 0.4*(x-400) + 1000*np.exp(-0.5*((x-600)/25)**2) + rng.normal(0, 5, size)
++        methods = {'manual_windows': lambda: estimate_snr(x, y, signal_start_nm=500, signal_stop_nm=700,
++                    noise_intervals_nm=[(750, 1000)], minimum_noise_pixels=20)}
++        for block in (8, 16):
++            for method in ('std', 'mad'):
++                methods[f'auto_{block}_{method}'] = lambda b=block,m=method: estimate_automatic_snr(x,y,block_size=b,noise_method=m)
++        for name, fn in methods.items():
++            for _ in range(5): fn()
++            times=[]
++            for _ in range(150):
++                start=time.perf_counter_ns(); result=fn(); times.append((time.perf_counter_ns()-start)/1e6)
++            results.append(dict(size=size,method=name,median_ms=float(np.median(times)),p95_ms=float(np.percentile(times,95)),noise_estimate=result.noise_sigma_counts,true_noise=5))
++    accuracy=[]
++    for block in (8,16):
++        for method in ('std','mad'):
++            for slope in (0,1):
++                estimates=[]
++                x=np.linspace(400,1000,2048)
++                for _ in range(100):
++                    y=100+slope*x+200*np.exp(-0.5*((x-600)/30)**2)+rng.normal(0,5,len(x))
++                    estimates.append(block_noise(x,y,block,method)[0])
++                accuracy.append(dict(block=block,method=method,slope=slope,mean_noise=float(np.mean(estimates)),std_noise=float(np.std(estimates))))
++    return dict(python=platform.python_version(),numpy=np.__version__,platform=platform.platform(),seed=100726,
++                iterations=150,results=results,accuracy=accuracy,
++                limitations='Synthetic independent Gaussian noise. Timing is local, not the lab PC. Sloping backgrounds still bias automatic signal baseline; dense narrow lines and correlated noise bias noise estimates.')
++
++if __name__=='__main__':
++    print(json.dumps(run(),indent=2))
+--- a/controllers/device_controller.py
++++ b/controllers/device_controller.py
+@@ -1003,6 +1003,8 @@
+                 snr_metrics = estimate_snr(
+                     acquisition.wavelengths_nm,
+                     intensities,
++                    method=snr_settings.method,
++                    block_size=snr_settings.block_size,
+                     signal_start_nm=snr_settings.signal_start_nm,
+                     signal_stop_nm=snr_settings.signal_stop_nm,
+                     noise_intervals_nm=noise_intervals,
+--- a/core/settings.py
++++ b/core/settings.py
+@@ -193,6 +193,27 @@
+ @dataclass
+ class PlotStyleSettings:
+     spectrum_color: str = "y"
++    smoothed_color: str = "#56b4e9"
++    unsmoothed_color: str = "#e69f00"
++    background_color: str = "#cc79a7"
++    smoothed_alpha: float = 1.0
++    unsmoothed_alpha: float = 0.45
++    background_alpha: float = 0.65
++    smoothed_line_width: float = 2.5
++    unsmoothed_line_width: float = 1.0
++    background_line_width: float = 1.0
++    spectrum_alpha: float = 1.0
++    monitor_alpha: float = 1.0
++    power_alpha: float = 1.0
++    spectrum_x_margin: float = 0.02
++    spectrum_y_margin: float = 0.05
++    monitor_x_margin: float = 0.02
++    monitor_y_margin: float = 0.05
++    power_x_margin: float = 0.02
++    power_y_margin: float = 0.05
++    show_grid: bool = True
++    grid_alpha: float = 0.2
++    show_legend: bool = True
+     monitor_color: str = "c"
+     power_color: str = "g"
+ 
+@@ -272,6 +293,8 @@
+ @dataclass
+ class SNRSettings:
+     enabled: bool = False
++    method: str = "automatic_std"
++    block_size: int = 16
+     signal_start_nm: float = 400.0
+     signal_stop_nm: float = 750.0
+     noise1_start_nm: float = 900.0
+--- a/core/version.py
++++ b/core/version.py
+@@ -1,4 +1,4 @@
+ """Small, import-safe source identity used in exported measurement provenance."""
+ 
+ APPLICATION_VERSION = "0.1.0"
+-SOURCE_REVISION = "2026-10-06"
++SOURCE_REVISION = "2026-10-07.1"
+--- a/dialogs/settings_dialog.py
++++ b/dialogs/settings_dialog.py
+@@ -6,6 +6,8 @@
+ 
+ from PySide6.QtWidgets import (
+     QCheckBox,
++    QColorDialog,
++    QScrollArea,
+     QComboBox,
+     QDialog,
+     QDialogButtonBox,
+@@ -318,6 +320,41 @@
+         self.spectrum_y_min_spin = self._axis_spin(settings.spectrum_y_min)
+         self.spectrum_y_max_spin = self._axis_spin(settings.spectrum_y_max)
+ 
++        self.extra_plot_controls = {}
++        for name, label in (("smoothed", "Smoothed"), ("unsmoothed", "Unsmoothed"), ("background", "Background")):
++            color = self._color_combo(getattr(settings, name + "_color"))
++            width = self._line_width_spin(getattr(settings, name + "_line_width"))
++            self.extra_plot_controls[name + "_color"] = color
++            self.extra_plot_controls[name + "_line_width"] = width
++            form.addRow(label + " color", color)
++            form.addRow(label + " width", width)
++        for name in ("spectrum", "smoothed", "unsmoothed", "background", "monitor", "power"):
++            spin = QDoubleSpinBox()
++            spin.setRange(0.0, 1.0)
++            spin.setSingleStep(0.05)
++            spin.setValue(getattr(settings, name + "_alpha"))
++            self.extra_plot_controls[name + "_alpha"] = spin
++            form.addRow(name.title() + " opacity", spin)
++        for name in ("spectrum", "monitor", "power"):
++            for axis in ("x", "y"):
++                key = name + "_" + axis + "_margin"
++                spin = QDoubleSpinBox()
++                spin.setRange(0.0, 0.5)
++                spin.setSingleStep(0.01)
++                spin.setValue(getattr(settings, key))
++                spin.setToolTip("Fraction of data span added at each end in auto range.")
++                self.extra_plot_controls[key] = spin
++                form.addRow(name.title() + " " + axis + " margin", spin)
++        for key in ("show_grid", "show_legend"):
++            check = self._checked(getattr(settings, key))
++            self.extra_plot_controls[key] = check
++            form.addRow(key.replace("_", " ").title(), check)
++        spin = QDoubleSpinBox()
++        spin.setRange(0, 1)
++        spin.setSingleStep(0.05)
++        spin.setValue(settings.grid_alpha)
++        self.extra_plot_controls["grid_alpha"] = spin
++        form.addRow("Grid opacity", spin)
+         form.addRow("Spectrum color", self.spectrum_color_combo)
+         form.addRow("Monitor color", self.monitor_color_combo)
+         form.addRow("Power color", self.power_color_combo)
+@@ -340,7 +377,10 @@
+         form.addRow("Spectrum x max", self.spectrum_x_max_spin)
+         form.addRow("Spectrum y min", self.spectrum_y_min_spin)
+         form.addRow("Spectrum y max", self.spectrum_y_max_spin)
+-        return tab
++        scroll = QScrollArea()
++        scroll.setWidgetResizable(True)
++        scroll.setWidget(tab)
++        return scroll
+ 
+     @staticmethod
+     def _checked(value: bool) -> QCheckBox:
+@@ -383,9 +423,26 @@
+             ("White", "w"),
+             ("Black", "k"),
+             ("Magenta", "m"),
++            ("Orange", "#e69f00"), ("Sky blue", "#56b4e9"),
++            ("Teal", "#009e73"), ("Purple", "#cc79a7"),
++            ("Vermilion", "#d55e00"), ("Gray", "#999999"),
+         ):
+             combo.addItem(label, value)
++        if combo.findData(current) < 0:
++            combo.addItem(current, current)
+         AppSettingsDialog._set_combo_data(combo, current)
++        combo.addItem("Choose custom color…", None)
++        def choose(index):
++            if combo.itemData(index) is None:
++                color = QColorDialog.getColor(parent=combo)
++                if color.isValid():
++                    value = color.name()
++                    if combo.findData(value) < 0:
++                        combo.insertItem(combo.count() - 1, value, value)
++                    combo.setCurrentIndex(combo.findData(value))
++                else:
++                    combo.setCurrentIndex(combo.findData(current))
++        combo.activated.connect(choose)
+         return combo
+ 
+     def _browse_save_directory(self) -> None:
+@@ -454,8 +511,13 @@
+             popup_cooldown_s=float(self.warning_cooldown_spin.value()),
+         )
+ 
++        extra = {key: (widget.currentData() if isinstance(widget, QComboBox)
++                       else widget.isChecked() if isinstance(widget, QCheckBox)
++                       else widget.value())
++                 for key, widget in self.extra_plot_controls.items()}
+         plot_style_settings = replace(
+             self._plot_style_settings,
++            **extra,
+             spectrum_color=str(self.spectrum_color_combo.currentData()),
+             monitor_color=str(self.monitor_color_combo.currentData()),
+             power_color=str(self.power_color_combo.currentData()),
+--- a/dialogs/snr_settings_dialog.py
++++ b/dialogs/snr_settings_dialog.py
+@@ -4,6 +4,8 @@
+ 
+ from PySide6.QtWidgets import (
+     QCheckBox,
++    QScrollArea,
++    QWidget,
+     QComboBox,
+     QDialog,
+     QDialogButtonBox,
+@@ -28,13 +30,29 @@
+         self.resize(520, 620)
+         self._settings = replace(settings)
+ 
+-        root = QVBoxLayout(self)
++        outer = QVBoxLayout(self)
++        scroll = QScrollArea()
++        scroll.setWidgetResizable(True)
++        contents = QWidget()
++        root = QVBoxLayout(contents)
++        scroll.setWidget(contents)
++        outer.addWidget(scroll)
+ 
+         estimation = QGroupBox("Estimation")
+         estimation_form = QFormLayout(estimation)
+ 
+         self.enabled = QCheckBox()
+         self.enabled.setChecked(bool(settings.enabled))
++        self.method = QComboBox()
++        for label, key in (("Automatic block standard deviation", "automatic_std"),
++                           ("Automatic block MAD (robust, approximate)", "automatic_mad"),
++                           ("Manual signal and noise windows", "manual")):
++            self.method.addItem(label, key)
++        self.method.setCurrentIndex(max(0, self.method.findData(settings.method)))
++        self.block_size = QComboBox()
++        for size in (8, 16):
++            self.block_size.addItem(str(size) + " pixels", size)
++        self.block_size.setCurrentIndex(max(0, self.block_size.findData(settings.block_size)))
+         self.signal_start = self._wavelength_spin(settings.signal_start_nm)
+         self.signal_stop = self._wavelength_spin(settings.signal_stop_nm)
+         self.noise1_start = self._wavelength_spin(settings.noise1_start_nm)
+@@ -68,6 +86,8 @@
+         self.update_every_n.setValue(int(settings.update_every_n_spectra))
+ 
+         estimation_form.addRow("Enable SNR estimation", self.enabled)
++        estimation_form.addRow("Method", self.method)
++        estimation_form.addRow("Automatic block size", self.block_size)
+         estimation_form.addRow("Signal start", self.signal_start)
+         estimation_form.addRow("Signal stop", self.signal_stop)
+         estimation_form.addRow("Noise 1 start", self.noise1_start)
+@@ -150,12 +170,15 @@
+         root.addWidget(suggestions)
+ 
+         note = QLabel(
+-            "SNR is calculated from the unsmoothed spectrum. Acquisition suggestions "
+-            "should initially be displayed for review rather than applied automatically."
++            "Noise uses unsmoothed data. Automatic mode averages locally detrended block noise "
++            "(10% trimmed mean) and uses the maximum of a smoothed spectrum above its 10th percentile. "
++            "A sloping background, correlated noise or dense narrow lines can bias this single-frame estimate. "
++            "Use manual windows for selected bands. Integrated SNR in automatic mode covers the whole spectrum."
+         )
+         note.setWordWrap(True)
+         root.addWidget(note)
+ 
++        self.method.currentIndexChanged.connect(self._update_enabled_state)
+         self.use_noise2.toggled.connect(self._update_enabled_state)
+         self.auto_suggest.toggled.connect(self._update_enabled_state)
+         self._update_enabled_state()
+@@ -166,7 +189,7 @@
+         )
+         buttons.accepted.connect(self.accept)
+         buttons.rejected.connect(self.reject)
+-        root.addWidget(buttons)
++        outer.addWidget(buttons)
+ 
+     @staticmethod
+     def _wavelength_spin(value: float) -> QDoubleSpinBox:
+@@ -179,7 +202,12 @@
+         return spin
+ 
+     def _update_enabled_state(self) -> None:
+-        use_noise2 = self.use_noise2.isChecked()
++        manual = self.method.currentData() == "manual"
++        self.block_size.setEnabled(not manual)
++        for widget in (self.signal_start, self.signal_stop, self.noise1_start, self.noise1_stop,
++                       self.use_noise2, self.baseline_order, self.minimum_noise_pixels, self.peak_percentile):
++            widget.setEnabled(manual)
++        use_noise2 = manual and self.use_noise2.isChecked()
+         self.noise2_start.setEnabled(use_noise2)
+         self.noise2_stop.setEnabled(use_noise2)
+         suggest = self.auto_suggest.isChecked()
+@@ -197,6 +225,8 @@
+         return max(a0, b0) < min(a1, b1)
+ 
+     def _validate(self) -> str | None:
++        if self.method.currentData() != "manual":
++            return None
+         intervals = {
+             "signal": (self.signal_start.value(), self.signal_stop.value()),
+             "noise 1": (self.noise1_start.value(), self.noise1_stop.value()),
+@@ -225,6 +255,8 @@
+         return replace(
+             self._settings,
+             enabled=bool(self.enabled.isChecked()),
++            method=str(self.method.currentData()),
++            block_size=int(self.block_size.currentData()),
+             signal_start_nm=float(self.signal_start.value()),
+             signal_stop_nm=float(self.signal_stop.value()),
+             noise1_start_nm=float(self.noise1_start.value()),
+--- /dev/null
++++ b/io_utils/analysis_io.py
+@@ -0,0 +1,96 @@
++"""Separate analysis/profile formats: acquisition spectrum schema remains v5."""
++import csv
++import hashlib
++import json
++from pathlib import Path
++import numpy as np
++from io_utils.atomic import atomic_text_writer
++from io_utils.spectrum_io import load_spectrum_record
++from processing.spectral_analysis import SpectralTrace, ResponseProfile, trace_from_record
++
++
++def json_safe(value):
++    if isinstance(value,dict): return {str(k):json_safe(v) for k,v in value.items()}
++    if isinstance(value,(tuple,list)): return [json_safe(v) for v in value]
++    if isinstance(value,np.ndarray): return json_safe(value.tolist())
++    if isinstance(value,(float,np.floating)):return float(value) if np.isfinite(value) else None
++    if isinstance(value,np.integer):return int(value)
++    if isinstance(value,np.bool_):return bool(value)
++    return value
++
++
++def write_json(path, value):
++    with atomic_text_writer(path) as stream:
++        json.dump(json_safe(value),stream,indent=2,allow_nan=False)
++
++
++def _read_rows(path):
++    metadata={};data=[];header=None
++    with Path(path).open(newline='',encoding='utf-8-sig') as stream:
++        for row in csv.reader(stream):
++            if not row or not any(v.strip() for v in row):continue
++            if row[0].startswith('#'):
++                if len(row)>1: metadata[row[0].lstrip('# ').strip()]=row[1]
++                continue
++            try: values=[float(v) for v in row]
++            except ValueError:
++                if header is not None or data:raise ValueError('Unexpected text inside numeric data')
++                header=row;continue
++            if len(values)<2:raise ValueError('Expected wavelength and intensity columns')
++            data.append(values)
++    if len(data)<2:raise ValueError('File contains fewer than two data rows')
++    return metadata,np.asarray(data,dtype=float)
++
++
++def save_trace(path, trace):
++    with atomic_text_writer(path) as stream:
++        writer=csv.writer(stream)
++        for key,value in [('file_type','analysis_spectrum'),('schema_version',1),('label',trace.label),
++                          ('trace_id',trace.trace_id),('intensity_units',trace.units),
++                          ('analysis_json',json.dumps(json_safe(trace.metadata),sort_keys=True,allow_nan=False))]:
++            writer.writerow(['# '+key,value])
++        writer.writerow(['wavelength_nm','intensity'])
++        writer.writerows(zip(trace.x,trace.y,strict=True))
++
++
++def load_trace(path):
++    path=Path(path);meta,data=_read_rows(path)
++    kind=meta.get('file_type','')
++    if kind=='analysis_spectrum':
++        if meta.get('schema_version')!='1':raise ValueError('Unsupported analysis spectrum schema')
++        return SpectralTrace(data[:,0],data[:,1],meta.get('label',path.stem),meta['intensity_units'],
++                             json.loads(meta['analysis_json']),meta['trace_id'])
++    if kind=='background':
++        from io_utils.background_io import load_background
++        background=load_background(path)
++        return SpectralTrace(background.wavelengths_nm,background.counts_per_s,'Background '+path.stem,'counts/s',
++                             {'background_reference':True,'configuration_signature':background.configuration_signature,
++                              'integration_ms':background.integration_ms,'timestamp_utc':background.timestamp_utc})
++    if kind and kind!='spectrum':raise ValueError('Select a spectrum or background, not a response profile')
++    trace=trace_from_record(load_spectrum_record(path),path.stem)
++    return trace.derive(trace.y,{'type':'load','file_name':path.name,'file_sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
++
++
++def save_response(path, profile):
++    with atomic_text_writer(path) as stream:
++        writer=csv.writer(stream)
++        for key,value in [('file_type','response_profile'),('schema_version',1),('label',profile.label),
++                          ('grating',profile.grating),('detector',profile.detector),
++                          ('profile_json',json.dumps(json_safe(profile.metadata),sort_keys=True,allow_nan=False))]:
++            writer.writerow(['# '+key,value])
++        writer.writerow(['wavelength_nm','coefficient'])
++        writer.writerows(zip(profile.x,profile.coefficients,strict=True))
++
++
++def load_response(path, *, grating='', detector=''):
++    path=Path(path);meta,data=_read_rows(path)
++    if data.shape[1]!=2:raise ValueError('Response files must contain exactly two numeric columns')
++    kind=meta.get('file_type','')
++    if kind and kind!='response_profile':raise ValueError('This file is not a response profile')
++    if kind and meta.get('schema_version')!='1':raise ValueError('Unsupported response profile schema')
++    metadata=json.loads(meta.get('profile_json','{}'))
++    if not kind:
++        metadata.update({'imported_file':path.name,'imported_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
++                         'normalization':'as supplied; no rescaling','wavelength_units':'nm'})
++    return ResponseProfile(data[:,0],data[:,1],meta.get('grating',grating),meta.get('detector',detector),
++                           meta.get('label',path.stem),metadata)
+--- a/io_utils/background_io.py
++++ b/io_utils/background_io.py
+@@ -17,3 +17,39 @@
+         writer.writerow(['wavelength_nm', 'background_counts', 'background_counts_per_s'])
+         for wavelength, rate in zip(wavelengths, rates, strict=True):
+             writer.writerow([float(wavelength), float(rate) * background.integration_ms / 1000.0, float(rate)])
++
++
++def load_background(path):
++    """Load only the explicit background export schema; never infer a signature."""
++    from pathlib import Path
++    from core.records import BackgroundSpectrum
++    metadata={};rows=[]
++    with Path(path).open(newline='',encoding='utf-8-sig') as stream:
++        reader=csv.reader(stream)
++        for row in reader:
++            if not row:continue
++            if row[0].startswith('#'):
++                if len(row)>1:metadata[row[0].lstrip('# ').strip()]=row[1]
++            elif row[0]=='wavelength_nm':
++                if row!=['wavelength_nm','background_counts','background_counts_per_s']:
++                    raise ValueError('Unrecognized background columns')
++            else:
++                if len(row)!=3:raise ValueError('Background needs three columns')
++                rows.append([float(v) for v in row])
++    if metadata.get('file_type')!='background' or metadata.get('schema_version')!='1':
++        raise ValueError('Not a supported background export')
++    data=np.asarray(rows,dtype=float)
++    if data.ndim!=2 or data.shape[0]<2 or not np.all(np.isfinite(data)):
++        raise ValueError('Background must have at least two finite samples')
++    integration=float(metadata['integration_ms'])
++    if not np.isfinite(integration) or integration<=0:raise ValueError('Invalid background exposure')
++    if not np.allclose(data[:,1],data[:,2]*integration/1000,rtol=1e-8,atol=1e-8):
++        raise ValueError('Background count and rate columns disagree')
++    if np.any(np.diff(data[:,0])<=0):raise ValueError('Background wavelengths must increase')
++    def boolean(key):
++        value=metadata[key].lower()
++        if value not in ('true','false'):raise ValueError('Invalid background boolean')
++        return value=='true'
++    return BackgroundSpectrum(metadata['timestamp_utc'],data[:,0],data[:,2],integration,int(metadata['averages']),
++        boolean('correct_dark'),boolean('correct_nonlinearity'),metadata.get('averaging_mode','software'),
++        metadata.get('configuration_signature',''),metadata.get('compatibility_policy','strict'))
+--- a/io_utils/spectrum_io.py
++++ b/io_utils/spectrum_io.py
+@@ -479,6 +479,7 @@
+                 [
+                     ("status", "ok" if record.snr.valid else "invalid"),
+                     ("reason", record.snr.message if not record.snr.valid else None),
++                    ("description", record.snr.message if record.snr.valid else None),
+                 ],
+             )
+             if record.snr.valid:
+@@ -702,7 +703,7 @@
+         "robust_sigma": "gated_timing_robust_sigma_ms",
+         "threshold": "gated_timing_threshold_ms",
+     },
+-    "snr": {"status": "snr_status", "reason": "snr_reason"},
++    "snr": {"status": "snr_status", "reason": "snr_reason", "description": "snr_description"},
+     "snr_metrics": {
+         "peak": "snr_peak",
+         "integrated": "snr_integrated",
+@@ -912,8 +913,9 @@
+     """
+ 
+     metadata, wavelengths, intensities, raw_intensities, unsmoothed = _read_spectrum_file(Path(path))
+-    if _first(metadata, "file_type") == "background":
+-        raise ValueError("This is a background export, not an acquired sample spectrum.")
++    file_type = _first(metadata, "file_type")
++    if file_type in {"background", "analysis_spectrum", "response_profile"}:
++        raise ValueError("Load this background, analysis spectrum or response profile in the Analysis tab.")
+     schema_version = _int_value(metadata, "schema_version", 1)
+     notes = _first(metadata, "notes")
+     if schema_version < 2:
+@@ -1092,7 +1094,7 @@
+         snr_metrics = SNRMetrics(
+             valid=snr_valid,
+             message=(
+-                "ok"
++                _first(metadata, "snr_description", "ok")
+                 if snr_valid
+                 else _first(metadata, "snr_reason", _first(metadata, "snr_message"))
+             ),
+--- a/panels/acquisition_panel.py
++++ b/panels/acquisition_panel.py
+@@ -325,13 +325,8 @@
+ 
+     def _update_smoothing_controls(self, *_args) -> None:
+         window = str(self.smoothing_window_combo.currentData() or "none")
+-        enabled = window != "none"
+-        available = getattr(self, "_background_available", False)
+-        self.subtract_background_check.setEnabled(parameters_enabled and available)
+-        self.subtract_background_check.setToolTip("Capture a compatible background first." if not available else "Strict configuration matching is enforced.")
+-        self.save_background_button.setEnabled(available)
+-        self.plot_background_check.setEnabled(available)
+-        self.boxcar_width.setEnabled(enabled and not self._acquiring)
++        # All acquisition/sequence gating belongs to one implementation.
++        self._apply_control_state()
+         self.boxcar_width.setToolTip(
+             "Gaussian width is FWHM in pixels. Other widths are window length in pixels."
+         )
+--- /dev/null
++++ b/panels/analysis_panel.py
+@@ -0,0 +1,397 @@
++"""Interactive post-acquisition analysis; no instrument or laser commands."""
++from __future__ import annotations
++from dataclasses import replace
++from pathlib import Path
++import json
++import numpy as np
++import pyqtgraph as pg
++from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
++from PySide6.QtWidgets import (
++    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QSplitter, QScrollArea,
++    QListWidget, QAbstractItemView, QComboBox, QCheckBox, QLineEdit,
++    QDoubleSpinBox, QPushButton, QLabel, QFileDialog, QMessageBox, QPlainTextEdit,
++    QGroupBox,
++)
++from core.settings import PlotStyleSettings
++from io_utils.analysis_io import load_trace, save_trace, load_response, save_response, write_json
++from processing.spectral_analysis import (
++    SpectralTrace, trace_from_record, subtract_baseline, subtract_reference, as_count_rate,
++    apply_response, derive_response, stitch, residual, analyze_band,
++)
++from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
++
++
++class _TaskSignals(QObject):
++    succeeded = Signal(object)
++    failed = Signal(str)
++
++
++class _Task(QRunnable):
++    def __init__(self, operation):
++        super().__init__()
++        self.operation=operation
++        self.signals=_TaskSignals()
++
++    def run(self):
++        try:self.signals.succeeded.emit(self.operation())
++        except Exception as exc:self.signals.failed.emit(f'{type(exc).__name__}: {exc}')
++
++
++class AnalysisPanel(QWidget):
++    def __init__(self, current_record, parent=None):
++        super().__init__(parent)
++        self._current_record=current_record
++        self.traces=[]
++        self.profiles=[]
++        self._report=None
++        self._style=PlotStyleSettings()
++        self._task=None
++        root=QVBoxLayout(self)
++        note=QLabel('Analysis creates separate spectra. Select list entries to overlay, process or stitch. '
++                    'Acquire samples and standard-lamp spectra with the normal acquisition controls or left-side Scans tab.')
++        note.setWordWrap(True);root.addWidget(note)
++        splitter=QSplitter(Qt.Orientation.Horizontal)
++        root.addWidget(splitter)
++        self.controls=QWidget();controls=QVBoxLayout(self.controls)
++        row=QHBoxLayout()
++        self._button(row,'Add current',self.add_current)
++        self._button(row,'Load spectra / baseline…',self.load_files)
++        controls.addLayout(row)
++        self.trace_list=QListWidget()
++        self.trace_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
++        self.trace_list.setMinimumHeight(130)
++        self.trace_list.itemSelectionChanged.connect(self._plot)
++        controls.addWidget(self.trace_list)
++        row=QHBoxLayout()
++        self._button(row,'Remove selected',self.remove_selected)
++        self._button(row,'Export selected…',self.export_selected)
++        controls.addLayout(row)
++        form=QFormLayout()
++        self.reference=QComboBox()
++        self.reference.currentIndexChanged.connect(self._plot)
++        form.addRow('Reference spectrum',self.reference)
++        self.show_residuals=QCheckBox('Show differences from reference')
++        self.show_residuals.toggled.connect(self._plot)
++        form.addRow(self.show_residuals)
++        self.normalize_display=QCheckBox('Normalize overlays to maximum (display only)')
++        self.normalize_display.toggled.connect(self._plot)
++        form.addRow(self.normalize_display)
++        controls.addLayout(form)
++        baseline=QGroupBox('Baseline and response')
++        form=QFormLayout(baseline)
++        self.baseline=QComboBox()
++        for label,key in [('None','none'),('Constant offset','constant'),('Linear fit','linear'),('Quadratic fit','quadratic'),('Subtract reference','reference')]:
++            self.baseline.addItem(label,key)
++        form.addRow('Baseline',self.baseline)
++        self.offset=self._spin(-1e12,1e12,0)
++        form.addRow('Offset (input units)',self.offset)
++        self.intervals=QLineEdit('')
++        self.intervals.setPlaceholderText('e.g. 400:450, 750:800')
++        form.addRow('Baseline-only ranges (nm)',self.intervals)
++        self.already_baseline=QCheckBox('Input already baseline corrected')
++        self.already_baseline.setToolTip('Explicit provenance assertion for imported data. Captured background subtraction is recognized automatically.')
++        form.addRow(self.already_baseline)
++        self.to_rate=QCheckBox('Convert counts to counts/s')
++        form.addRow(self.to_rate)
++        self.grating=QLineEdit('1');self.detector=QLineEdit('1')
++        self.detector.setToolTip('Laboratory detector identifier, not an automatically inferred camera serial.')
++        form.addRow('Grating identifier',self.grating);form.addRow('Detector identifier',self.detector)
++        self.profile_combo=QComboBox();self.profile_combo.addItem('No response correction',None)
++        form.addRow('Response profile',self.profile_combo)
++        self.profile_combo.currentIndexChanged.connect(self._profile_selected)
++        row=QHBoxLayout()
++        self._button(row,'Load coefficients…',self.load_profile)
++        self._button(row,'Save profile…',self.export_profile)
++        form.addRow(row)
++        self.profile_info=QLabel('No profile selected');self.profile_info.setWordWrap(True)
++        form.addRow(self.profile_info)
++        self.crop=QCheckBox('Mask wavelengths outside response coverage')
++        form.addRow(self.crop)
++        self._button(form,'Process selected',self.process_selected)
++        controls.addWidget(baseline)
++        calibration=QGroupBox('Acquire or derive a lamp response')
++        form=QFormLayout(calibration)
++        lamp_note=QLabel('Acquire a standard lamp at each center; add or load those spectra, baseline-correct them, '
++                        'then select only the corrected lamp traces. Exposure is normalized before coefficients '
++                        'are combined. Formula uses wavelength in nm; profiles are relative, with one global normalization.')
++        lamp_note.setWordWrap(True);form.addRow(lamp_note)
++        self.step=self._spin(0.001,100,0.5)
++        form.addRow('Coefficient spacing (nm)',self.step)
++        self.profile_name=QLineEdit('Standard lamp response')
++        form.addRow('Profile name',self.profile_name)
++        self._button(form,'Derive from selected lamp spectra',self.derive_profile)
++        controls.addWidget(calibration)
++        stitching=QGroupBox('Stitch selected spectra')
++        form=QFormLayout(stitching)
++        self.calibrated=QCheckBox('Calibrated (same response profile required)')
++        self.match_overlap=QCheckBox('Match uncalibrated overlap scale')
++        self.calibrated.toggled.connect(self._stitch_mode)
++        form.addRow(self.calibrated);form.addRow(self.match_overlap)
++        self._button(form,'Stitch selected',self.stitch_selected)
++        controls.addWidget(stitching)
++        analysis=QGroupBox('Peak and band analysis')
++        form=QFormLayout(analysis)
++        self.band_lo=self._spin(0,100000,400);self.band_hi=self._spin(0,100000,800)
++        self.prominence=self._spin(0,1e12,0)
++        form.addRow('Band start (nm)',self.band_lo);form.addRow('Band stop (nm)',self.band_hi)
++        form.addRow('Minimum peak prominence',self.prominence)
++        self._button(form,'Analyze selected',self.analyze_selected)
++        self._button(form,'Export analysis report…',self.export_report)
++        controls.addWidget(analysis)
++        controls.addStretch()
++        scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(self.controls)
++        scroll.setMinimumWidth(300);splitter.addWidget(scroll)
++        right=QWidget();right_layout=QVBoxLayout(right)
++        self.plot=pg.PlotWidget(viewBox=PaddedViewBox());self.plot.addLegend()
++        self.plot.setLabel('bottom','Wavelength (nm)')
++        self.difference_plot=pg.PlotWidget(viewBox=PaddedViewBox())
++        self.difference_plot.setLabel('bottom','Wavelength (nm)');self.difference_plot.setLabel('left','Difference')
++        self.difference_plot.setXLink(self.plot)
++        self.difference_plot.hide()
++        right_layout.addWidget(self.plot,4);right_layout.addWidget(self.difference_plot,2)
++        self.report=QPlainTextEdit();self.report.setReadOnly(True);self.report.setMaximumHeight(170)
++        right_layout.addWidget(self.report,1)
++        splitter.addWidget(right);splitter.setStretchFactor(0,0);splitter.setStretchFactor(1,1)
++        splitter.setSizes([360,800])
++        self.status=QLabel('Ready');self.status.setWordWrap(True);root.addWidget(self.status)
++        bundled=Path(__file__).resolve().parents[1]/'processing'/'data'/'grating1_detector1_coefficients.csv'
++        if bundled.exists():
++            self._add_profile(load_response(bundled,grating='1',detector='1'),select=False)
++        self.apply_style(self._style)
++
++    @staticmethod
++    def _button(layout,text,callback):
++        button=QPushButton(text)
++        button.clicked.connect(lambda _checked=False:callback())
++        if isinstance(layout,QFormLayout):layout.addRow(button)
++        else:layout.addWidget(button)
++        return button
++
++    @staticmethod
++    def _spin(lo,hi,value):
++        spin=QDoubleSpinBox();spin.setRange(lo,hi);spin.setDecimals(4);spin.setValue(value)
++        return spin
++
++    def selected_traces(self):
++        return [self.traces[self.trace_list.row(item)] for item in self.trace_list.selectedItems()]
++
++    def _require_selected(self):
++        traces=self.selected_traces()
++        if not traces:raise ValueError('Select at least one spectrum in the list')
++        return traces
++
++    def _reference_trace(self):
++        index=self.reference.currentData()
++        return self.traces[index] if index is not None else None
++
++    def _start(self,kind,operation):
++        if self._task is not None:return
++        self.controls.setEnabled(False);self.status.setText('Working…')
++        self._task=_Task(lambda:(kind,operation()))
++        self._task.signals.succeeded.connect(self._completed,Qt.ConnectionType.QueuedConnection)
++        self._task.signals.failed.connect(self._failed,Qt.ConnectionType.QueuedConnection)
++        QThreadPool.globalInstance().start(self._task)
++
++    @Slot(object)
++    def _completed(self,result):
++        self._task=None;self.controls.setEnabled(True)
++        kind,value=result
++        try:
++            if kind=='traces':self._add_traces(value)
++            elif kind=='profile':self._add_profile(value)
++            elif kind=='report':
++                self._report=value
++                self.report.setPlainText(json.dumps(value,indent=2,default=str))
++            self.status.setText('Complete' if kind!='export' else 'Saved')
++        except Exception as exc:self._failed(str(exc))
++
++    @Slot(str)
++    def _failed(self,message):
++        self._task=None;self.controls.setEnabled(True)
++        self.status.setText(message)
++        QMessageBox.warning(self,'Analysis',message)
++
++    def _guard(self,operation):
++        try:operation()
++        except Exception as exc:self._failed(str(exc))
++
++    def _add_traces(self,traces):
++        # Bound retained analysis memory without affecting acquisition storage.
++        if len(self.traces)+len(traces)>100:raise ValueError('Analysis retains at most 100 spectra; remove entries first')
++        if sum(len(t.x) for t in self.traces)+sum(len(t.x) for t in traces)>2000000:
++            raise ValueError('Analysis retains at most 2 million samples')
++        self.trace_list.blockSignals(True);self.reference.blockSignals(True)
++        self.trace_list.clearSelection()
++        for trace in traces:
++            index=len(self.traces);self.traces.append(trace)
++            self.trace_list.addItem(f'{index+1}. {trace.label} [{trace.units}]')
++            self.trace_list.item(index).setSelected(True)
++            self.reference.addItem(f'{index+1}. {trace.label}',index)
++        self.trace_list.blockSignals(False);self.reference.blockSignals(False)
++        self._plot()
++
++    def add_current(self):
++        def op():
++            record=self._current_record()
++            if record is None:raise ValueError('Acquire or load a spectrum first')
++            self._add_traces([trace_from_record(record,'Acquired '+record.timestamp_utc)])
++        self._guard(op)
++
++    def load_files(self):
++        paths,_=QFileDialog.getOpenFileNames(self,'Load spectra or saved baselines','','CSV (*.csv)')
++        if paths:self._start('traces',lambda:[load_trace(path) for path in paths])
++
++    def remove_selected(self):
++        remove={self.trace_list.row(item) for item in self.trace_list.selectedItems()}
++        keep=[t for i,t in enumerate(self.traces) if i not in remove]
++        self.trace_list.blockSignals(True);self.reference.blockSignals(True)
++        self.trace_list.clear();self.reference.clear();self.traces=[]
++        self.trace_list.blockSignals(False);self.reference.blockSignals(False)
++        self._add_traces(keep)
++
++    def _add_profile(self,profile,select=True):
++        for i,p in enumerate(self.profiles):
++            if p.fingerprint==profile.fingerprint:
++                if select:self.profile_combo.setCurrentIndex(i+1)
++                return
++        self.profiles.append(profile)
++        self.profile_combo.addItem(f'{profile.label} (G{profile.grating}, D{profile.detector})',len(self.profiles)-1)
++        if select:self.profile_combo.setCurrentIndex(self.profile_combo.count()-1)
++
++    def _profile_selected(self):
++        i=self.profile_combo.currentData()
++        if i is None:self.profile_info.setText('No profile selected');return
++        p=self.profiles[i]
++        self.grating.setText(p.grating);self.detector.setText(p.detector)
++        self.profile_info.setText(f'{p.x[0]:g}–{p.x[-1]:g} nm; {len(p.x)} coefficients. '
++            'Select the correct laboratory detector ID; imported IDs are not automatically mapped to a camera serial.')
++
++    def load_profile(self):
++        path,_=QFileDialog.getOpenFileName(self,'Load response coefficients','','CSV (*.csv)')
++        grating=self.grating.text().strip();detector=self.detector.text().strip()
++        if path:self._start('profile',lambda:load_response(path,grating=grating,detector=detector))
++
++    def export_profile(self):
++        i=self.profile_combo.currentData()
++        if i is None:self.status.setText('Select a response profile first');return
++        profile=self.profiles[i]
++        path,_=QFileDialog.getSaveFileName(self,'Save response profile','response.csv','CSV (*.csv)')
++        if path:self._start('export',lambda:save_response(Path(path),profile))
++
++    def process_selected(self):
++        def op():
++            traces=self._require_selected();method=self.baseline.currentData()
++            offset=self.offset.value();reference=self._reference_trace()
++            intervals=[]
++            if method in ('linear','quadratic'):
++                for part in self.intervals.text().split(','):
++                    values=part.strip().split(':')
++                    if len(values)!=2:raise ValueError('Use baseline ranges like 400:450, 750:800')
++                    intervals.append(tuple(float(v) for v in values))
++            confirmed=self.already_baseline.isChecked();to_rate=self.to_rate.isChecked()
++            profile_index=self.profile_combo.currentData()
++            profile=self.profiles[profile_index] if profile_index is not None else None
++            grating=self.grating.text().strip();detector=self.detector.text().strip();crop=self.crop.isChecked()
++            def calculate():
++                outputs=[]
++                for original in traces:
++                    trace=original
++                    # Reference baselines must share units. Rate normalization is explicit.
++                    if method=='reference' and to_rate:trace=as_count_rate(trace)
++                    if method=='reference':
++                        if reference is None or reference.trace_id==original.trace_id:raise ValueError('Choose a separate baseline reference')
++                        trace,_=subtract_reference(trace,reference)
++                    elif method!='none':trace,_=subtract_baseline(trace,method,offset=offset,intervals=intervals)
++                    elif confirmed:
++                        trace=trace.derive(trace.y,{'type':'baseline_assertion','source':'user'},metadata={'baseline_applied':True})
++                    if to_rate:trace=as_count_rate(trace)
++                    if profile:trace=apply_response(trace,profile,grating=grating,detector=detector,crop=crop)
++                    if trace is original:raise ValueError('Choose a processing operation')
++                    outputs.append(trace)
++                return outputs
++            self._start('traces',calculate)
++        self._guard(op)
++
++    def derive_profile(self):
++        def op():
++            traces=self._require_selected();grating=self.grating.text().strip();detector=self.detector.text().strip()
++            step=self.step.value();label=self.profile_name.text().strip() or 'Lamp response'
++            self._start('profile',lambda:derive_response(traces,grating=grating,detector=detector,step_nm=step,label=label))
++        self._guard(op)
++
++    def _stitch_mode(self,checked):
++        if checked:self.match_overlap.setChecked(False)
++        self.match_overlap.setEnabled(not checked)
++
++    def stitch_selected(self):
++        def op():
++            traces=self._require_selected();calibrated=self.calibrated.isChecked();match=self.match_overlap.isChecked()
++            self._start('traces',lambda:[stitch(traces,calibrated=calibrated,match_overlap=match)])
++        self._guard(op)
++
++    def analyze_selected(self):
++        def op():
++            traces=self._require_selected();lo=self.band_lo.value();hi=self.band_hi.value();prominence=self.prominence.value()
++            self._start('report',lambda:[analyze_band(t,lo,hi,prominence=prominence) for t in traces])
++        self._guard(op)
++
++    def export_selected(self):
++        def op():
++            traces=self._require_selected()
++            if len(traces)==1:
++                path,_=QFileDialog.getSaveFileName(self,'Save derived spectrum','analysis.csv','CSV (*.csv)')
++                if path:self._start('export',lambda:save_trace(Path(path),traces[0]))
++            else:
++                directory=QFileDialog.getExistingDirectory(self,'Export selected spectra')
++                if directory:
++                    paths=[Path(directory)/f'analysis_{t.trace_id}.csv' for t in traces]
++                    if any(p.exists() for p in paths):raise ValueError('An export file already exists; select a different folder')
++                    self._start('export',lambda:[save_trace(p,t) for p,t in zip(paths,traces,strict=True)])
++        self._guard(op)
++
++    def export_report(self):
++        if self._report is None:self.status.setText('Analyze spectra first');return
++        report=self._report
++        path,_=QFileDialog.getSaveFileName(self,'Save peak and band report','analysis_report.json','JSON (*.json)')
++        if path:self._start('export',lambda:write_json(Path(path),report))
++
++    def apply_style(self,settings):
++        self._style=replace(settings)
++        for plot in (self.plot,self.difference_plot):
++            apply_plot_options(plot,settings,'spectrum')
++            font=self.font();font.setPointSize(settings.font_size)
++            for name in ('bottom','left'):plot.getAxis(name).setTickFont(font)
++        self._plot()
++
++    def _plot(self):
++        if not hasattr(self,'plot'):return
++        self.plot.clear();self.difference_plot.clear()
++        self.difference_plot.setVisible(self.show_residuals.isChecked())
++        reference=self._reference_trace();selected=self.selected_traces()
++        normalized=self.normalize_display.isChecked()
++        units={t.units for t in selected}
++        self.plot.setLabel('left','Normalized intensity' if normalized else next(iter(units)) if len(units)==1 else 'Intensity (mixed units)')
++        colors=[self._style.spectrum_color,self._style.smoothed_color,self._style.background_color,
++                '#009e73','#d55e00','#999999','#cc79a7','#56b4e9']
++        messages=[]
++        for i,trace in enumerate(selected):
++            color=color_with_alpha(colors[i%len(colors)],self._style.spectrum_alpha)
++            values=trace.y
++            if normalized:
++                maximum=float(np.nanmax(np.abs(values)))
++                values=values/maximum if maximum>0 else values
++            pen=pg.mkPen(color,width=self._style.spectrum_line_width) if self._style.spectrum_show_line else None
++            self.plot.plot(trace.x,values,name=trace.label,pen=pen,connect='finite',
++                symbol=self._style.symbol if self._style.spectrum_show_symbols else None,
++                symbolSize=self._style.symbol_size,symbolPen=color,symbolBrush=color)
++            if self.show_residuals.isChecked() and reference is not None and reference.trace_id!=trace.trace_id:
++                try:
++                    difference=residual(trace,reference)
++                    self.difference_plot.plot(difference.x,difference.y,pen=pg.mkPen(color),connect='finite')
++                except ValueError as exc:messages.append(str(exc))
++        self.difference_plot.setLabel('left','Difference (original units)')
++        if messages:self.status.setText('; '.join(sorted(set(messages))))
++        for plot in (self.plot,self.difference_plot):
++            apply_plot_options(plot,self._style,'spectrum')
++        if self._style.spectrum_auto_range:
++            self.plot.enableAutoRange();self.difference_plot.enableAutoRange(axis='y')
+--- a/panels/laser_panel.py
++++ b/panels/laser_panel.py
+@@ -147,7 +147,7 @@
+             ["Use", "λ", "Set", "Min", "Max", "Nom", "On", "Ch", "Box", "Port"]
+         )
+         table.setMinimumWidth(250)
+-        table.setMaximumHeight(130)
++        table.setMinimumHeight(60)
+         table.verticalHeader().setVisible(False)
+         table.verticalHeader().setDefaultSectionSize(22)
+         header = table.horizontalHeader()
+@@ -205,6 +205,7 @@
+ 
+         self._apply_detail_column_visibility(self.show_details_check.isChecked())
+         self.table.resizeColumnsToContents()
++        self._resize_laser_table()
+ 
+         if selected_key is not None and selected_key in self._laser_by_key:
+             self._set_selected_key(selected_key, emit=False)
+@@ -214,6 +215,22 @@
+             self.selected_detail_label.setText("Selected: no lasers found")
+             self.cdrh_delay_check.setEnabled(False)
+         self._apply_manual_control_state()
++
++    def _resize_laser_table(self) -> None:
++        screen = self.screen()
++        screen_height = screen.availableGeometry().height() if screen else 900
++        rows_height = sum(self.table.rowHeight(i) for i in range(self.table.rowCount()))
++        wanted = (self.table.horizontalHeader().sizeHint().height() + rows_height
++                  + self.table.horizontalScrollBar().sizeHint().height() + 2 * self.table.frameWidth())
++        self.table.setFixedHeight(max(60, min(wanted, int(screen_height * 0.34))))
++
++    def showEvent(self, event) -> None:
++        super().showEvent(event)
++        self._resize_laser_table()
++
++    def resizeEvent(self, event) -> None:
++        super().resizeEvent(event)
++        self._resize_laser_table()
+ 
+     def _populate_row(self, row: int, laser: LaserChannelInfo) -> None:
+         brush = QBrush(_row_color(laser.wavelength_nm))
+--- a/panels/main_window.py
++++ b/panels/main_window.py
+@@ -11,6 +11,10 @@
+ from PySide6.QtGui import QDesktopServices
+ from PySide6.QtWidgets import (
+     QAbstractScrollArea,
++    QComboBox,
++    QVBoxLayout,
++    QWidget,
++    QStackedWidget,
+     QApplication,
+     QDialog,
+     QDockWidget,
+@@ -71,6 +75,7 @@
+ from dialogs.spectrum_axis_dialog import SpectrumAxisDialog
+ from dialogs.theme_editor_dialog import ThemeEditorDialog
+ from dialogs.theme_preview_dialog import ThemePreviewDialog
++from panels.analysis_panel import AnalysisPanel
+ from panels.acquisition_panel import AcquisitionPanel
+ from panels.filter_wheels_panel import FilterWheelPanel
+ from panels.gated_acquisition_panel import GatedAcquisitionPanel
+@@ -214,6 +219,8 @@
+         self._build_timers()
+         self._build_scan_coordinator()
+         self._build_parameter_scan()
++        self.analysis_panel = AnalysisPanel(lambda: self.current_record, self)
++        self.tabs.addTab(self.analysis_panel, "Analysis and comparisons")
+         self._build_preferences_controller()
+         self._build_performance_monitor()
+ 
+@@ -262,7 +269,27 @@
+         parameter_scroll = QScrollArea()
+         parameter_scroll.setWidgetResizable(True)
+         parameter_scroll.setWidget(self.parameter_panel)
+-        self.tabs.addTab(parameter_scroll, "Parameter scans")
++        # Reuse the established power-scan panel and coordinator within a common
++        # left-hand workspace; moving widgets does not change acquisition routes.
++        self.scan_workspace = QWidget()
++        scan_layout = QVBoxLayout(self.scan_workspace)
++        scan_layout.setContentsMargins(0, 0, 0, 0)
++        self.scan_kind = QComboBox()
++        self.scan_kind.addItem("Laser power / power calibration", "power")
++        for i in range(self.parameter_panel.kind.count()):
++            self.scan_kind.addItem(self.parameter_panel.kind.itemText(i), self.parameter_panel.kind.itemData(i))
++        self.scan_pages = QStackedWidget()
++        self.lower_tabs.removeTab(self.scan_tab_index)
++        self.scan_pages.addWidget(self.scan_panel)
++        self.scan_pages.addWidget(parameter_scroll)
++        scan_layout.addWidget(self.scan_kind)
++        scan_layout.addWidget(self.scan_pages)
++        self.lower_tabs.insertTab(self.scan_tab_index, self.scan_workspace, "Scans")
++        self.parameter_panel.kind.hide()
++        label = self.parameter_panel.controls.layout().labelForField(self.parameter_panel.kind)
++        if label is not None:
++            label.hide()
++        self.scan_kind.currentIndexChanged.connect(self._select_scan_kind)
+         self.tabs.addTab(self.temperature_panel, "Temperature")
+         self.parameter_scan = ParameterScanCoordinator(self)
+         self.parameter_panel.start_requested.connect(self._start_parameter_scan)
+@@ -283,6 +310,12 @@
+         self.temperature_panel.disconnect_requested.connect(self.temperature_runtime.disconnect_requested.emit)
+         self.temperature_runtime.readings.connect(self._temperature_readings)
+         self.temperature_runtime.state.connect(self._temperature_state)
++
++    def _select_scan_kind(self, index: int) -> None:
++        key = self.scan_kind.itemData(index)
++        self.scan_pages.setCurrentIndex(0 if key == "power" else 1)
++        if key != "power":
++            self.parameter_panel.kind.setCurrentIndex(self.parameter_panel.kind.findData(key))
+ 
+     def _start_parameter_scan(self) -> None:
+         try:
+@@ -836,6 +869,7 @@
+         automated = owner in AUTOMATED_SEQUENCE_OWNERS
+ 
+         if hasattr(self, "parameter_panel"):
++            self.scan_kind.setEnabled(self.sequence_arbiter.owner is None)
+             self.parameter_panel.set_busy(owner, spectrometer)
+             sensor_busy = owner == "parameter_scan" and self.parameter_scan.active and self.parameter_scan.plan.kind == "temperature"
+             for widget in (self.temperature_panel.connect_button, self.temperature_panel.disconnect_button, self.temperature_panel.mode, self.temperature_panel.port):
+@@ -2351,6 +2385,8 @@
+     def _snr_settings_signature(self) -> tuple[object, ...]:
+         settings = self.snr_settings
+         return (
++            str(settings.method),
++            int(settings.block_size),
+             float(settings.signal_start_nm),
+             float(settings.signal_stop_nm),
+             float(settings.noise1_start_nm),
+@@ -2439,10 +2475,12 @@
+         self.plot_style_settings.spectrum_y_max = y_max
+         self.spectrum_auto_range_action.setChecked(False)
+         self.spectrum_panel.apply_style(self.plot_style_settings)
++        self.analysis_panel.apply_style(self.plot_style_settings)
+         self._save_preferences()
+ 
+     def _apply_plot_style(self) -> None:
+         self.spectrum_panel.apply_style(self.plot_style_settings)
++        self.analysis_panel.apply_style(self.plot_style_settings)
+         self.monitor_panel.apply_plot_style(self.plot_style_settings)
+         self.power_panel.apply_plot_style(self.plot_style_settings)
+ 
+@@ -2495,7 +2533,7 @@
+         )
+         self.lower_tabs.setTabVisible(
+             self.scan_tab_index,
+-            lasers,
++            True,
+         )
+ 
+         # Filter definitions remain editable offline.
+--- a/panels/monitor_panel.py
++++ b/panels/monitor_panel.py
+@@ -7,6 +7,7 @@
+ from pathlib import Path
+ 
+ import pyqtgraph as pg
++from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
+ from PySide6.QtCore import QSettings, QTimer, Signal
+ from PySide6.QtWidgets import (
+     QCheckBox,
+@@ -68,7 +69,7 @@
+         root = QVBoxLayout(self)
+         self.monitor_stack = QStackedWidget()
+ 
+-        self.monitor_plot = pg.PlotWidget()
++        self.monitor_plot = pg.PlotWidget(viewBox=PaddedViewBox())
+         self.monitor_plot.setLabel("bottom", "Time (s)")
+         self.monitor_plot.setLabel("left", "Tracked quantity")
+         self.monitor_curve = self.monitor_plot.plot()
+@@ -361,14 +362,18 @@
+                 )
+ 
+     def apply_plot_style(self, settings) -> None:
++        apply_plot_options(self.monitor_plot, settings, "monitor")
++        color = color_with_alpha(settings.monitor_color, settings.monitor_alpha)
+         pen = (
+-            pg.mkPen(settings.monitor_color, width=settings.monitor_line_width)
++            pg.mkPen(color, width=settings.monitor_line_width)
+             if settings.monitor_show_line and settings.monitor_line_width > 0
+             else None
+         )
+         symbol = settings.symbol if settings.monitor_show_symbols else None
+         self.monitor_curve.setPen(pen)
+         self.monitor_curve.setSymbol(symbol)
++        self.monitor_curve.setSymbolPen(color)
++        self.monitor_curve.setSymbolBrush(color)
+         self.monitor_curve.setSymbolSize(int(settings.symbol_size))
+ 
+         font = self.font()
+@@ -376,6 +381,7 @@
+         for axis_name in ("bottom", "left"):
+             self.monitor_plot.getAxis(axis_name).setTickFont(font)
+         self.monitor_map_view.apply_font(font)
++        apply_plot_options(self.monitor_map_view.plot, settings, "monitor")
+ 
+         if settings.monitor_auto_range:
+             self.monitor_plot.enableAutoRange()
+--- a/panels/monitor_views.py
++++ b/panels/monitor_views.py
+@@ -4,6 +4,7 @@
+ 
+ import numpy as np
+ import pyqtgraph as pg
++from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
+ from PySide6.QtGui import QFont
+ from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+ 
+@@ -98,7 +99,7 @@
+         self.info_label.setWordWrap(True)
+         layout.addWidget(self.info_label)
+ 
+-        self.plot = pg.PlotWidget()
++        self.plot = pg.PlotWidget(viewBox=PaddedViewBox())
+         self.plot.setLabel("bottom", "Magnetic field (mT)")
+         self.plot.setLabel("left", "Power ch1 (W)")
+         for axis_name in ("bottom", "left"):
+--- /dev/null
++++ b/panels/plot_options.py
+@@ -0,0 +1,29 @@
++"""Shared, axis-specific auto margins and display styling."""
++import pyqtgraph as pg
++
++
++class PaddedViewBox(pg.ViewBox):
++    def __init__(self, **kwargs):
++        self.axis_padding = (0.02, 0.05)
++        super().__init__(**kwargs)
++
++    def suggestPadding(self, axis):
++        return self.axis_padding[axis]
++
++
++def color_with_alpha(color, alpha):
++    result = pg.mkColor(color)
++    result.setAlphaF(max(0.0, min(1.0, float(alpha))))
++    return result
++
++
++def apply_plot_options(plot, settings, prefix):
++    view = plot.getViewBox()
++    if isinstance(view, PaddedViewBox):
++        view.axis_padding = (getattr(settings, prefix + '_x_margin'),
++                             getattr(settings, prefix + '_y_margin'))
++        view.updateAutoRange()
++    plot.showGrid(x=settings.show_grid, y=settings.show_grid, alpha=settings.grid_alpha)
++    legend = plot.getPlotItem().legend
++    if legend is not None:
++        legend.setVisible(settings.show_legend)
+--- a/panels/power_panel.py
++++ b/panels/power_panel.py
+@@ -7,6 +7,7 @@
+ 
+ import numpy as np
+ import pyqtgraph as pg
++from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
+ from PySide6.QtCore import QSettings, Qt, QTimer, Signal
+ from PySide6.QtWidgets import (
+     QCheckBox,
+@@ -75,7 +76,7 @@
+         self.power_stats_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+         layout.addWidget(self.power_stats_label)
+ 
+-        self.power_plot = pg.PlotWidget()
++        self.power_plot = pg.PlotWidget(viewBox=PaddedViewBox())
+         self.power_plot.setLabel("bottom", "Time (s)")
+         self.power_plot.setLabel("left", f"Power ch{self.channel_combo.currentIndex()+1} (W)")
+         self.power_curve = self.power_plot.plot()
+@@ -293,8 +294,10 @@
+         self.auto_wavelength_check.setChecked(bool(enabled))
+ 
+     def apply_plot_style(self, settings) -> None:
++        apply_plot_options(self.power_plot, settings, "power")
++        color = color_with_alpha(settings.power_color, settings.power_alpha)
+         pen = (
+-            pg.mkPen(settings.power_color, width=settings.power_line_width)
++            pg.mkPen(color, width=settings.power_line_width)
+             if settings.power_show_line and settings.power_line_width > 0
+             else None
+         )
+@@ -303,6 +306,8 @@
+ 
+         self.power_curve.setPen(pen)
+         self.power_curve.setSymbol(symbol)
++        self.power_curve.setSymbolPen(color)
++        self.power_curve.setSymbolBrush(color)
+         self.power_curve.setSymbolSize(int(settings.symbol_size))
+ 
+         font = self.font()
+--- a/panels/spectrum_panel.py
++++ b/panels/spectrum_panel.py
+@@ -2,6 +2,7 @@
+ 
+ import numpy as np
+ import pyqtgraph as pg
++from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
+ from PySide6.QtCore import QTimer, Signal
+ from PySide6.QtWidgets import QVBoxLayout, QWidget
+ 
+@@ -18,7 +19,7 @@
+         layout = QVBoxLayout(self)
+         layout.setContentsMargins(0, 0, 0, 0)
+ 
+-        self.plot = pg.PlotWidget()
++        self.plot = pg.PlotWidget(viewBox=PaddedViewBox())
+         self.plot.setLabel("bottom", "Wavelength (nm)")
+         self.plot.setLabel("left", "Intensity (counts)")
+         for axis_name in ("bottom", "left"):
+@@ -29,11 +30,16 @@
+         self.curve = self.plot.plot(name="Spectrum / smoothed")
+         self.unsmoothed_curve = self.plot.plot(name="Unsmoothed", pen=pg.mkPen("#e69f00", width=1))
+         self.background_curve = self.plot.plot(name="Background (capture counts)", pen=pg.mkPen("#cc79a7", width=1))
++        self.curve.setZValue(20)
++        self.unsmoothed_curve.setZValue(10)
++        self.background_curve.setZValue(0)
++        self._smoothed_visible = False
+         self.unsmoothed_curve.hide()
+         self.background_curve.hide()
+         layout.addWidget(self.plot)
+ 
+         self._settings = PlotStyleSettings()
++        self._style_curves()
+         self._pending_record: SpectrumRecord | None = None
+         self._plot_dirty = False
+ 
+@@ -53,6 +59,8 @@
+         self._pending_record = None
+         self._plot_dirty = False
+         self.unsmoothed_curve.hide()
++        self._smoothed_visible = False
++        self._style_curves()
+         self.curve.setData(
+             np.asarray(wavelengths_nm, dtype=float),
+             np.asarray(intensities_counts, dtype=float),
+@@ -75,6 +83,8 @@
+         if unsmoothed is None and not record.background_subtracted:
+             unsmoothed = record.raw_intensities_counts
+         show = record.smoothing_window != "none" and record.boxcar_width > 1 and unsmoothed is not None
++        self._smoothed_visible = show
++        self._style_curves()
+         self.unsmoothed_curve.setVisible(show)
+         if show:
+             self.unsmoothed_curve.setData(record.wavelengths_nm, unsmoothed)
+@@ -88,16 +98,8 @@
+ 
+     def apply_style(self, settings: PlotStyleSettings) -> None:
+         self._settings = settings
+-        pen = (
+-            pg.mkPen(settings.spectrum_color, width=settings.spectrum_line_width)
+-            if settings.spectrum_show_line and settings.spectrum_line_width > 0
+-            else None
+-        )
+-        self.curve.setPen(pen)
+-        color = "#56b4e9" if pg.mkColor(settings.spectrum_color).name() == "#e69f00" else "#e69f00"
+-        self.unsmoothed_curve.setPen(pg.mkPen(color, width=1))
+-        self.curve.setSymbol(settings.symbol if settings.spectrum_show_symbols else None)
+-        self.curve.setSymbolSize(int(settings.symbol_size))
++        self._style_curves()
++        apply_plot_options(self.plot, settings, "spectrum")
+ 
+         font = self.font()
+         font.setPointSize(int(settings.font_size))
+@@ -107,6 +109,21 @@
+             if hasattr(axis, "enableAutoSIPrefix"):
+                 axis.enableAutoSIPrefix(False)
+         self._apply_range()
++
++    def _style_curves(self) -> None:
++        settings = self._settings
++        prefix = "smoothed" if self._smoothed_visible else "spectrum"
++        color = color_with_alpha(getattr(settings, prefix + "_color"), getattr(settings, prefix + "_alpha"))
++        width = getattr(settings, prefix + "_line_width")
++        self.curve.setPen(pg.mkPen(color, width=width) if settings.spectrum_show_line and width > 0 else None)
++        self.curve.setSymbol(settings.symbol if settings.spectrum_show_symbols else None)
++        self.curve.setSymbolSize(settings.symbol_size)
++        self.curve.setSymbolPen(color)
++        self.curve.setSymbolBrush(color)
++        for name, curve in (("unsmoothed", self.unsmoothed_curve), ("background", self.background_curve)):
++            width = getattr(settings, name + "_line_width")
++            color = color_with_alpha(getattr(settings, name + "_color"), getattr(settings, name + "_alpha"))
++            curve.setPen(pg.mkPen(color, width=width) if width > 0 else None)
+ 
+     def set_auto_range(self, enabled: bool) -> None:
+         self._settings.spectrum_auto_range = bool(enabled)
+--- /dev/null
++++ b/processing/automatic_snr.py
+@@ -0,0 +1,69 @@
++"""Fast single-frame SNR estimates, independent of user wavelength windows.
++
++Noise is estimated on unsmoothed data. These are spatial noise estimates, not
++repeat-acquisition uncertainty estimates; correlated noise and dense narrow
++features can bias them. Local linear detrending removes slopes within blocks.
++"""
++import math
++import numpy as np
++from core.snr_records import SNRMetrics
++from processing.snr import _prepare_xy
++
++
++def block_noise(x, y, block_size=16, method='std'):
++    if block_size not in (8, 16):
++        raise ValueError('Block size must be 8 or 16')
++    if method not in ('std', 'mad'):
++        raise ValueError('Noise method must be std or mad')
++    n = len(y) // block_size
++    if n < 4:
++        raise ValueError('Automatic SNR needs at least four complete blocks')
++    xb = np.asarray(x[:n * block_size]).reshape(n, block_size)
++    yb = np.asarray(y[:n * block_size]).reshape(n, block_size)
++    xc = xb - xb.mean(axis=1, keepdims=True)
++    yc = yb - yb.mean(axis=1, keepdims=True)
++    residual = yc - xc * ((xc * yc).sum(axis=1) / (xc * xc).sum(axis=1))[:, None]
++    if method == 'std':
++        sigmas = np.sqrt((residual * residual).sum(axis=1) / (block_size - 2))
++        # Unbias Gaussian standard deviations (rather than variances).
++        df = block_size - 2
++        sigmas /= math.sqrt(2 / df) * math.exp(math.lgamma((df + 1) / 2) - math.lgamma(df / 2))
++    else:
++        sigmas = (1.4826 * np.median(np.abs(residual - np.median(residual, axis=1)[:, None]), axis=1)
++                  * math.sqrt(block_size / (block_size - 2)))
++    # Symmetric trimmed mean avoids a few sharp lines dominating the estimate.
++    ordered = np.sort(sigmas)
++    trim = int(n * 0.1)
++    kept = ordered[trim:n-trim] if trim else ordered
++    return float(np.mean(kept)), n * block_size
++
++
++def estimate_automatic_snr(wavelengths_nm, intensities_counts, *, block_size=16,
++                           noise_method='std', full_scale_counts=float('nan')):
++    try:
++        x, y = _prepare_xy(wavelengths_nm, intensities_counts)
++        sigma, n_noise = block_noise(x, y, block_size, noise_method)
++    except (ValueError, FloatingPointError) as exc:
++        return SNRMetrics.invalid(str(exc))
++    if not math.isfinite(sigma) or sigma <= np.finfo(float).eps * max(1.0, float(np.max(np.abs(y)))):
++        return SNRMetrics.invalid('No resolved noise; automatic SNR is undefined')
++    # Fixed nine-pixel symmetric smoother affects only the peak estimate, never noise.
++    kernel = np.array([1, 2, 3, 4, 5, 4, 3, 2, 1], dtype=float) / 25.0
++    smoothed = np.convolve(np.pad(y, 4, mode='reflect'), kernel, mode='valid')
++    baseline = float(np.percentile(smoothed, 10))
++    signal = smoothed - baseline
++    peak = max(0.0, float(np.max(signal)))
++    weights = np.empty_like(x)
++    weights[0] = (x[1] - x[0]) / 2
++    weights[-1] = (x[-1] - x[-2]) / 2
++    weights[1:-1] = (x[2:] - x[:-2]) / 2
++    integrated = float(np.sum(weights * (y - baseline)))
++    noise_integrated = sigma * float(np.sqrt(np.sum(weights * weights)))
++    fraction = float(np.max(y)) / full_scale_counts if math.isfinite(full_scale_counts) and full_scale_counts > 0 else float('nan')
++    return SNRMetrics(valid=True,
++        message=f'Auto {block_size}-pixel detrended {noise_method}; 10% trimmed block mean; peak above smoothed 10th percentile',
++        peak_snr=peak/sigma, integrated_snr=integrated/noise_integrated,
++        noise_sigma_counts=sigma, peak_signal_counts=peak,
++        integrated_signal_counts_nm=integrated, integrated_noise_counts_nm=noise_integrated,
++        mean_signal_counts=float(np.mean(y - baseline)), baseline_at_signal_center_counts=baseline,
++        peak_fraction_of_full_scale=fraction, n_signal_pixels=len(y), n_noise_pixels=n_noise)
+--- a/processing/snr.py
++++ b/processing/snr.py
+@@ -135,9 +135,11 @@
+     wavelengths_nm: Iterable[float],
+     intensities_counts: Iterable[float],
+     *,
+-    signal_start_nm: float,
+-    signal_stop_nm: float,
+-    noise_intervals_nm: Iterable[tuple[float, float]],
++    signal_start_nm: float = 400.0,
++    signal_stop_nm: float = 750.0,
++    noise_intervals_nm: Iterable[tuple[float, float]] = (),
++    method: str = "manual",
++    block_size: int = 16,
+     baseline_order: int = 1,
+     minimum_noise_pixels: int = 20,
+     peak_percentile: float = 99.5,
+@@ -151,6 +153,12 @@
+     when drift or correlated noise dominates.
+     """
+ 
++    if method in {"automatic_std", "automatic_mad"}:
++        from processing.automatic_snr import estimate_automatic_snr
++        return estimate_automatic_snr(wavelengths_nm, intensities_counts,
++            block_size=block_size, noise_method=method.rsplit("_", 1)[1], full_scale_counts=full_scale_counts)
++    if method != "manual":
++        return SNRMetrics.invalid("Unknown SNR method")
+     try:
+         x, y = _prepare_xy(wavelengths_nm, intensities_counts)
+         signal_mask = _interval_mask(x, signal_start_nm, signal_stop_nm)
+--- /dev/null
++++ b/processing/spectral_analysis.py
+@@ -0,0 +1,364 @@
++"""Independent, immutable spectral analysis operations.
++
++Acquisition records are never overwritten. Every derived trace carries the
++source identifiers and ordered operations required to interpret its values.
++"""
++from __future__ import annotations
++from dataclasses import dataclass, field
++from copy import deepcopy
++import hashlib
++import json
++import math
++import uuid
++import numpy as np
++
++
++def canonical_xy(x, y):
++    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
++    if x.ndim != 1 or x.shape != y.shape or x.size < 2:
++        raise ValueError('Spectra require matching one-dimensional arrays with at least two points')
++    if not np.all(np.isfinite(x)) or np.any(np.isinf(y)) or np.count_nonzero(np.isfinite(y)) < 2:
++        raise ValueError('Wavelengths must be finite and at least two intensities must be finite')
++    order = np.argsort(x, kind='stable'); x, y = x[order], y[order]
++    if np.any(np.diff(x) <= 0):
++        raise ValueError('Duplicate wavelengths are ambiguous; resample or combine them explicitly')
++    return x.copy(), y.copy()
++
++
++@dataclass(frozen=True)
++class SpectralTrace:
++    x: np.ndarray
++    y: np.ndarray
++    label: str = 'Spectrum'
++    units: str = 'counts'
++    metadata: dict = field(default_factory=dict)
++    trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
++
++    def __post_init__(self):
++        x,y = canonical_xy(self.x,self.y)
++        x.setflags(write=False); y.setflags(write=False)
++        object.__setattr__(self,'x',x); object.__setattr__(self,'y',y)
++        object.__setattr__(self,'metadata',deepcopy(self.metadata))
++
++    def derive(self, y, operation, *, x=None, units=None, label=None, metadata=None):
++        meta = deepcopy(self.metadata)
++        meta.setdefault('source_ids', []).append(self.trace_id)
++        meta.setdefault('operations', []).append(deepcopy(operation))
++        if metadata: meta.update(deepcopy(metadata))
++        return SpectralTrace(self.x if x is None else x, y, label or self.label,
++                             self.units if units is None else units, meta)
++
++
++def trace_from_record(record, label='Acquired spectrum'):
++    y = record.unsmoothed_intensities_counts
++    if y is None:
++        if record.smoothing_window != 'none' and record.boxcar_width > 1:
++            if record.background_subtracted or record.raw_intensities_counts is None:
++                raise ValueError('This legacy smoothed record has no unsmoothed baseline-corrected data')
++            y = record.raw_intensities_counts
++        else:
++            y = record.intensities_counts
++    state = deepcopy(record.instrument_state)
++    spectrograph = state.get('spectrograph', {})
++    return SpectralTrace(record.wavelengths_nm, y, label, 'counts', {
++        'timestamp_utc': record.timestamp_utc, 'integration_ms': record.integration_ms,
++        'instrument_state': state, 'detector_serial': record.spectrometer_serial,
++        'grating': str(state.get('grating', spectrograph.get('grating', '')) or ''),
++        'background_subtracted': record.background_subtracted,
++        'background_signature': record.background_signature,
++        'baseline_applied': bool(record.background_subtracted),
++        'filter_state': record.filter_state, 'parameter_scan': deepcopy(record.parameter_scan),
++        'correct_dark':record.correct_dark, 'correct_nonlinearity':record.correct_nonlinearity,
++        'saturation_observed': bool(math.isfinite(record.spectrometer_max_intensity)
++            and math.isfinite(record.signal_max_counts)
++            and record.signal_max_counts >= 0.98 * record.spectrometer_max_intensity),
++        'operations': []})
++
++
++def intervals_mask(x, intervals):
++    mask = np.zeros(x.shape, dtype=bool)
++    for lo,hi in intervals:
++        if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo:
++            raise ValueError('Each baseline interval must have finite, increasing bounds')
++        mask |= (x >= lo) & (x <= hi)
++    return mask
++
++
++def subtract_baseline(trace, method='constant', *, offset=0., intervals=()):
++    if trace.metadata.get('response_profile'):
++        raise ValueError('Baseline subtraction must precede response correction; select the original trace')
++    if method == 'constant':
++        if not math.isfinite(offset): raise ValueError('Offset must be finite')
++        baseline = np.full_like(trace.y, offset)
++        operation = {'type':'baseline','method':method,'offset':float(offset),'units':trace.units}
++    elif method in ('linear','quadratic'):
++        degree = 1 if method == 'linear' else 2
++        intervals = tuple(intervals)
++        mask = intervals_mask(trace.x, intervals) & np.isfinite(trace.y)
++        if np.count_nonzero(mask) < degree+1:
++            raise ValueError('Select baseline-only intervals containing enough distinct wavelengths')
++        center = float(np.mean(trace.x[mask])); scale = float(np.ptp(trace.x[mask]))
++        z = (trace.x-center)/scale
++        coefficients = np.polynomial.polynomial.polyfit(z[mask], trace.y[mask], degree)
++        baseline = np.polynomial.polynomial.polyval(z,coefficients)
++        operation = {'type':'baseline','method':method,'intervals_nm':intervals,
++                     'center_nm':center,'scale_nm':scale,'coefficients':coefficients.tolist()}
++    else:
++        raise ValueError('Unknown baseline method')
++    return trace.derive(trace.y-baseline,operation,label=trace.label+' | baseline',metadata={'baseline_applied':True}), baseline
++
++
++def finite_runs(trace):
++    good = np.isfinite(trace.y)
++    edges = np.diff(np.r_[False,good,False].astype(int))
++    return list(zip(np.flatnonzero(edges==1),np.flatnonzero(edges==-1)))
++
++
++def interpolate(trace, grid):
++    """Interpolation within finite contiguous coverage only, with NaN elsewhere."""
++    grid=np.asarray(grid,dtype=float); out=np.full(grid.shape,np.nan)
++    for start,stop in finite_runs(trace):
++        if stop-start<2: continue
++        mask=(grid>=trace.x[start]) & (grid<=trace.x[stop-1])
++        out[mask]=np.interp(grid[mask],trace.x[start:stop],trace.y[start:stop])
++    return out
++
++
++def subtract_reference(trace, reference):
++    if trace.metadata.get('response_profile'):
++        raise ValueError('Subtract a baseline before response correction')
++    if trace.units != reference.units: raise ValueError('Baseline and spectrum units must match')
++    baseline=interpolate(reference,trace.x)
++    if np.any(np.isfinite(trace.y) & ~np.isfinite(baseline)):
++        raise ValueError('Baseline does not cover the spectrum; extrapolation is disabled')
++    return trace.derive(trace.y-baseline,{'type':'baseline_reference','reference_id':reference.trace_id,
++        'reference_label':reference.label,'reference_metadata':reference.metadata},
++        label=trace.label+' | reference subtracted',metadata={'baseline_applied':True}),baseline
++
++
++def as_count_rate(trace):
++    if trace.units.endswith('/s'): return trace
++    if trace.units not in ('counts','relative corrected counts'):
++        raise ValueError('Only counts can be divided by exposure')
++    ms=float(trace.metadata.get('integration_ms',float('nan')))
++    if not math.isfinite(ms) or ms<=0: raise ValueError('A valid exposure is required for counts/s')
++    return trace.derive(trace.y/(ms/1000),{'type':'exposure_normalization','integration_ms':ms},units=trace.units+'/s')
++
++
++@dataclass(frozen=True)
++class ResponseProfile:
++    x: np.ndarray
++    coefficients: np.ndarray
++    grating: str
++    detector: str
++    label: str = 'Response'
++    metadata: dict = field(default_factory=dict)
++
++    def __post_init__(self):
++        x,y=canonical_xy(self.x,self.coefficients)
++        if np.any(~np.isfinite(y)) or np.any(y<=0): raise ValueError('Response coefficients must be finite and positive')
++        if not str(self.grating).strip() or not str(self.detector).strip():
++            raise ValueError('A response profile requires grating and detector identifiers')
++        x.setflags(write=False);y.setflags(write=False)
++        object.__setattr__(self,'x',x);object.__setattr__(self,'coefficients',y)
++        object.__setattr__(self,'metadata',deepcopy(self.metadata))
++
++    @property
++    def fingerprint(self):
++        h=hashlib.sha256()
++        h.update(self.x.astype('<f8').tobytes());h.update(self.coefficients.astype('<f8').tobytes())
++        h.update(json.dumps({'grating':self.grating,'detector':self.detector,'metadata':self.metadata},sort_keys=True).encode())
++        return h.hexdigest()
++
++
++def apply_response(trace, profile, *, grating, detector, crop=False):
++    if trace.metadata.get('response_profile'): raise ValueError('Response correction is already applied')
++    if not trace.metadata.get('baseline_applied'):
++        raise ValueError('Subtract a baseline or explicitly mark the input as baseline corrected first')
++    if str(grating)!=profile.grating or str(detector)!=profile.detector:
++        raise ValueError('Selected grating/detector does not match the response profile')
++    recorded_grating=str(trace.metadata.get('grating',''))
++    if recorded_grating and recorded_grating != str(grating):
++        raise ValueError('Acquisition grating metadata conflicts with the selected profile')
++    serial=profile.metadata.get('detector_serial')
++    if serial and str(trace.metadata.get('detector_serial','')) != str(serial):
++        raise ValueError('Detector serial does not match the response profile')
++    for key,expected in profile.metadata.get('acquisition_constraints', {}).items():
++        actual=trace.metadata.get('instrument_state', {}).get(key)
++        if actual != expected:
++            raise ValueError('Response profile requires detector setting ' + key + '=' + str(expected))
++    valid=(trace.x>=profile.x[0]) & (trace.x<=profile.x[-1])
++    coverage=profile.metadata.get('coverage_nm', [[float(profile.x[0]),float(profile.x[-1])]])
++    covered=np.zeros_like(valid)
++    for lo,hi in coverage: covered |= (trace.x>=lo) & (trace.x<=hi)
++    valid &= covered
++    if not crop and np.any(np.isfinite(trace.y) & ~valid):
++        raise ValueError('Profile does not cover this spectrum; enable crop or use another profile')
++    y=trace.y*np.interp(trace.x,profile.x,profile.coefficients)
++    y[~valid]=np.nan
++    return trace.derive(y,{'type':'response','profile_sha256':profile.fingerprint,'profile_label':profile.label,
++                          'grating':grating,'detector':detector,'crop':crop},
++        label=trace.label+' | response', units='relative corrected '+trace.units,
++        metadata={'response_profile':profile.fingerprint,'response_label':profile.label,
++                  'response_grating':grating,'response_detector':detector})
++
++
++def _check_shared_setup(traces):
++    # Center wavelength is intentionally variable; gains, detector and filters
++    # cannot silently change across segments of a single relative spectrum.
++    keys = ('detector_serial', 'grating', 'filter_state', 'correct_dark', 'correct_nonlinearity')
++    state_keys = ('output_amplifier', 'preamp_gain', 'horizontal_binning')
++    for key in keys:
++        known = {json.dumps(t.metadata[key], sort_keys=True) for t in traces
++                 if key in t.metadata and t.metadata[key] not in (None, '')}
++        if len(known) > 1:
++            raise ValueError('Spectra have conflicting ' + key + ' metadata')
++    for key in state_keys:
++        known = {json.dumps(t.metadata.get('instrument_state', {})[key], sort_keys=True)
++                 for t in traces if t.metadata.get('instrument_state', {}).get(key) is not None}
++        if len(known) > 1:
++            raise ValueError('Spectra have conflicting detector ' + key + ' metadata')
++
++
++def stitch(traces, *, calibrated=False, match_overlap=False):
++    traces=list(traces)
++    if len(traces)<2: raise ValueError('Select at least two spectra to stitch')
++    if len({t.units for t in traces})!=1: raise ValueError('Stitching requires matching intensity units')
++    _check_shared_setup(traces)
++    profiles={t.metadata.get('response_profile','') for t in traces}
++    if calibrated:
++        if len(profiles)!=1 or not all(profiles):
++            raise ValueError('Calibrated stitching requires the same response profile on every segment')
++        if match_overlap: raise ValueError('Calibrated stitching preserves scale; overlap matching is disabled')
++    elif any(profiles):
++        raise ValueError('Use calibrated stitching for response-corrected segments')
++    if not traces[0].units.endswith('/s'):
++        exposures=[t.metadata.get('integration_ms') for t in traces]
++        if any(v is None for v in exposures) or len(set(exposures))!=1:
++            raise ValueError('Unequal or unknown exposures: normalize segments to counts/s first')
++    if sum(len(t.x) for t in traces)>250000: raise ValueError('Stitching is limited to 250000 total input points')
++    traces.sort(key=lambda t:t.x[0])
++    intervals=sorted((float(t.x[a]),float(t.x[b-1])) for t in traces for a,b in finite_runs(t) if b-a>=2)
++    merged=[]
++    for lo,hi in intervals:
++        if merged and lo<=merged[-1][1]: merged[-1][1]=max(merged[-1][1],hi)
++        else: merged.append([lo,hi])
++    gaps=[(a[1]+b[0])/2 for a,b in zip(merged,merged[1:])]
++    grid=np.unique(np.r_[np.concatenate([t.x for t in traces]),gaps])
++    total=np.zeros_like(grid);weights=np.zeros_like(grid);factors=[]
++    for trace in traces:
++        values=interpolate(trace,grid); valid=np.isfinite(values); factor=1.
++        if match_overlap and np.any(weights>0):
++            overlap=valid & (weights>0) & (values>0)
++            previous=np.divide(total,weights,out=np.full_like(total,np.nan),where=weights>0)
++            overlap &= previous>0
++            if np.count_nonzero(overlap)<3: raise ValueError('Overlap matching needs at least three positive shared samples per segment')
++            factor=float(np.median(previous[overlap]/values[overlap]))
++        w=np.zeros_like(grid)
++        for start,stop in finite_runs(trace):
++            if stop-start<2:continue
++            lo,hi=trace.x[start],trace.x[stop-1]
++            mask=valid & (grid>=lo) & (grid<=hi)
++            w[mask]=np.maximum(np.minimum(grid[mask]-lo,hi-grid[mask]),max((hi-lo)*1e-6,1e-12))
++        total[valid]+=values[valid]*factor*w[valid];weights+=w;factors.append(factor)
++    values=np.divide(total,weights,out=np.full_like(total,np.nan),where=weights>0)
++    operation={'type':'stitch','calibrated':calibrated,'overlap_matching':match_overlap,'scale_factors':factors,
++               'blend':'distance-to-segment-edge weighted mean','coverage_nm':merged,
++               'segments':[dict(id=t.trace_id,label=t.label,metadata=t.metadata) for t in traces]}
++    meta={'operations':[operation],'source_ids':[t.trace_id for t in traces],
++          'baseline_applied':all(t.metadata.get('baseline_applied') for t in traces)}
++    for key in ('integration_ms','detector_serial','grating','filter_state','instrument_state',
++                'correct_dark','correct_nonlinearity','response_label','response_grating','response_detector'):
++        metadata_values=[t.metadata.get(key) for t in traces]
++        if metadata_values[0] is not None and all(value==metadata_values[0] for value in metadata_values):
++            meta[key]=deepcopy(metadata_values[0])
++    if calibrated:meta['response_profile']=next(iter(profiles))
++    return SpectralTrace(grid,values,'Calibrated stitch' if calibrated else 'Uncalibrated stitch',traces[0].units,meta)
++
++
++def derive_response(traces, *, grating, detector, step_nm=0.5, label='Lamp response'):
++    traces=list(traces)
++    if not traces or not math.isfinite(step_nm) or step_nm<=0: raise ValueError('Select lamp spectra and a positive resampling step')
++    if any(t.metadata.get('response_profile') for t in traces): raise ValueError('Use uncorrected lamp data')
++    if any(not t.metadata.get('baseline_applied') for t in traces): raise ValueError('Baseline-correct every lamp spectrum first')
++    if any(t.metadata.get('saturation_observed') for t in traces): raise ValueError('Saturated lamp acquisitions cannot calibrate response')
++    _check_shared_setup(traces)
++    rates=[as_count_rate(t) for t in traces]
++    for t in rates:
++        if t.metadata.get('grating') and str(t.metadata['grating'])!=str(grating):
++            raise ValueError('Lamp acquisition grating conflicts with selected grating')
++    # Compute lamp/measured for each center before combining coefficients.
++    # Use one global scale across all centers, never normalize centers separately.
++    coefficients=[]; maxima=[]; coverage=[]
++    for trace in rates:
++        if trace.x[0]<=0:raise ValueError('Lamp equation uses positive wavelengths in nm')
++        good=np.isfinite(trace.y)
++        if np.any(trace.y[good]<=0):
++            raise ValueError('Lamp counts after baseline subtraction must be positive throughout coverage')
++        values=np.full(trace.y.shape,np.nan)
++        values[good]=41.856-4808.1/trace.x[good]-5*np.log(trace.x[good])-np.log(trace.y[good])
++        maxima.append(float(np.nanmax(values)));coefficients.append(values)
++        coverage.extend([float(trace.x[a]),float(trace.x[b-1])] for a,b in finite_runs(trace) if b-a>=2)
++    lo=min(t.x[0] for t in rates);hi=max(t.x[-1] for t in rates)
++    if (hi-lo)/step_nm>250000:raise ValueError('Response grid is limited to 250000 points')
++    grid=np.arange(lo,hi+step_nm*0.01,step_nm)
++    total=np.zeros_like(grid);weights=np.zeros_like(grid)
++    global_max=max(maxima)
++    for trace,log_values in zip(rates,coefficients,strict=True):
++        coeff_trace=SpectralTrace(trace.x,np.exp(log_values-global_max),'Center coefficients','relative coefficient')
++        values=interpolate(coeff_trace,grid)
++        for start,stop in finite_runs(coeff_trace):
++            if stop-start<2:continue
++            left,right=trace.x[start],trace.x[stop-1]
++            mask=(grid>=left)&(grid<=right)&np.isfinite(values)
++            weight=np.maximum(np.minimum(grid[mask]-left,right-grid[mask]),max((right-left)*1e-6,1e-12))
++            total[mask]+=values[mask]*weight;weights[mask]+=weight
++    good=weights>0
++    if np.count_nonzero(good)<2:raise ValueError('Insufficient lamp coverage')
++    coeff=total[good]/weights[good]
++    coeff/=np.max(coeff)
++    merged=[]
++    for left,right in sorted(coverage):
++        if merged and left<=merged[-1][1]:merged[-1][1]=max(merged[-1][1],right)
++        else:merged.append([left,right])
++    coverage=merged
++    serials={str(t.metadata.get('detector_serial','')) for t in traces}
++    if len(serials)>1:raise ValueError('Lamp spectra have different detector serials')
++    metadata={'equation':'exp(41.856 - 4808.1/x - 5*ln(x))','wavelength_units':'nm',
++              'normalization':'one global maximum','resample_step_nm':step_nm,'coverage_nm':coverage,
++              'detector_serial':next(iter(serials)),
++              'acquisition_constraints':{key:traces[0].metadata.get('instrument_state', {})[key]
++                  for key in ('output_amplifier','preamp_gain','horizontal_binning')
++                  if traces[0].metadata.get('instrument_state', {}).get(key) is not None},
++              'sources':[dict(id=t.trace_id,label=t.label,metadata=t.metadata) for t in traces]}
++    return ResponseProfile(grid[good],coeff,str(grating),str(detector),label,metadata)
++
++
++def residual(trace, reference):
++    if trace.units!=reference.units:raise ValueError('Residuals require matching intensity units')
++    values=trace.y-interpolate(reference,trace.x)
++    if np.count_nonzero(np.isfinite(values))<2:raise ValueError('Spectra have no overlapping coverage')
++    return trace.derive(values,{'type':'residual','reference_id':reference.trace_id,
++                               'reference_metadata':reference.metadata},label=trace.label+' − '+reference.label)
++
++
++def analyze_band(trace, lo, hi, *, prominence=0.):
++    from scipy.signal import find_peaks, peak_widths
++    if not math.isfinite(lo) or not math.isfinite(hi) or hi<=lo:raise ValueError('Band limits must increase')
++    if lo<trace.x[0] or hi>trace.x[-1]:raise ValueError('Band lies outside the spectrum')
++    x=np.unique(np.r_[lo,trace.x[(trace.x>lo)&(trace.x<hi)],hi])
++    y=interpolate(trace,x)
++    if len(x)<3 or np.any(~np.isfinite(y)):raise ValueError('Band needs at least three samples with continuous coverage')
++    area=float(np.trapezoid(y,x));positive=np.maximum(y,0);p_area=float(np.trapezoid(positive,x))
++    centroid=float(np.trapezoid(x*positive,x)/p_area) if p_area>0 else None
++    indices,props=find_peaks(y,prominence=max(0.,float(prominence)))
++    widths=peak_widths(y,indices,rel_height=0.5) if len(indices) else ([],[],[],[])
++    peaks=[]
++    for i,idx in enumerate(indices):
++        left=float(np.interp(widths[2][i],np.arange(len(x)),x));right=float(np.interp(widths[3][i],np.arange(len(x)),x))
++        peaks.append({'wavelength_nm':float(x[idx]),'height':float(y[idx]),'prominence':float(props['prominences'][i]),
++                      'width_half_prominence_nm':right-left,'left_nm':left,'right_nm':right})
++    return {'trace_id':trace.trace_id,'trace_label':trace.label,'units':trace.units,'band_nm':[lo,hi],
++            'signed_area':area,'area_units':trace.units+' nm','positive_centroid_nm':centroid,
++            'maximum_wavelength_nm':float(x[np.argmax(y)]),'maximum':float(np.max(y)),
++            'peaks':peaks,'width_definition':'half prominence, not fitted FWHM','metadata':trace.metadata}
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -10,6 +10,7 @@
+ requires-python = ">=3.14,<3.15"
+ dependencies = [
+   "numpy>=2.3,<3",
++  "scipy>=1.15,<2",
+   "PySide6>=6.10,<6.11",
+   "pyqtgraph>=0.14,<0.15",
+   "pyserial>=3.5,<4",
+@@ -34,6 +35,7 @@
+ 
+ [tool.setuptools.package-data]
+ ui = ["themes/*.svg"]
++processing = ["data/*.csv"]
+ 
+ [tool.setuptools.packages.find]
+ where = ["."]
+--- /dev/null
++++ b/tests/test_automatic_snr.py
+@@ -0,0 +1,39 @@
++import numpy as np
++from processing.snr import estimate_snr
++from processing.automatic_snr import block_noise
++
++
++def test_automatic_noise_accuracy_and_slope_invariance():
++    rng=np.random.default_rng(123)
++    x=np.linspace(400,1000,4096)
++    noise=rng.normal(0,5,len(x))
++    for size in (8,16):
++        first,_=block_noise(x,noise,size)
++        second,_=block_noise(x,noise+7*x+100,size)
++        assert abs(first-5)<0.3
++        assert abs(first-second)<1e-10
++
++
++def test_auto_dispatch_ignores_manual_ranges_and_uses_raw_noise():
++    x=np.linspace(400,1000,2048)
++    y=100+1000*np.exp(-0.5*((x-600)/25)**2)+np.random.default_rng(7).normal(0,5,len(x))
++    result=estimate_snr(x,y,method='automatic_std',noise_intervals_nm=[],signal_start_nm=1,signal_stop_nm=2)
++    assert result.valid
++    assert 150<result.peak_snr<250
++    assert abs(result.noise_sigma_counts-5)<0.5
++    assert result.n_signal_pixels==2048
++
++
++def test_auto_constant_and_short_data_are_invalid():
++    assert not estimate_snr(np.arange(100),np.ones(100),method='automatic_std').valid
++    assert not estimate_snr(np.arange(20),np.arange(20),method='automatic_std').valid
++    assert not estimate_snr(np.arange(100),np.arange(100),method='bogus').valid
++
++
++def test_auto_handles_descending_duplicate_nonfinite_data():
++    x=np.linspace(400,800,128)
++    y=np.sin(x)+np.random.default_rng(42).normal(size=128)
++    a=estimate_snr(x,y,method='automatic_mad')
++    b=estimate_snr(np.r_[x[::-1],x[-1],np.nan],np.r_[y[::-1],y[-1],1],method='automatic_mad')
++    assert a.valid and b.valid
++    assert abs(a.peak_snr-b.peak_snr)<1e-10
+--- /dev/null
++++ b/tests/test_control_state_logic.py
+@@ -0,0 +1,44 @@
++"""Execute the real panel state methods without Qt; full widgets have separate Qt tests."""
++import ast
++from pathlib import Path
++from types import SimpleNamespace
++
++
++class Control:
++    def __init__(self,value=False):self.data=value;self.enabled=True
++    def setEnabled(self,value):self.enabled=value
++    def setToolTip(self,value):self.tooltip=value
++    def currentData(self):return self.data
++    def isChecked(self):return bool(self.data)
++    def value(self):return int(self.data)
++    def set_kernel(self,*args):self.kernel=args
++
++
++def make_panel():
++    path=Path(__file__).resolve().parents[1]/'panels/acquisition_panel.py'
++    tree=ast.parse(path.read_text())
++    cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='AcquisitionPanel')
++    methods=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in {'_apply_control_state','_update_smoothing_controls'}]
++    scope={};exec(compile(ast.Module(body=methods,type_ignores=[]),str(path),'exec'),scope)
++    panel=SimpleNamespace(_sequence_owner=None,_acquiring=False,_background_available=False,
++                          _dark_correction_supported=True,_nonlinearity_correction_supported=True)
++    for node in ast.walk(ast.Module(body=methods,type_ignores=[])):
++        if isinstance(node,ast.Attribute) and isinstance(node.value,ast.Name) and node.value.id=='self' and not node.attr.startswith('_'):
++            setattr(panel,node.attr,Control())
++    panel.smoothing_window_combo.data='boxcar';panel.boxcar_width.data=5
++    panel._apply_control_state=lambda:scope['_apply_control_state'](panel)
++    panel._update_smoothing_controls=lambda:scope['_update_smoothing_controls'](panel)
++    return panel
++
++
++def test_smoothing_state_has_no_unbound_names_and_respects_sequence():
++    panel=make_panel();panel._update_smoothing_controls()
++    assert panel.boxcar_width.enabled and not panel.subtract_background_check.enabled
++    assert panel.smoothing_preview.kernel==('boxcar',5)
++    panel._background_available=True;panel._update_smoothing_controls()
++    assert panel.subtract_background_check.enabled
++    panel._sequence_owner='parameter_scan';panel._update_smoothing_controls()
++    assert not panel.boxcar_width.enabled and not panel.subtract_background_check.enabled
++    panel._sequence_owner='live';panel._acquiring=True;panel._update_smoothing_controls()
++    assert not panel.boxcar_width.enabled
++    assert panel.live_check.enabled
+--- a/tests/test_device_processing_changes.py
++++ b/tests/test_device_processing_changes.py
+@@ -24,3 +24,25 @@
+     np.testing.assert_allclose(record.intensities_counts,
+         smooth_spectrum(record.unsmoothed_intensities_counts,window='boxcar',width=5,boundary='nearest'))
+     controller.shutdown()
++
++
++def test_explicit_andor_connection_preserves_sdk_arguments():
++    from pathlib import Path
++    from types import SimpleNamespace
++    import devices.andor_adapter as adapter
++    config=DeviceConfig(emulate=False,fallback_emulator=False,newport_dll=None,power_channel=0,
++        spectrometer_mode='real',spectrometer_backend='andor',andor_solis_dir=Path('SOLIS'),
++        andor_camera_dll=Path('atmcd64d_legacy.dll'),andor_camera_index=1,andor_spectrograph_index=2)
++    calls=[]
++    original=adapter.AndorKymeraSpectrometer
++    def factory(directory,**kwargs):
++        calls.append((directory,kwargs))
++        return SimpleNamespace(camera=SimpleNamespace(dll_path=Path('atmcd64d_legacy.dll')))
++    try:
++        adapter.AndorKymeraSpectrometer=factory
++        controller=DeviceController(config)
++        spec,description,error,backend=controller._connect_spectrometer()
++        assert spec is not None and backend=='andor' and not error
++        assert calls==[(Path('SOLIS'),{'camera_index':1,'spectrograph_index':2,'camera_dll':Path('atmcd64d_legacy.dll')})]
++        assert 'legacy' in description
++    finally:adapter.AndorKymeraSpectrometer=original
+--- a/tests/test_gui_changes.py
++++ b/tests/test_gui_changes.py
+@@ -70,3 +70,37 @@
+     dialog.configuration_applied(caps)
+     assert dialog._timing_labels['minimum_frame_period_ms'].text()=='15 ms'
+     dialog.close()
++
++
++def test_acquisition_constructor_and_smoothing_sequence_state():
++    from panels.acquisition_panel import AcquisitionPanel
++    app();panel=AcquisitionPanel()
++    panel.smoothing_window_combo.setCurrentIndex(panel.smoothing_window_combo.findData('boxcar'))
++    assert panel.boxcar_width.isEnabled()
++    panel.set_sequence_owner('parameter_scan')
++    panel._update_smoothing_controls()
++    assert not panel.boxcar_width.isEnabled()
++    panel.close()
++
++
++def test_spectrum_layer_order_and_custom_opacity():
++    from core.settings import PlotStyleSettings
++    app();panel=SpectrumPanel()
++    settings=PlotStyleSettings(smoothed_color='#123456',smoothed_alpha=0.8,unsmoothed_alpha=0.2)
++    panel._smoothed_visible=True;panel.apply_style(settings)
++    assert panel.curve.zValue()>panel.unsmoothed_curve.zValue()>panel.background_curve.zValue()
++    assert panel.curve.opts['pen'].color().name()=='#123456'
++    assert abs(panel.unsmoothed_curve.opts['pen'].color().alphaF()-0.2)<0.01
++    panel.close()
++
++
++def test_analysis_panel_supplied_profile_and_overlay():
++    from panels.analysis_panel import AnalysisPanel
++    from processing.spectral_analysis import SpectralTrace
++    app();panel=AnalysisPanel(lambda:None)
++    assert len(panel.profiles)==1
++    panel._add_traces([SpectralTrace(np.arange(4.),np.arange(4.)),SpectralTrace(np.arange(4.),np.arange(4.)+1)])
++    panel.show_residuals.setChecked(True)
++    assert len(panel.plot.listDataItems())==2
++    assert len(panel.difference_plot.listDataItems())==1
++    panel.close()
+--- /dev/null
++++ b/tests/test_spectral_analysis.py
+@@ -0,0 +1,159 @@
++import json
++from pathlib import Path
++import numpy as np
++import pytest
++from core.records import BackgroundSpectrum
++from io_utils.background_io import save_background,load_background
++from io_utils.analysis_io import load_trace,save_trace,load_response,save_response
++from processing.spectral_analysis import (SpectralTrace,ResponseProfile,subtract_baseline,subtract_reference,
++    as_count_rate,apply_response,derive_response,stitch,residual,analyze_band,interpolate)
++
++
++def trace(x,y,**metadata):
++    return SpectralTrace(np.asarray(x),np.asarray(y),'sample','counts',{'integration_ms':1000,**metadata})
++
++
++def test_baseline_polynomials_exact_and_original_unchanged():
++    x=np.linspace(400,800,401)
++    peak=100*np.exp(-((x-600)/10)**2)
++    for method,bg in [('linear',20+0.5*x),('quadratic',30+0.03*(x-550)**2)]:
++        original=trace(x,peak+bg)
++        result,baseline=subtract_baseline(original,method,intervals=[(400,450),(750,800)])
++        np.testing.assert_allclose(baseline,bg,atol=1e-8)
++        np.testing.assert_allclose(result.y,peak,atol=1e-8)
++        np.testing.assert_array_equal(original.y,peak+bg)
++        assert not original.y.flags.writeable
++    result,_=subtract_baseline(trace(x,peak+10),'constant',offset=10)
++    np.testing.assert_allclose(result.y,peak,atol=1e-12)
++
++
++def test_response_interpolation_order_identity_and_no_double_apply():
++    raw=trace([400,500,600],[12,22,32],grating='1')
++    profile=ResponseProfile(np.array([400,600]),np.array([0.5,1]),'1','1')
++    with pytest.raises(ValueError,match='baseline'):apply_response(raw,profile,grating='1',detector='1')
++    base,_=subtract_baseline(raw,offset=2)
++    corrected=apply_response(base,profile,grating='1',detector='1')
++    np.testing.assert_allclose(corrected.y,[5,15,30])
++    with pytest.raises(ValueError,match='match'):apply_response(base,profile,grating='2',detector='1')
++    with pytest.raises(ValueError,match='already'):apply_response(corrected,profile,grating='1',detector='1')
++    with pytest.raises(ValueError,match='precede'):subtract_baseline(corrected)
++    wrong=trace([400,500,600],[1,2,3],grating='2',baseline_applied=True)
++    with pytest.raises(ValueError,match='conflicts'):apply_response(wrong,profile,grating='1',detector='1')
++
++
++def test_response_masks_outside_coverage_and_internal_gaps():
++    t=trace(np.arange(1,11),np.ones(10),baseline_applied=True)
++    p=ResponseProfile(np.array([2,4,7,9]),np.ones(4),'1','1',metadata={'coverage_nm':[[2,4],[7,9]]})
++    with pytest.raises(ValueError,match='cover'):apply_response(t,p,grating='1',detector='1')
++    result=apply_response(t,p,grating='1',detector='1',crop=True)
++    np.testing.assert_array_equal(np.flatnonzero(np.isnan(result.y)),[0,4,5,9])
++
++
++def test_profile_roundtrip_and_supplied_coefficients(tmp_path):
++    path=Path(__file__).resolve().parents[1]/'processing/data/grating1_detector1_coefficients.csv'
++    p=load_response(path,grating='1',detector='1')
++    assert len(p.x)==2046 and p.coefficients.max()==1
++    destination=tmp_path/'profile.csv';save_response(destination,p);q=load_response(destination)
++    assert p.fingerprint==q.fingerprint
++    with pytest.raises(ValueError,match='profile'):load_trace(destination)
++
++
++def test_derive_lamp_response_across_exposures_and_centers():
++    def lamp(x):return np.exp(41.856-4808.1/x-5*np.log(x))
++    traces=[]
++    for x,ms in [(np.arange(400,651,dtype=float),100),(np.arange(600,801,dtype=float),500)]:
++        response=0.5+x/1000
++        traces.append(trace(x,lamp(x)/response*ms/1000,integration_ms=ms,baseline_applied=True,grating='1'))
++    p=derive_response(traces,grating='1',detector='1',step_nm=1)
++    target=(0.5+p.x/1000)/(0.5+p.x[-1]/1000)
++    np.testing.assert_allclose(p.coefficients,target,rtol=1e-12)
++    assert p.metadata['normalization']=='one global maximum'
++
++
++def test_lamp_rejects_unsubtracted_saturated_nonpositive_and_mixed_detectors():
++    good=trace([400,500,600],[10,20,30],baseline_applied=True)
++    with pytest.raises(ValueError,match='Baseline'):derive_response([trace([400,500],[1,2])],grating='1',detector='1')
++    with pytest.raises(ValueError,match='Saturated'):derive_response([trace([400,500],[1,2],baseline_applied=True,saturation_observed=True)],grating='1',detector='1')
++    with pytest.raises(ValueError,match='positive'):derive_response([trace([400,500],[-1,2],baseline_applied=True)],grating='1',detector='1')
++    other=trace([500,600,700],[1,2,3],baseline_applied=True,detector_serial='other')
++    with pytest.raises(ValueError,match='detector'):derive_response([good,other],grating='1',detector='1')
++
++
++def test_stitching_blends_preserves_gaps_and_exposure_rules():
++    a=trace([1,2,3,4],[2,4,6,8]);b=trace([3,4,5,6],[6,8,10,12])
++    result=stitch([a,b]);np.testing.assert_allclose(result.y,2*result.x)
++    c=trace([8,9,10],[16,18,20]);gap=stitch([a,c])
++    assert np.isnan(gap.y[(gap.x>4)&(gap.x<8)]).all()
++    assert np.isnan(interpolate(gap,[5])[0])
++    different=trace([3,4,5],[3,4,5],integration_ms=500)
++    with pytest.raises(ValueError,match='exposures'):stitch([a,different])
++    normalized=stitch([as_count_rate(a),as_count_rate(different)])
++    np.testing.assert_allclose(normalized.y,2*normalized.x)
++
++
++def test_uncalibrated_overlap_matching_and_calibrated_profile_rule():
++    a=trace(np.arange(1,7),np.arange(1,7)*2.)
++    b=trace(np.arange(3,9),np.arange(3,9)*4.)
++    result=stitch([a,b],match_overlap=True)
++    np.testing.assert_allclose(result.y,result.x*2)
++    corrected=[t.derive(t.y,{'type':'test'},metadata={'response_profile':'same'}) for t in (a,b)]
++    with pytest.raises(ValueError,match='calibrated stitching'):stitch(corrected)
++    with pytest.raises(ValueError,match='scale'):stitch(corrected,calibrated=True,match_overlap=True)
++    assert stitch(corrected,calibrated=True).metadata['response_profile']=='same'
++    different=corrected[1].derive(corrected[1].y,{'type':'test'},metadata={'response_profile':'different'})
++    with pytest.raises(ValueError,match='same response'):stitch([corrected[0],different],calibrated=True)
++
++
++def test_residuals_and_peak_band_measurements():
++    x=np.linspace(400,800,2001);sigma=10.;y=100*np.exp(-0.5*((x-600)/sigma)**2)
++    t=trace(x,y);report=analyze_band(t,500,700,prominence=1)
++    assert abs(report['signed_area']-100*sigma*np.sqrt(2*np.pi))<0.01
++    assert abs(report['positive_centroid_nm']-600)<1e-9
++    assert len(report['peaks'])==1
++    assert abs(report['peaks'][0]['width_half_prominence_nm']-2.35482*sigma)<0.01
++    np.testing.assert_allclose(residual(t,t).y,0)
++    with pytest.raises(ValueError,match='outside'):analyze_band(t,200,500)
++
++
++def test_analysis_and_background_roundtrip(tmp_path):
++    t=trace([1,2,3],[2,4,6],grating='1')
++    corrected,_=subtract_baseline(t,offset=1)
++    path=tmp_path/'analysis.csv';save_trace(path,corrected);loaded=load_trace(path)
++    assert loaded.trace_id==corrected.trace_id and loaded.metadata==corrected.metadata
++    np.testing.assert_array_equal(loaded.y,corrected.y)
++    bg=BackgroundSpectrum('now',np.array([1.,2.,3.]),np.array([1.,1.,1.]),100,1,True,False,configuration_signature='abc')
++    path=tmp_path/'bg.csv';save_background(path,bg)
++    assert load_background(path).configuration_signature=='abc'
++    reference=load_trace(path)
++    sample=as_count_rate(t)
++    result,_=subtract_reference(sample,reference)
++    np.testing.assert_array_equal(result.y,[1,3,5])
++    with pytest.raises(ValueError,match='units'):subtract_reference(t,reference)
++
++
++def test_invalid_arrays_and_baseline_windows():
++    with pytest.raises(ValueError,match='Duplicate'):trace([1,1,2],[1,2,3])
++    with pytest.raises(ValueError,match='distinct'):subtract_baseline(trace([1,2,3],[1,2,3]),'linear',intervals=[])
++    with pytest.raises(ValueError,match='positive'):ResponseProfile(np.array([1,2]),np.array([0,1]),'1','1')
++
++
++def test_stitch_rejects_known_optical_changes_and_preserves_exposure():
++    a=trace([1,2,3],[1,2,3],filter_state='open')
++    b=trace([2,3,4],[2,3,4],filter_state='ND2')
++    with pytest.raises(ValueError,match='filter_state'):stitch([a,b])
++    c=trace([2,3,4],[2,3,4],filter_state='open')
++    result=stitch([a,c])
++    assert result.metadata['integration_ms']==1000
++    assert result.metadata['filter_state']=='open'
++    d=trace([3,4,5],[3,4,5],filter_state='open')
++    np.testing.assert_allclose(stitch([result,d]).y,[1,2,3,4,5])
++
++
++def test_derived_profile_checks_gain_and_serial():
++    x=np.arange(400.,701.)
++    lamp=np.exp(41.856-4808.1/x-5*np.log(x))
++    source=trace(x,lamp,baseline_applied=True,detector_serial='camera',instrument_state={'preamp_gain':2})
++    profile=derive_response([source],grating='1',detector='1')
++    assert apply_response(source,profile,grating='1',detector='1').metadata['response_profile']
++    changed=trace(x,lamp,baseline_applied=True,detector_serial='camera',instrument_state={'preamp_gain':4})
++    with pytest.raises(ValueError,match='preamp_gain'):apply_response(changed,profile,grating='1',detector='1')
+--- a/tests/test_spectrum_io.py
++++ b/tests/test_spectrum_io.py
+@@ -315,3 +315,12 @@
+     save_spectrum_record(path, record)
+ 
+     assert load_spectrum_record(path).notes == record.notes
++
++
++def test_automatic_snr_description_survives_save_load(tmp_path):
++    record=_record()
++    record.snr=SNRMetrics(valid=True,message='Auto 16-pixel detrended std; peak above smoothed 10th percentile',peak_snr=12)
++    path=tmp_path/'automatic_snr.csv'
++    save_spectrum_record(path,record)
++    restored=load_spectrum_record(path)
++    assert restored.snr.message==record.snr.message
+--- /dev/null
++++ b/verification/compare_connections.py
+@@ -0,0 +1,44 @@
++"""Compare connection implementation against the supplied September 14 source ZIP."""
++import ast
++import argparse
++import hashlib
++import json
++from pathlib import Path
++import zipfile
++
++
++def extract(source, class_name, member=None):
++    tree=ast.parse(source)
++    cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name==class_name)
++    node=cls if member is None else next(n for n in cls.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==member)
++    return ast.dump(node,include_attributes=False)
++
++
++def run(baseline,root):
++    archive=zipfile.ZipFile(baseline)
++    prefix=next(name[:-len('devices/andor_adapter.py')] for name in archive.namelist() if name.endswith('devices/andor_adapter.py'))
++    files=['devices/andor_adapter.py','devices/andor_sdk2.py','devices/andor_spectrograph.py',
++           'controllers/instrument_runtime.py','core/configuration.py','config/lab_defaults.json','gui.py']
++    checks=[]
++    for name in files:
++        old=archive.read(prefix+name);new=(root/name).read_bytes()
++        checks.append(dict(file=name,check='byte equality',passed=old==new,
++                           baseline_sha256=hashlib.sha256(old).hexdigest(),current_sha256=hashlib.sha256(new).hexdigest()))
++    for name,cls,methods in [
++        ('core/settings.py','DeviceConfig',[None]),
++        ('controllers/device_controller.py','DeviceController',['_connect_spectrometer','_connect_spectrometer_now',
++            'connect_spectrometer','connect_spectrometer_selection','disconnect_spectrometer','_close_spectrometer']),
++        ('panels/main_window.py','MainWindow',['_connect_instrument','_disconnect_instrument','_reconnect_all_instruments'])]:
++        old=archive.read(prefix+name).decode();new=(root/name).read_text()
++        for method in methods:
++            a=extract(old,cls,method);b=extract(new,cls,method)
++            checks.append(dict(file=name,member=cls+('.'+method if method else ''),check='AST equality',passed=a==b))
++    return {'baseline':Path(baseline).name,'checks':checks,'passed':all(c['passed'] for c in checks),
++            'scope':'Source equality, not hardware connectivity or SDK validation. No I2C implementation added.'}
++
++if __name__=='__main__':
++    parser=argparse.ArgumentParser();parser.add_argument('baseline');parser.add_argument('--output',required=True)
++    args=parser.parse_args();result=run(args.baseline,Path(__file__).resolve().parents[1])
++    Path(args.output).write_text(json.dumps(result,indent=2))
++    print(f"Connection baseline: {sum(c['passed'] for c in result['checks'])}/{len(result['checks'])} checks match")
++    raise SystemExit(0 if result['passed'] else 1)
+--- /dev/null
++++ b/verification/gui_smoke.py
+@@ -0,0 +1,104 @@
++"""Real Qt/emulator smoke test. Run from repository root on the target PC.
++
++python verification/gui_smoke.py --output verification/gui_smoke_output
++Uses isolated QSettings and emulated devices only; never commands real hardware.
++"""
++import argparse
++import json
++import os
++from pathlib import Path
++import sys
++import tempfile
++import time
++import traceback
++
++os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
++ROOT=Path(__file__).resolve().parents[1]
++sys.path.insert(0,str(ROOT))
++
++
++def main():
++    parser=argparse.ArgumentParser();parser.add_argument('--output',default='verification/gui_smoke_output')
++    args=parser.parse_args();output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
++    report={'status':'not_run','checks':[],'python':sys.version,'exceptions':[]}
++    try:
++        from PySide6.QtCore import QSettings
++        from PySide6.QtWidgets import QApplication,QMessageBox
++        from core.settings import DeviceConfig
++        from ui.theme import ThemeManager
++        from panels.main_window import MainWindow
++    except ImportError as exc:
++        report.update(status='blocked',reason=str(exc))
++        (output/'report.json').write_text(json.dumps(report,indent=2))
++        print(json.dumps(report,indent=2));return 2
++    app=QApplication.instance() or QApplication([])
++    app.setOrganizationName('SpectrometerGuiIsolatedSmoke');app.setApplicationName('20261007')
++    def hook(kind,value,tb):report['exceptions'].append(''.join(traceback.format_exception(kind,value,tb)))
++    original_hook=sys.excepthook;sys.excepthook=hook
++    original_warning=QMessageBox.warning
++    QMessageBox.warning=lambda *args,**kwargs: (report['exceptions'].append(str(args[2])),QMessageBox.StandardButton.Ok)[1]
++    window=None
++    def wait_for(predicate,timeout=15):
++        stop=time.monotonic()+timeout
++        while time.monotonic()<stop:
++            app.processEvents()
++            if report['exceptions']:raise AssertionError(report['exceptions'][-1])
++            if predicate():return
++            time.sleep(0.01)
++        raise AssertionError('Timed out waiting for Qt/emulator operation')
++    try:
++        with tempfile.TemporaryDirectory() as temp:
++            QSettings.setDefaultFormat(QSettings.Format.IniFormat)
++            QSettings.setPath(QSettings.Format.IniFormat,QSettings.Scope.UserScope,temp)
++            config=DeviceConfig(emulate=True,fallback_emulator=False,newport_dll=None,power_channel=0,
++                laser_mode='emulated',power_meter_mode='emulated',spectrometer_mode='emulated')
++            window=MainWindow(config,theme_manager=ThemeManager(app,custom_directory=Path(temp)/'themes'))
++            window.file_name_settings.autosave_spectra=False
++            window.file_name_settings.save_directory=Path(temp)/'data'
++            window.show()
++            wait_for(lambda:window._instrument_connected('spectrometer') and window.laser_panel.table.rowCount()==8)
++            report['checks'].append('Full MainWindow construction and emulator connection')
++            assert window.lower_tabs.tabText(window.scan_tab_index)=='Scans'
++            window.scan_kind.setCurrentIndex(window.scan_kind.findData('exposure'))
++            assert window.scan_pages.currentIndex()==1 and window.parameter_panel.kind.currentData()=='exposure'
++            report['checks'].append('Unified left scan selection')
++            acq=window.acquisition_panel
++            acq.integration_ms.setValue(5);acq.averages.setValue(1)
++            acq.smoothing_window_combo.setCurrentIndex(acq.smoothing_window_combo.findData('boxcar'))
++            acq.measure_power_check.setChecked(False)
++            window.take_spectrum()
++            wait_for(lambda:window.current_record is not None and not window.acquiring)
++            window.spectrum_panel._redraw_if_dirty()
++            assert window.spectrum_panel.unsmoothed_curve.isVisible()
++            assert window.spectrum_panel.curve.zValue()>window.spectrum_panel.unsmoothed_curve.zValue()
++            report['checks'].append('Acquisition and smoothing overlay layer order')
++            window.analysis_panel.add_current()
++            panel=window.analysis_panel
++            panel.baseline.setCurrentIndex(panel.baseline.findData('constant'))
++            panel.offset.setValue(0)
++            panel.process_selected()
++            wait_for(lambda:panel._task is None)
++            assert len(panel.traces)==2
++            panel.analyze_selected()
++            wait_for(lambda:panel._task is None)
++            assert panel._report is not None
++            report['checks'].append('Analysis background task, plotting and band report')
++            window.tabs.setCurrentWidget(panel);app.processEvents()
++            window.grab().save(str(output/'analysis.png'))
++            window.tabs.setCurrentWidget(window.spectrum_panel)
++            window.lower_tabs.setCurrentIndex(window.laser_tab_index);app.processEvents()
++            window.grab().save(str(output/'spectrum.png'))
++            report['laser_table_rows']=window.laser_panel.table.rowCount()
++            report['laser_table_height']=window.laser_panel.table.height()
++            window.close();app.processEvents();window=None
++            report['checks'].append('Orderly emulator and worker shutdown')
++            report['status']='passed'
++    except Exception:
++        report.update(status='failed',reason=traceback.format_exc())
++    finally:
++        if window is not None:window.close();app.processEvents()
++        sys.excepthook=original_hook;QMessageBox.warning=original_warning
++        (output/'report.json').write_text(json.dumps(report,indent=2))
++    print(json.dumps(report,indent=2));return 0 if report['status']=='passed' else 1
++
++if __name__=='__main__':raise SystemExit(main())

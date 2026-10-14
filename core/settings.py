@@ -27,14 +27,34 @@ class AcquisitionSettings:
     boxcar_width: int
     correct_dark: bool
     correct_nonlinearity: bool
-    field_value: float
+    # ``None`` means the user deliberately did not associate a magnetic-field
+    # value with this acquisition.  A numeric zero is a real, recorded 0 mT
+    # measurement and must not be used as the disabled sentinel.
+    field_value: float | None
     run_identifier: str = ""
     notes: str = ""
+
+    # ``boxcar_width`` is retained as the on-disk/backward-compatible width
+    # field. ``smoothing_window`` defines the actual kernel used by new
+    # acquisitions; a value of ``none`` or a width <= 1 disables smoothing.
+    smoothing_window: str = "none"
+    smoothing_boundary: str = "nearest"
 
     averaging_mode: str = "software"  # "software" or "device"
     subtract_background: bool = False
     measure_power: bool = True
+    power_channels: tuple[int, ...] = (0,)
     gated: GatedFrameMetadata | None = None
+
+    # Internal routing hint. A stable non-empty value lets adapters with a
+    # safe streaming implementation retain an armed acquisition between GUI
+    # requests. It is deliberately not user metadata.
+    continuous_session: str = ""
+
+    # Internal monotonic target used by streaming detectors during a gated
+    # acquisition.  The value is the requested exposure midpoint, not a wall
+    # clock timestamp, and is deliberately excluded from saved metadata.
+    continuous_target_midpoint_s: float = float("nan")
 
     scan_active: bool = False
     scan_index: int = -1
@@ -173,6 +193,27 @@ class FileNameSettings:
 @dataclass
 class PlotStyleSettings:
     spectrum_color: str = "y"
+    smoothed_color: str = "#56b4e9"
+    unsmoothed_color: str = "#e69f00"
+    background_color: str = "#cc79a7"
+    smoothed_alpha: float = 1.0
+    unsmoothed_alpha: float = 0.45
+    background_alpha: float = 0.65
+    smoothed_line_width: float = 2.5
+    unsmoothed_line_width: float = 1.0
+    background_line_width: float = 1.0
+    spectrum_alpha: float = 1.0
+    monitor_alpha: float = 1.0
+    power_alpha: float = 1.0
+    spectrum_x_margin: float = 0.02
+    spectrum_y_margin: float = 0.05
+    monitor_x_margin: float = 0.02
+    monitor_y_margin: float = 0.05
+    power_x_margin: float = 0.02
+    power_y_margin: float = 0.05
+    show_grid: bool = True
+    grid_alpha: float = 0.2
+    show_legend: bool = True
     monitor_color: str = "c"
     power_color: str = "g"
 
@@ -229,6 +270,12 @@ class PowerMonitorSettings:
     reject_detector_saturated: bool = True
     reject_overrange: bool = True
 
+    # Warn, but do not block, when an unassociated Newport channel repeatedly
+    # sees appreciable signal. Channel indices are zero-based internally.
+    wrong_channel_warning_enabled: bool = True
+    wrong_channel_threshold_w: float = 1.0e-6
+    wrong_channel_consecutive: int = 3
+
 
 @dataclass
 class SignalWarningSettings:
@@ -246,6 +293,8 @@ class SignalWarningSettings:
 @dataclass
 class SNRSettings:
     enabled: bool = False
+    method: str = "automatic_std"
+    block_size: int = 16
     signal_start_nm: float = 400.0
     signal_stop_nm: float = 750.0
     noise1_start_nm: float = 900.0

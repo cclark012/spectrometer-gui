@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,11 @@ class KymeraCapabilities:
     focus_mirror_present: bool
     focus_mirror_max_steps: int
     detector_offsets: dict[str, int]
+    # The 2026-09-14 lab probe rejected an apparently in-range absolute focus
+    # target with ATSPECTROGRAPH_P2INVALID. Keep readback visible but do not
+    # advertise GUI writes until a dedicated one-step probe establishes the
+    # installed DLL's exact command semantics and valid range.
+    focus_mirror_position_writable: bool = False
 
     def as_control_schema(self) -> dict[str, Any]:
         return asdict(self)
@@ -407,12 +412,26 @@ class AndorKymera:
         valid = {item.index for item in self.capabilities.gratings}
         if int(grating) not in valid:
             raise ValueError(f"Unknown Kymera grating {grating}.")
+        requested_offset = int(offset)
         self._call(
             "SetGratingOffset",
             ctypes.c_int(self.device_index),
             ctypes.c_int(grating),
-            ctypes.c_int(offset),
+            ctypes.c_int(requested_offset),
             argtypes=[ctypes.c_int, ctypes.c_int, ctypes.c_int],
+        )
+        refreshed = self._grating_info(int(grating))
+        if int(refreshed.offset) != requested_offset:
+            raise AndorSpectrographError(
+                f"Kymera grating {int(grating)} offset requested "
+                f"{requested_offset}, read back {int(refreshed.offset)}."
+            )
+        self.capabilities = replace(
+            self.capabilities,
+            gratings=tuple(
+                refreshed if item.index == int(grating) else item
+                for item in self.capabilities.gratings
+            ),
         )
 
     def set_detector_offset(
@@ -423,13 +442,36 @@ class AndorKymera:
     ) -> None:
         if int(entrance_port) not in {0, 1} or int(exit_port) not in {0, 1}:
             raise ValueError("Kymera detector-offset ports must be 0 or 1.")
+        requested_offset = int(offset)
         self._call(
             "SetDetectorOffset",
             ctypes.c_int(self.device_index),
             ctypes.c_int(entrance_port),
             ctypes.c_int(exit_port),
-            ctypes.c_int(offset),
+            ctypes.c_int(requested_offset),
             argtypes=[ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int],
+        )
+        getter_name = f"{self.prefix}GetDetectorOffset"
+        if getattr(self._dll, getter_name, None) is None:
+            # Some legacy runtimes expose the setter without its getter. Do
+            # not fabricate a readback value for per-spectrum provenance.
+            return
+        actual = self._get_int(
+            "GetDetectorOffset",
+            int(entrance_port),
+            int(exit_port),
+        )
+        if int(actual) != requested_offset:
+            raise AndorSpectrographError(
+                "Kymera detector offset requested "
+                f"{requested_offset}, read back {int(actual)} for ports "
+                f"{int(entrance_port)}:{int(exit_port)}."
+            )
+        detector_offsets = dict(self.capabilities.detector_offsets)
+        detector_offsets[f"{int(entrance_port)}:{int(exit_port)}"] = actual
+        self.capabilities = replace(
+            self.capabilities,
+            detector_offsets=detector_offsets,
         )
 
     def configure_detector_geometry(

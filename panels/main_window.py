@@ -11,6 +11,10 @@ from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
+    QComboBox,
+    QVBoxLayout,
+    QWidget,
+    QStackedWidget,
     QApplication,
     QDialog,
     QDockWidget,
@@ -18,6 +22,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
+    QProgressDialog,
     QScrollArea,
     QSplitter,
     QStatusBar,
@@ -69,20 +75,31 @@ from dialogs.spectrometer_details_dialog import SpectrometerDetailsDialog
 from dialogs.spectrum_axis_dialog import SpectrumAxisDialog
 from dialogs.theme_editor_dialog import ThemeEditorDialog
 from dialogs.theme_preview_dialog import ThemePreviewDialog
+from panels.analysis_panel import AnalysisPanel
 from panels.acquisition_panel import AcquisitionPanel
 from panels.filter_wheels_panel import FilterWheelPanel
 from panels.gated_acquisition_panel import GatedAcquisitionPanel
 from panels.laser_panel import LaserPanel
 from panels.main_window_actions import build_main_window_actions
 from panels.monitor_panel import MonitorPanel
+from panels.parameter_scan_panel import ParameterScanPanel
+from panels.temperature_panel import TemperaturePanel
+from controllers.parameter_scan_coordinator import ParameterScanCoordinator
+from controllers.temperature_runtime import TemperatureRuntime
+from planning.parameter_scan import TemperatureReading
 from panels.power_panel import PowerPanel
 from panels.scan_panel import ScanPanel
 from panels.spectrum_panel import SpectrumPanel
+from planning.gated_sequence import GATED_MEMORY_WARNING_BYTES
 from processing.snr import suggest_acquisition
 from ui.theme import ThemeManager
 from ui.window_geometry import clamp_main_window_to_available_screen
+from validation.power_channels import WrongPowerChannelTracker
 
 logger = logging.getLogger(__name__)
+
+ANDOR_COOLER_SHUTDOWN_MARKER = "andor/incomplete_cooler_shutdown"
+ANDOR_SAFE_SHUTDOWN_TEMPERATURE_C = 0.0
 
 
 class MainWindow(QMainWindow):
@@ -123,6 +140,18 @@ class MainWindow(QMainWindow):
 
         self._application_exit_code = 0
         self._closing = False
+        self._parameter_close_pending = False
+        self._cooler_shutdown_active = False
+        self._cooler_shutdown_complete = False
+        self._cooler_shutdown_dialog: QProgressDialog | None = None
+        self._last_spectrometer_temperature_c = float("nan")
+        self._cooler_recovery_warning_shown = False
+        self._cooler_marker_at_startup = QSettings().value(
+            ANDOR_COOLER_SHUTDOWN_MARKER,
+            False,
+            type=bool,
+        )
+        self._andor_cooler_requested_on = False
         self.config = config
         self.file_name_settings = FileNameSettings()
         self.power_monitor_settings = PowerMonitorSettings()
@@ -156,19 +185,30 @@ class MainWindow(QMainWindow):
 
         self.app_t0 = time.perf_counter()
         self.current_record: SpectrumRecord | None = None
+        self.current_background: BackgroundSpectrum | None = None
         self._latest_valid_snr_record: SpectrumRecord | None = None
         self._latest_snr_signature: tuple[object, ...] | None = None
         self.acquiring = False
         self._acquisition_owner: str | None = None
+        self._progress_operation = ""
+        self._progress_mode = "software"
+        self._progress_total = 1
+        self._progress_completed = 0
+        self._progress_integration_s = 0.001
+        self._progress_started_s = 0.0
+        self._progress_segment_started_s = 0.0
+        self._progress_visible = False
         self._gated_acquisition_template: AcquisitionSettings | None = None
         self._gated_settings_pending = None
         self._gated_laser_pending: LaserChannelInfo | None = None
+        self._gated_plan_pending = None
         self._gated_preparing = False
         self._gated_prepare_cancelled = False
         self.sequence_arbiter = SequenceArbiter()
         self.auto_update_power_meter_wavelength = True
         self.last_power_meter_wavelength_nm: int | None = None
         self.last_signal_warning_s = -1.0e99
+        self._wrong_power_channel_tracker = WrongPowerChannelTracker()
 
         self._build_central_views()
         self._build_left_dock()
@@ -178,11 +218,15 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_timers()
         self._build_scan_coordinator()
+        self._build_parameter_scan()
+        self.analysis_panel = AnalysisPanel(lambda: self.current_record, self)
+        self.tabs.addTab(self.analysis_panel, "Analysis and comparisons")
         self._build_preferences_controller()
         self._build_performance_monitor()
 
         self._load_preferences()
         self._apply_loaded_preferences()
+        self.acquisition_panel.set_background_available(False)
         self._apply_instrument_visibility()
 
         self._start_instrument_runtime()
@@ -219,6 +263,134 @@ class MainWindow(QMainWindow):
             "Monitor",
         )
 
+    def _build_parameter_scan(self) -> None:
+        self.parameter_panel = ParameterScanPanel(self)
+        self.temperature_panel = TemperaturePanel(self)
+        parameter_scroll = QScrollArea()
+        parameter_scroll.setWidgetResizable(True)
+        parameter_scroll.setWidget(self.parameter_panel)
+        # Reuse the established power-scan panel and coordinator within a common
+        # left-hand workspace; moving widgets does not change acquisition routes.
+        self.scan_workspace = QWidget()
+        scan_layout = QVBoxLayout(self.scan_workspace)
+        scan_layout.setContentsMargins(0, 0, 0, 0)
+        self.scan_kind = QComboBox()
+        self.scan_kind.addItem("Laser power / power calibration", "power")
+        for i in range(self.parameter_panel.kind.count()):
+            self.scan_kind.addItem(self.parameter_panel.kind.itemText(i), self.parameter_panel.kind.itemData(i))
+        self.scan_pages = QStackedWidget()
+        self.lower_tabs.removeTab(self.scan_tab_index)
+        self.scan_pages.addWidget(self.scan_panel)
+        self.scan_pages.addWidget(parameter_scroll)
+        scan_layout.addWidget(self.scan_kind)
+        scan_layout.addWidget(self.scan_pages)
+        self.lower_tabs.insertTab(self.scan_tab_index, self.scan_workspace, "Scans")
+        self.parameter_panel.kind.hide()
+        label = self.parameter_panel.controls.layout().labelForField(self.parameter_panel.kind)
+        if label is not None:
+            label.hide()
+        self.scan_kind.currentIndexChanged.connect(self._select_scan_kind)
+        self.tabs.addTab(self.temperature_panel, "Temperature")
+        self.parameter_scan = ParameterScanCoordinator(self)
+        self.parameter_panel.start_requested.connect(self._start_parameter_scan)
+        self.parameter_panel.abort_requested.connect(self.parameter_scan.abort)
+        self.parameter_scan.acquire_requested.connect(self._parameter_acquire)
+        self.parameter_scan.configure_requested.connect(self.spectrometer_configuration_requested.emit)
+        self.parameter_scan.temperature_requested.connect(self._parameter_temperature_request)
+        self.parameter_scan.save_requested.connect(self.file_io.autosave_spectrum)
+        self.parameter_scan.summary_ready.connect(self.file_io.autosave_parameter_summary)
+        self.file_io.autosave_failed.connect(lambda message: self.parameter_scan.abort("Autosave failed: " + message))
+        self.parameter_scan.status.connect(self.parameter_panel.status.setText)
+        self.parameter_scan.finished.connect(self._parameter_finished)
+        self.parameter_scan.disable_lasers_requested.connect(lambda: self.runtime.disable_all_lasers())
+        self.temperature_runtime = TemperatureRuntime(self)
+        self.temperature_connected = False
+        self._ccd_scan_query_pending = False
+        self.temperature_panel.connect_requested.connect(self.temperature_runtime.connect_requested.emit)
+        self.temperature_panel.disconnect_requested.connect(self.temperature_runtime.disconnect_requested.emit)
+        self.temperature_runtime.readings.connect(self._temperature_readings)
+        self.temperature_runtime.state.connect(self._temperature_state)
+
+    def _select_scan_kind(self, index: int) -> None:
+        key = self.scan_kind.itemData(index)
+        self.scan_pages.setCurrentIndex(0 if key == "power" else 1)
+        if key != "power":
+            self.parameter_panel.kind.setCurrentIndex(self.parameter_panel.kind.findData(key))
+
+    def _start_parameter_scan(self) -> None:
+        try:
+            plan = self.parameter_panel.plan()
+            settings = self._settings()
+            center = None
+            caps = self.spectrometer_capabilities
+            if plan.kind in {"exposure", "wavelength"} and settings.subtract_background:
+                raise ValueError("Exposure/wavelength sweeps need a background per configuration. Turn subtraction off for this scan.")
+            if plan.kind == "exposure":
+                minimum = max(1, int(self.acquisition_panel.integration_ms.minimum()))
+                maximum = int(self.acquisition_panel.integration_ms.maximum())
+                if any(not minimum <= value <= maximum for value in plan.values):
+                    raise ValueError(f"Exposure points must lie in {minimum}–{maximum} ms")
+            if plan.kind == "wavelength":
+                if caps is None or caps.backend != "andor":
+                    raise ValueError("Center-wavelength scans require a connected Andor Kymera")
+                state = caps.control_schema.get("state", {}).get("spectrograph", {})
+                center = float(state.get("center_wavelength_nm", float("nan")))
+                if not math.isfinite(center):
+                    raise ValueError("No verified original Kymera center is available")
+                grating = int(state.get("grating", 0))
+                gratings = caps.control_schema.get("spectrograph", {}).get("gratings", [])
+                for item in gratings:
+                    if int(item.get("index", 0)) == grating:
+                        lo,hi = float(item.get("minimum_nm",0)),float(item.get("maximum_nm",20000))
+                        if any(not lo <= v <= hi for v in plan.values):
+                            raise ValueError(f"Current grating accepts {lo:g}–{hi:g} nm")
+            if plan.kind == "temperature":
+                if plan.temperature_source == "ccd" and (caps is None or not caps.tec_supported):
+                    raise ValueError("The connected spectrometer has no reported temperature support")
+                if plan.temperature_source != "ccd" and not self.temperature_connected:
+                    raise ValueError("Connect Lake Shore 335 or its emulator in the Temperature tab")
+            if not self._begin_sequence("parameter_scan"):
+                return
+            self.parameter_scan.start(plan, settings, center)
+            self._refresh_sequence_controls()
+        except (ValueError, RuntimeError) as exc:
+            if not self.parameter_scan.active:
+                self._release_sequence("parameter_scan")
+            QMessageBox.warning(self, "Cannot start scan", str(exc))
+
+    def _parameter_acquire(self) -> None:
+        if not self._request_spectrum("parameter_scan"):
+            self.parameter_scan.acquisition_failed("Acquisition request was not accepted")
+
+    def _parameter_finished(self, message: str) -> None:
+        self.runtime.stop_spectrometer_stream()
+        self._release_sequence("parameter_scan")
+        self.parameter_panel.status.setText(message)
+        self.statusBar().showMessage(message, 15000)
+        if self._parameter_close_pending:
+            self._parameter_close_pending = False
+            QTimer.singleShot(0, self.close)
+
+    def _parameter_temperature_request(self, source: str) -> None:
+        if source == "ccd" and not self._ccd_scan_query_pending:
+            self._ccd_scan_query_pending = True
+            self._ccd_scan_query_started = time.perf_counter()
+            self.spectrometer_temperature_requested.emit()
+
+    def _temperature_readings(self, readings) -> None:
+        self.temperature_panel.add_readings(readings)
+        for reading in readings:
+            self.parameter_scan.accept_temperature(reading)
+
+    def _temperature_state(self, connected: bool, description: str) -> None:
+        self.temperature_connected = connected
+        self.temperature_panel.set_state(connected, description)
+        if not connected:
+            for key in ("lakeshore_A", "lakeshore_B"):
+                self.parameter_scan.readings.pop(key, None)
+            if self.parameter_scan.active and self.parameter_scan.plan.kind == "temperature" and self.parameter_scan.plan.temperature_source != "ccd":
+                self.parameter_scan.abort("Temperature sensor disconnected: " + description)
+
     def _build_left_dock(self) -> None:
         self.controls_dock = QDockWidget("Controls", self)
         self.controls_dock.setObjectName("controls_dock")
@@ -231,10 +403,15 @@ class MainWindow(QMainWindow):
         self.acquisition_panel = AcquisitionPanel(self)
         self.acquisition_panel.acquire_requested.connect(self.take_spectrum)
         self.acquisition_panel.background_requested.connect(self.capture_background)
+        self.acquisition_panel.background_save_requested.connect(lambda: self.file_io.save_background(self.current_background))
+        self.acquisition_panel.background_plot_changed.connect(lambda visible: self.spectrum_panel.show_background(self.current_background, visible))
         self.acquisition_panel.background_clear_requested.connect(
             self.background_clear_requested.emit
         )
         self.acquisition_panel.live_changed.connect(self._on_live_changed)
+        self.acquisition_panel.power_channels_changed.connect(
+            self._on_acquisition_power_channels_changed
+        )
 
         self.acquisition_panel.recommend_acquisition_requested.connect(
                 self.show_acquisition_recommendation
@@ -290,6 +467,8 @@ class MainWindow(QMainWindow):
         )
         self.power_panel.clear_requested.connect(self.clear_power_trace)
         self.power_panel.details_requested.connect(self.show_power_details_dialog)
+        self.power_panel.set_application_t0(self.app_t0)
+        self.power_panel.channel_changed.connect(self._monitor_channel_changed)
         self.power_panel.mode_changed.connect(self._on_power_monitor_mode_changed)
         self.power_panel.auto_wavelength_changed.connect(
             self._on_auto_power_meter_wavelength_changed
@@ -311,6 +490,14 @@ class MainWindow(QMainWindow):
 
         self.performance_label = QLabel()
         self.statusBar().addPermanentWidget(self.performance_label)
+
+        self.acquisition_progress_bar = QProgressBar()
+        self.acquisition_progress_bar.setObjectName("acquisition_progress_bar")
+        self.acquisition_progress_bar.setMinimumWidth(210)
+        self.acquisition_progress_bar.setMaximumWidth(300)
+        self.acquisition_progress_bar.setTextVisible(True)
+        self.acquisition_progress_bar.hide()
+        self.statusBar().addPermanentWidget(self.acquisition_progress_bar)
 
     def _build_file_io_controller(self) -> None:
         self.file_io = FileIOController(
@@ -348,8 +535,20 @@ class MainWindow(QMainWindow):
         self.live_next_timer.setSingleShot(True)
         self.live_next_timer.timeout.connect(self._start_live_acquisition_if_ready)
 
+        self.acquisition_progress_timer = QTimer(self)
+        self.acquisition_progress_timer.setInterval(100)
+        self.acquisition_progress_timer.timeout.connect(
+            self._update_acquisition_progress_estimate
+        )
+
         self.power_timer = QTimer(self)
         self.power_timer.timeout.connect(self._poll_power_tick)
+
+        self.cooler_shutdown_timer = QTimer(self)
+        self.cooler_shutdown_timer.setInterval(2000)
+        self.cooler_shutdown_timer.timeout.connect(
+            self.spectrometer_temperature_requested.emit
+        )
 
     def _build_scan_coordinator(self) -> None:
         # Create scan coordinator
@@ -533,6 +732,7 @@ class MainWindow(QMainWindow):
         self.runtime.connection_failed.connect(self._on_connection_failed)
         self.runtime.spectrum_ready.connect(self._on_spectrum_ready)
         self.runtime.acquisition_failed.connect(self._on_acquisition_failed)
+        self.runtime.acquisition_progress.connect(self._on_acquisition_progress)
         self.runtime.power_ready.connect(self._on_power_ready)
         self.runtime.power_read_complete.connect(
             self.scan_coordinator.on_power_read_complete
@@ -562,6 +762,8 @@ class MainWindow(QMainWindow):
         self.runtime.spectrometer_connection_changed.connect(
             self._on_instrument_connection_changed
         )
+        self.runtime.spectrometer_configuration_applied.connect(self.parameter_scan.configuration_applied)
+        self.runtime.spectrometer_configuration_failed.connect(self.parameter_scan.configuration_failed)
         self.runtime.background_ready.connect(self._on_background_ready)
         self.runtime.background_cleared.connect(self._on_background_cleared)
         self.runtime.background_failed.connect(self._on_background_failed)
@@ -622,6 +824,18 @@ class MainWindow(QMainWindow):
         settings = self.gated_coordinator.apply_metadata(settings)
         return settings
 
+    @Slot(object)
+    def _on_acquisition_power_channels_changed(self, channels: object) -> None:
+        normalized = tuple(sorted({int(channel) for channel in tuple(channels)}))
+        if not normalized:
+            return
+        if len(normalized) == 1:
+            self.power_panel.channel_combo.setCurrentIndex(normalized[0])
+            self.monitor_panel.channel_combo.setCurrentIndex(normalized[0])
+        self.power_monitor_settings.required_power_channels = normalized
+        self._wrong_power_channel_tracker.reset()
+        self._apply_power_monitor_settings()
+
     def _claim_sequence(self, owner: str) -> bool:
         if self.sequence_arbiter.claim(owner):
             self._refresh_sequence_controls()
@@ -654,6 +868,12 @@ class MainWindow(QMainWindow):
         spectrometer = self._instrument_connected("spectrometer")
         automated = owner in AUTOMATED_SEQUENCE_OWNERS
 
+        if hasattr(self, "parameter_panel"):
+            self.scan_kind.setEnabled(self.sequence_arbiter.owner is None)
+            self.parameter_panel.set_busy(owner, spectrometer)
+            sensor_busy = owner == "parameter_scan" and self.parameter_scan.active and self.parameter_scan.plan.kind == "temperature"
+            for widget in (self.temperature_panel.connect_button, self.temperature_panel.disconnect_button, self.temperature_panel.mode, self.temperature_panel.port):
+                widget.setEnabled(not sensor_busy)
         self.acquisition_panel.set_sequence_owner(owner)
         self.acquisition_panel.set_acquiring(self.acquiring)
         self.scan_panel.set_external_busy(
@@ -673,6 +893,7 @@ class MainWindow(QMainWindow):
             return False
 
         valid_request = {
+            "parameter_scan": lambda: self.sequence_arbiter.owner == "parameter_scan" and self.parameter_scan.active,
             "manual": lambda: self.sequence_arbiter.owner in {None, "manual"},
             "live": lambda: (
                 self.sequence_arbiter.owner == "live"
@@ -693,26 +914,140 @@ class MainWindow(QMainWindow):
         }.get(owner)
         if valid_request is None or not valid_request():
             return False
-        if not self._claim_sequence(owner):
+        if self.sequence_arbiter.owner != owner and not self._claim_sequence(owner):
             return False
 
         self.acquiring = True
         self._acquisition_owner = owner
-        self._refresh_sequence_controls()
-        if owner == "gated" and self._gated_acquisition_template is not None:
+        if owner == "parameter_scan":
+            settings = self.parameter_scan.acquisition_settings()
+        elif owner == "gated" and self._gated_acquisition_template is not None:
             settings = self.gated_coordinator.apply_metadata(
                 replace(self._gated_acquisition_template)
             )
         else:
             settings = self._settings()
+        if owner in {"live", "gated", "power_scan", "auto_tune"}:
+            settings = replace(settings, continuous_session=owner)
+        # Queue the worker call before status text, logging, or control repaint.
+        # This path is entered at the requested gated deadline, so avoid adding
+        # preventable GUI-thread latency in front of the hardware request.
+        self.acquire_requested.emit(settings)
+        self._begin_acquisition_progress(settings, operation="acquisition")
+        self._refresh_sequence_controls()
         self.statusBar().showMessage(
             f"Acquiring spectrum: {settings.integration_ms} ms, "
-            f"avg={settings.averages}, boxcar={settings.boxcar_width}",
+            f"avg={settings.averages}, smoothing={settings.smoothing_window}"
+            f"/{settings.boxcar_width}",
             5000,
         )
         self.scan_coordinator.timer.log(f"emit {owner} acquire request")
-        self.acquire_requested.emit(settings)
         return True
+
+    def _begin_acquisition_progress(
+        self,
+        settings: AcquisitionSettings,
+        *,
+        operation: str,
+    ) -> None:
+        self.acquisition_progress_timer.stop()
+        self._progress_operation = str(operation)
+        self._progress_mode = str(settings.averaging_mode)
+        self._progress_total = max(1, int(settings.averages))
+        self._progress_completed = 0
+        self._progress_integration_s = max(
+            0.001,
+            float(settings.integration_ms) * 1.0e-3,
+        )
+        self._progress_started_s = time.perf_counter()
+        self._progress_segment_started_s = self._progress_started_s
+        estimated_duration_s = self._progress_integration_s * self._progress_total
+        # Avoid a distracting one-frame flash for a handful of millisecond
+        # averages, while still covering genuinely long exposures and the
+        # many-average runs for which progress feedback is useful.
+        self._progress_visible = (
+            self._progress_total >= 10 or estimated_duration_s >= 0.5
+        )
+        if not self._progress_visible:
+            self.acquisition_progress_bar.hide()
+            return
+        self.acquisition_progress_bar.setRange(0, 0)
+        self.acquisition_progress_bar.setFormat("Preparing acquisition…")
+        self.acquisition_progress_bar.show()
+
+    @Slot(int, int, str, str)
+    def _on_acquisition_progress(
+        self,
+        completed: int,
+        total: int,
+        mode: str,
+        operation: str,
+    ) -> None:
+        if str(operation) != self._progress_operation:
+            return
+        total = max(1, int(total))
+        completed = min(total, max(0, int(completed)))
+        now = time.perf_counter()
+        self._progress_mode = str(mode)
+        self._progress_total = total
+        self._progress_completed = completed
+        if completed == 0:
+            self._progress_started_s = now
+        self._progress_segment_started_s = now
+
+        if self._progress_visible:
+            self.acquisition_progress_bar.setRange(0, total * 1000)
+            self.acquisition_progress_bar.setValue(completed * 1000)
+            self._set_acquisition_progress_format(completed)
+            if completed < total:
+                self.acquisition_progress_timer.start()
+            else:
+                self.acquisition_progress_timer.stop()
+
+        if total > 1:
+            label = self._progress_label()
+            self.statusBar().showMessage(f"{label} {completed}/{total}")
+
+    def _progress_label(self) -> str:
+        return {
+            "background": "Background acquisition",
+            "preparation": "Warm-up acquisition",
+        }.get(self._progress_operation, "Acquisition")
+
+    def _set_acquisition_progress_format(self, completed: int) -> None:
+        label = self._progress_label()
+        if self._progress_total > 1:
+            suffix = " (device estimate)" if self._progress_mode == "device" else ""
+            text = f"{label} {completed}/{self._progress_total}{suffix} — %p%"
+        else:
+            text = f"{label} — %p%"
+        self.acquisition_progress_bar.setFormat(text)
+
+    @Slot()
+    def _update_acquisition_progress_estimate(self) -> None:
+        if not self._progress_visible or self._progress_completed >= self._progress_total:
+            self.acquisition_progress_timer.stop()
+            return
+        now = time.perf_counter()
+        if self._progress_mode == "device":
+            duration_s = self._progress_integration_s * self._progress_total
+            fraction = min(0.995, max(0.0, (now - self._progress_started_s) / duration_s))
+            value = int(fraction * self._progress_total * 1000)
+        else:
+            frame_fraction = min(
+                0.995,
+                max(0.0, (now - self._progress_segment_started_s) / self._progress_integration_s),
+            )
+            value = int((self._progress_completed + frame_fraction) * 1000)
+        maximum = self._progress_total * 1000
+        self.acquisition_progress_bar.setValue(min(maximum - 1, value))
+        self._set_acquisition_progress_format(self._progress_completed)
+
+    def _finish_acquisition_progress(self) -> None:
+        self.acquisition_progress_timer.stop()
+        self._progress_operation = ""
+        self._progress_visible = False
+        self.acquisition_progress_bar.hide()
 
     def _request_automated_spectrum(self, owner: str) -> None:
         """Fail the requesting state machine if a frame cannot be queued."""
@@ -724,7 +1059,9 @@ class MainWindow(QMainWindow):
         else:
             message = "The frame could not be queued because acquisition ownership changed."
 
-        if owner == "power_scan":
+        if owner == "parameter_scan":
+            self.parameter_scan.acquisition_failed(message)
+        elif owner == "power_scan":
             self.scan_coordinator.handle_acquisition_failed(message)
         elif owner == "gated":
             self.gated_coordinator.handle_acquisition_failed(message)
@@ -745,8 +1082,10 @@ class MainWindow(QMainWindow):
                 self.acquisition_panel.set_live_enabled(False)
                 return
             self._schedule_next_live_acquisition()
-        elif not self.acquiring or self._acquisition_owner != "live":
-            self._release_sequence("live")
+        else:
+            self.runtime.stop_spectrometer_stream()
+            if not self.acquiring or self._acquisition_owner != "live":
+                self._release_sequence("live")
         self.statusBar().showMessage(
             f"Live acquisition: {'ON' if enabled else 'OFF'}",
             5000,
@@ -771,11 +1110,26 @@ class MainWindow(QMainWindow):
             return
 
         owner = self._acquisition_owner
-        self._finish_acquisition_ui()
+        # Release the worker-call state before any plotting, monitor analysis,
+        # or status formatting. Automated coordinators can then classify the
+        # frame and arm the next absolute deadline with minimal GUI-thread
+        # latency. Their sequence owner continues to keep controls disabled.
+        self._finish_acquisition_progress()
+        self.acquiring = False
+        self._acquisition_owner = None
+
+        if owner == "parameter_scan":
+            self.parameter_scan.spectrum_ready(record)
+        elif owner == "auto_tune":
+            self.auto_acquisition.handle_spectrum_ready(record)
+        elif owner == "gated":
+            self.gated_coordinator.handle_spectrum_ready(record)
+        elif owner == "power_scan":
+            self.scan_coordinator.handle_spectrum_ready(record)
 
         self.performance_monitor.mark_acquisition()
         logger.debug(
-            "Spectrum ready: owner=%s integration_ms=%d averages=%d "
+            "Spectrum ready: owner=%s integration_ms=%g averages=%d "
             "acquisition_s=%.6f background=%s power=%s snr=%s",
             owner,
             record.integration_ms,
@@ -790,6 +1144,7 @@ class MainWindow(QMainWindow):
         self.spectrum_panel.queue_record(record)
         if record.p_after.has_finite_power():
             self._display_power_snapshot(record.p_after)
+            self._check_wrong_power_channel(record)
 
         if (
             (self.snr_settings.enabled or owner == "auto_tune")
@@ -812,18 +1167,16 @@ class MainWindow(QMainWindow):
         if self.monitor_panel.tracking_enabled():
             self.monitor_panel.add_record(record)
 
-        self.statusBar().showMessage(
-            f"Spectrum acquired: {record.timestamp_utc}, mean ch1 power "
-            f"{format_power_w(record.mean_power_w(0))}",
-            10_000,
-        )
-
-        if owner == "auto_tune":
-            self.auto_acquisition.handle_spectrum_ready(record)
-        elif owner == "gated":
-            self.gated_coordinator.handle_spectrum_ready(record)
-        elif owner == "power_scan":
-            self.scan_coordinator.handle_spectrum_ready(record)
+        if owner not in AUTOMATED_SEQUENCE_OWNERS:
+            selected_power_channel = (
+                int(record.power_channels[0]) if record.power_channels else 0
+            )
+            self.statusBar().showMessage(
+                f"Spectrum acquired: {record.timestamp_utc}, mean ch"
+                f"{selected_power_channel + 1} power "
+                f"{format_power_w(record.mean_power_w(selected_power_channel))}",
+                10_000,
+            )
 
         # Automated coordinators own their save policy. Manual and live frames
         # use the global autosave setting exactly once.
@@ -840,6 +1193,32 @@ class MainWindow(QMainWindow):
         elif owner == "live":
             self._release_sequence("live")
 
+    def _check_wrong_power_channel(self, record: SpectrumRecord) -> None:
+        settings = self.power_monitor_settings
+        if not settings.wrong_channel_warning_enabled:
+            self._wrong_power_channel_tracker.reset()
+            return
+        warned = self._wrong_power_channel_tracker.evaluate(
+            record.mean_power_snapshot(),
+            selected_channels=tuple(record.power_channels),
+            threshold_w=float(settings.wrong_channel_threshold_w),
+            consecutive=int(settings.wrong_channel_consecutive),
+        )
+        if not warned:
+            return
+        labels = ", ".join(f"channel {channel + 1}" for channel in warned)
+        selected = ", ".join(
+            f"channel {channel + 1}" for channel in record.power_channels
+        ) or "none"
+        message = (
+            f"Newport {labels} exceeded the other-channel warning threshold "
+            f"{settings.wrong_channel_consecutive} consecutive times, but the "
+            f"spectrum is associated with {selected}. Check detector/channel "
+            "selection; acquisition was not blocked."
+        )
+        self.statusBar().showMessage(message, 20_000)
+        logger.warning(message)
+
     @Slot(str)
     def _on_acquisition_failed(self, message: str) -> None:
         if not self.acquiring and self._acquisition_owner is None:
@@ -850,7 +1229,9 @@ class MainWindow(QMainWindow):
         owner = self._acquisition_owner
         self._finish_acquisition_ui()
 
-        if owner == "power_scan":
+        if owner == "parameter_scan":
+            self.parameter_scan.acquisition_failed(message)
+        elif owner == "power_scan":
             self.scan_coordinator.handle_acquisition_failed(message)
         elif owner == "auto_tune":
             self.auto_acquisition.handle_acquisition_failed(message)
@@ -876,6 +1257,7 @@ class MainWindow(QMainWindow):
         )
 
     def _finish_acquisition_ui(self) -> None:
+        self._finish_acquisition_progress()
         self.acquiring = False
         self._acquisition_owner = None
         self.acquisition_panel.set_acquiring(False)
@@ -890,6 +1272,7 @@ class MainWindow(QMainWindow):
         self._acquisition_owner = "background"
         self._refresh_sequence_controls()
         settings = replace(self._settings(), subtract_background=False)
+        self._begin_acquisition_progress(settings, operation="background")
         self.statusBar().showMessage("Capturing background spectrum...", 5000)
         self.background_capture_requested.emit(settings)
 
@@ -1087,6 +1470,7 @@ class MainWindow(QMainWindow):
         if active:
             self.sequence_arbiter.claim("auto_tune")
         else:
+            self.runtime.stop_spectrometer_stream()
             self.sequence_arbiter.release("auto_tune")
         self.acquisition_panel.set_auto_tuning(active)
         self.acquisition_panel.set_snr_enabled(
@@ -1106,11 +1490,34 @@ class MainWindow(QMainWindow):
 
     def preview_gated_acquisition(self) -> None:
         try:
-            plan = self.gated_coordinator.preview(self._gated_settings())
+            plan = self.gated_coordinator.preview(
+                self._gated_settings(),
+                spectrum_pixels=self._gated_spectrum_pixels(),
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Gated Preview Failed", str(exc))
             return
-        self.gated_panel.set_plan(plan)
+        if 0 < plan.target_frame_count < plan.frame_count:
+            frame_summary = (
+                f"{plan.target_frame_count:,} retained spectra, up to "
+                f"{plan.frame_count:,} attempts"
+            )
+        else:
+            frame_summary = f"{plan.frame_count:,} spectra"
+        self.statusBar().showMessage(
+            f"Gated preview ready: {frame_summary} and "
+            f"{plan.action_count:,} actions.",
+            10_000,
+        )
+
+    def _gated_spectrum_pixels(self) -> int:
+        capabilities = self.spectrometer_capabilities
+        if capabilities is not None and int(capabilities.pixels or 0) > 0:
+            return int(capabilities.pixels)
+        if self.current_record is not None:
+            return max(1, int(np.asarray(self.current_record.wavelengths_nm).size))
+        # Used only for a conservative preflight estimate while offline.
+        return 2048
 
     def _gated_settings(self):
         acquisition = self.acquisition_panel.settings()
@@ -1171,6 +1578,8 @@ class MainWindow(QMainWindow):
         if active:
             self.sequence_arbiter.claim(owner)
         else:
+            if owner == "power_scan":
+                self.runtime.stop_spectrometer_stream()
             self.sequence_arbiter.release(owner)
         self._refresh_sequence_controls()
 
@@ -1185,10 +1594,31 @@ class MainWindow(QMainWindow):
         if not self._instrument_connected("lasers"):
             QMessageBox.information(self, "No Laser Box", "Connect a laser box first.")
             return
+        try:
+            gated_settings = self._gated_settings()
+            plan = self.gated_coordinator.preview(
+                gated_settings,
+                spectrum_pixels=self._gated_spectrum_pixels(),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Gated Acquisition Failed", str(exc))
+            return
+        if plan.estimated_peak_memory_bytes >= GATED_MEMORY_WARNING_BYTES:
+            estimated_mib = plan.estimated_peak_memory_bytes / (1024.0 * 1024.0)
+            answer = QMessageBox.question(
+                self,
+                "Large gated acquisition",
+                f"This plan is estimated to retain up to {estimated_mib:.0f} MiB "
+                "while it runs. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage("Gated acquisition cancelled in preflight.", 5000)
+                return
         if not self._begin_sequence("gated"):
             return
         try:
-            gated_settings = self._gated_settings()
             base_settings = self.acquisition_panel.settings(
                 run_identifier=self.file_name_settings.run_identifier,
                 notes=self.file_name_settings.notes,
@@ -1201,12 +1631,18 @@ class MainWindow(QMainWindow):
                 laser_channel=int(laser.channel),
                 laser_wavelength_nm=float(laser.wavelength_nm),
                 laser_setpoint_w=float(laser.setpoint_w),
+                continuous_session="gated",
             )
             self._gated_settings_pending = gated_settings
             self._gated_laser_pending = laser
+            self._gated_plan_pending = plan
             self._gated_preparing = True
             self._gated_prepare_cancelled = False
             self.gated_panel.set_running(True)
+            self._begin_acquisition_progress(
+                self._gated_acquisition_template,
+                operation="preparation",
+            )
             self.statusBar().showMessage(
                 "Preparing spectrometer and consuming one unsaved warm-up frame...",
                 15_000,
@@ -1222,6 +1658,7 @@ class MainWindow(QMainWindow):
     def _on_gated_spectrometer_prepared(self) -> None:
         if not self._gated_preparing:
             return
+        self._finish_acquisition_progress()
         if self._gated_prepare_cancelled:
             self._clear_gated_preparation()
             self._release_sequence("gated")
@@ -1229,26 +1666,37 @@ class MainWindow(QMainWindow):
             return
         settings = self._gated_settings_pending
         laser = self._gated_laser_pending
+        plan = self._gated_plan_pending
         self._gated_preparing = False
         self._gated_settings_pending = None
         self._gated_laser_pending = None
-        if settings is None or laser is None or self.sequence_arbiter.owner != "gated":
+        self._gated_plan_pending = None
+        if (
+            settings is None
+            or laser is None
+            or plan is None
+            or self.sequence_arbiter.owner != "gated"
+        ):
             self._clear_gated_preparation()
             self._release_sequence("gated")
             return
         try:
-            plan = self.gated_coordinator.start(settings=settings, laser=laser)
+            self.gated_coordinator.start(
+                settings=settings,
+                laser=laser,
+                plan=plan,
+            )
         except Exception as exc:
             self._clear_gated_preparation()
             self._release_sequence("gated")
             QMessageBox.critical(self, "Gated Acquisition Failed", str(exc))
             return
-        self.gated_panel.set_plan(plan)
 
     @Slot(str)
     def _on_gated_spectrometer_prepare_failed(self, message: str) -> None:
         if not self._gated_preparing:
             return
+        self._finish_acquisition_progress()
         cancelled = self._gated_prepare_cancelled
         self._clear_gated_preparation()
         self._release_sequence("gated")
@@ -1274,12 +1722,18 @@ class MainWindow(QMainWindow):
         self.gated_coordinator.abort()
 
     def _clear_gated_preparation(self) -> None:
+        stream_was_armed = self._gated_acquisition_template is not None
+        if self._progress_operation == "preparation":
+            self._finish_acquisition_progress()
         self._gated_preparing = False
         self._gated_prepare_cancelled = False
         self._gated_settings_pending = None
         self._gated_laser_pending = None
+        self._gated_plan_pending = None
         self._gated_acquisition_template = None
         self.gated_panel.set_running(False)
+        if stream_was_armed:
+            self.runtime.stop_spectrometer_stream()
 
     @Slot(bool)
     def _on_gated_active_changed(self, active: bool) -> None:
@@ -1317,8 +1771,16 @@ class MainWindow(QMainWindow):
         if not power.has_finite_power():
             return
         self.power_panel.set_current_power(power)
-        ch1 = power.powers_w[0] if power.powers_w else float("nan")
-        self.power_label.setText(f"Power: {format_power_w(ch1)}")
+        self._last_display_power = power
+        channel = self.power_panel.channel_combo.currentIndex()
+        value = power.powers_w[channel] if len(power.powers_w) > channel else float("nan")
+        self.power_label.setText(f"Power ch{channel+1}: {format_power_w(value)}")
+
+    def _monitor_channel_changed(self, channel: int) -> None:
+        self.power_monitor_settings.required_power_channels = (channel,)
+        self.power_settings_changed.emit(replace(self.power_monitor_settings))
+        if hasattr(self, "_last_display_power"):
+            self._display_power_snapshot(self._last_display_power)
 
     def _append_power_history(self, power: PowerSnapshot, *, source: str) -> None:
         if not power.has_finite_power():
@@ -1518,7 +1980,9 @@ class MainWindow(QMainWindow):
         """Stop laser-owning state machines before issuing the emergency command."""
 
         owner = self.sequence_arbiter.owner
-        if owner in {"power_scan", "calibration"}:
+        if owner == "parameter_scan":
+            self.parameter_scan.abort()
+        elif owner in {"power_scan", "calibration"}:
             self.scan_coordinator.abort_power_scan()
         elif owner == "gated":
             self.gated_coordinator.abort()
@@ -1561,17 +2025,54 @@ class MainWindow(QMainWindow):
         capabilities: SpectrometerCapabilities,
     ) -> None:
         self.spectrometer_capabilities = capabilities
+        camera_schema = capabilities.control_schema.get("camera", {})
+        minimum_frame_period_ms = (
+            camera_schema.get("minimum_frame_period_ms")
+            if isinstance(camera_schema, dict)
+            else None
+        )
         self.acquisition_panel.set_integration_limits_us(
             capabilities.integration_time_min_us,
             capabilities.integration_time_max_us,
+            minimum_frame_period_ms=minimum_frame_period_ms,
         )
         self.acquisition_panel.set_correction_availability(
             electric_dark=capabilities.electric_dark_correction_supported,
             nonlinearity=capabilities.nonlinearity_correction_supported,
         )
+        if capabilities.backend == "andor":
+            # One connection-time reading establishes safe-close state without
+            # adding a per-frame camera query.
+            self._last_spectrometer_temperature_c = float("nan")
+            cooler_enabled = (
+                camera_schema.get("cooler_enabled")
+                if isinstance(camera_schema, dict)
+                else None
+            )
+            if cooler_enabled is not None:
+                self._andor_cooler_requested_on = bool(cooler_enabled)
+                if bool(cooler_enabled):
+                    self._set_andor_cooler_shutdown_marker(True)
+            self.spectrometer_temperature_requested.emit()
+            if (
+                self._cooler_marker_at_startup
+                and not self._cooler_recovery_warning_shown
+            ):
+                self._cooler_recovery_warning_shown = True
+                QMessageBox.warning(
+                    self,
+                    "Prior iDus warm-up was incomplete",
+                    "The previous session ended before a safe iDus warm-up was "
+                    "confirmed. The GUI is querying the actual cooler state and "
+                    "temperature now. Keep the camera powered until it reaches "
+                    "at least 0 °C.",
+                )
 
     @Slot(object)
     def _on_background_ready(self, background: BackgroundSpectrum) -> None:
+        self.current_background = background
+        self.acquisition_panel.set_background_available(True)
+        self.spectrum_panel.show_background(background, self.acquisition_panel.plot_background_check.isChecked())
         self._latest_valid_snr_record = None
         self._latest_snr_signature = None
         self._finish_acquisition_ui()
@@ -1584,6 +2085,9 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_background_cleared(self) -> None:
+        self.current_background = None
+        self.acquisition_panel.set_background_available(False)
+        self.spectrum_panel.show_background(None, False)
         self._latest_valid_snr_record = None
         self._latest_snr_signature = None
         self.statusBar().showMessage("Background spectrum cleared.", 10_000)
@@ -1605,10 +2109,66 @@ class MainWindow(QMainWindow):
 
     @Slot(float)
     def _on_spectrometer_temperature_ready(self, temperature_c: float) -> None:
+        self._last_spectrometer_temperature_c = float(temperature_c)
+        if self._ccd_scan_query_pending:
+            self._ccd_scan_query_pending = False
+            self.parameter_scan.accept_temperature(TemperatureReading("ccd", float(temperature_c), "degC", self._ccd_scan_query_started, utc_now_iso(), 0, self.spectrometer_info.serial_number))
         self.statusBar().showMessage(
             f"CCD temperature: {float(temperature_c):.2f} °C",
             10_000,
         )
+        if (
+            self.spectrometer_capabilities is None
+            or self.spectrometer_capabilities.backend != "andor"
+        ):
+            return
+        if self._cooler_shutdown_active:
+            self._update_cooler_shutdown_progress(float(temperature_c))
+            return
+
+        camera_schema = (
+            self.spectrometer_capabilities.control_schema.get("camera", {})
+            if self.spectrometer_capabilities is not None
+            else {}
+        )
+        cooler_on = bool(
+            camera_schema.get("cooler_enabled", False)
+            if isinstance(camera_schema, dict)
+            else False
+        )
+        incomplete = (
+            cooler_on
+            or self._andor_cooler_requested_on
+            or float(temperature_c) < ANDOR_SAFE_SHUTDOWN_TEMPERATURE_C
+        )
+        self._set_andor_cooler_shutdown_marker(incomplete)
+
+    def _set_andor_cooler_shutdown_marker(self, incomplete: bool) -> None:
+        settings = QSettings()
+        if settings.value(
+            ANDOR_COOLER_SHUTDOWN_MARKER,
+            False,
+            type=bool,
+        ) == bool(incomplete):
+            return
+        settings.setValue(ANDOR_COOLER_SHUTDOWN_MARKER, bool(incomplete))
+        settings.sync()
+
+    @Slot(bool)
+    def _request_tec_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if (
+            self.spectrometer_capabilities is not None
+            and self.spectrometer_capabilities.backend == "andor"
+        ):
+            self._andor_cooler_requested_on = enabled
+            if enabled:
+                # Persist before the queued native call so an immediate close
+                # cannot bypass the guided warm-up path.
+                self._set_andor_cooler_shutdown_marker(True)
+        self.tec_enabled_requested.emit(enabled)
+        if not enabled:
+            QTimer.singleShot(250, self.spectrometer_temperature_requested.emit)
 
     @Slot()
     def _on_monitor_cleared(self) -> None:
@@ -1635,6 +2195,11 @@ class MainWindow(QMainWindow):
         if not state.connected:
             self._stop_work_for_disconnected_instrument(state)
         self._apply_instrument_visibility()
+        if state.key == "lasers" and state.connected:
+            # The laser table is the primary lower-pane control whenever an
+            # OBIS box becomes available. This intentionally overrides a
+            # restored Filters tab only for the connection transition.
+            self.lower_tabs.setCurrentIndex(self.laser_tab_index)
 
         dialog = getattr(
             self,
@@ -1672,8 +2237,13 @@ class MainWindow(QMainWindow):
 
         key = str(state.key)
         summary = str(state.description or f"{key} disconnected").rstrip(".")
+        if self.parameter_scan.active and (key == "lasers" or (key == "power_meter" and self.parameter_scan.template.measure_power)):
+            self.parameter_scan.abort(summary)
 
         if key == "spectrometer":
+            self._on_background_cleared()
+            if self.parameter_scan.active:
+                self.parameter_scan.disconnected(summary)
             self.acquisition_panel.set_live_enabled(False)
             self.live_next_timer.stop()
             if self.scan_coordinator.power_scan_active:
@@ -1815,6 +2385,8 @@ class MainWindow(QMainWindow):
     def _snr_settings_signature(self) -> tuple[object, ...]:
         settings = self.snr_settings
         return (
+            str(settings.method),
+            int(settings.block_size),
             float(settings.signal_start_nm),
             float(settings.signal_stop_nm),
             float(settings.noise1_start_nm),
@@ -1832,8 +2404,18 @@ class MainWindow(QMainWindow):
         record: SpectrumRecord,
         settings: AcquisitionSettings,
     ) -> bool:
+        compared_integration_ms = (
+            float(record.requested_integration_ms)
+            if math.isfinite(float(record.requested_integration_ms))
+            else float(record.integration_ms)
+        )
         return (
-            int(record.integration_ms) == int(settings.integration_ms)
+            math.isclose(
+                compared_integration_ms,
+                float(settings.integration_ms),
+                rel_tol=0.0,
+                abs_tol=1.0e-6,
+            )
             and int(record.averages) == int(settings.averages)
             and bool(record.correct_dark) == bool(settings.correct_dark)
             and bool(record.correct_nonlinearity) == bool(settings.correct_nonlinearity)
@@ -1893,10 +2475,12 @@ class MainWindow(QMainWindow):
         self.plot_style_settings.spectrum_y_max = y_max
         self.spectrum_auto_range_action.setChecked(False)
         self.spectrum_panel.apply_style(self.plot_style_settings)
+        self.analysis_panel.apply_style(self.plot_style_settings)
         self._save_preferences()
 
     def _apply_plot_style(self) -> None:
         self.spectrum_panel.apply_style(self.plot_style_settings)
+        self.analysis_panel.apply_style(self.plot_style_settings)
         self.monitor_panel.apply_plot_style(self.plot_style_settings)
         self.power_panel.apply_plot_style(self.plot_style_settings)
 
@@ -1949,7 +2533,7 @@ class MainWindow(QMainWindow):
         )
         self.lower_tabs.setTabVisible(
             self.scan_tab_index,
-            lasers,
+            True,
         )
 
         # Filter definitions remain editable offline.
@@ -2208,12 +2792,18 @@ class MainWindow(QMainWindow):
             return
         dialog = SpectrometerDetailsDialog(self.spectrometer_capabilities, self)
         dialog.tec_target_requested.connect(self.tec_target_requested.emit)
-        dialog.tec_enabled_requested.connect(self.tec_enabled_requested.emit)
+        dialog.tec_enabled_requested.connect(self._request_tec_enabled)
         dialog.temperature_refresh_requested.connect(
             self.spectrometer_temperature_requested.emit
         )
         dialog.configuration_requested.connect(
             self.spectrometer_configuration_requested.emit
+        )
+        self.runtime.spectrometer_configuration_applied.connect(
+            dialog.configuration_applied
+        )
+        self.runtime.spectrometer_configuration_failed.connect(
+            dialog.configuration_failed
         )
         dialog.exec()
 
@@ -2247,10 +2837,7 @@ class MainWindow(QMainWindow):
     def _on_record_loaded(self, record: SpectrumRecord) -> None:
         self.current_record = record
         self.file_io.set_current_record(record)
-        self.spectrum_panel.show_arrays(
-            record.wavelengths_nm,
-            record.intensities_counts,
-        )
+        self.spectrum_panel.queue_record(record)
         self.tabs.setCurrentWidget(self.spectrum_panel)
 
     @Slot(bool)
@@ -2319,7 +2906,22 @@ class MainWindow(QMainWindow):
         self.resize(1600, 850)
         self._apply_initial_layout()
 
+    def _toolbar_filename_changed(self) -> None:
+        self.file_name_settings.base_name = self.filename_edit.text().strip() or "spectrum"
+        self._update_autosave_indicator()
+        self._save_preferences()
+
+    def _toolbar_autosave_changed(self, enabled: bool) -> None:
+        self.file_name_settings.autosave_spectra = enabled
+        self._update_autosave_indicator()
+        self._save_preferences()
+
     def _update_autosave_indicator(self) -> None:
+        if hasattr(self, "filename_edit"):
+            self.filename_edit.setText(self.file_name_settings.base_name)
+            self.toolbar_autosave.blockSignals(True)
+            self.toolbar_autosave.setChecked(self.file_name_settings.autosave_spectra)
+            self.toolbar_autosave.blockSignals(False)
         self.autosave_label.setText(
             "Autosave: ON" if self.file_name_settings.autosave_spectra else "Autosave: OFF"
         )
@@ -2384,6 +2986,9 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event) -> None:
+        if self._parameter_close_pending:
+            event.ignore()
+            return
         if self._closing:
             event.accept()
             return
@@ -2401,12 +3006,25 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
+        if self.parameter_scan.active:
+            event.ignore()
+            self._parameter_close_pending = True
+            self.parameter_scan.abort("Application closing")
+            return
+
+        if not self._cooler_shutdown_complete and self._andor_requires_warmup():
+            event.ignore()
+            self._start_andor_cooler_shutdown()
+            return
+
         self._closing = True
 
         # Prevent new work from being scheduled
         self.acquisition_panel.set_live_enabled(False)
         self.live_next_timer.stop()
         self.power_timer.stop()
+        self.parameter_scan.timer.stop()
+        self.parameter_scan.active = False
 
         if self._instrument_connected("lasers"):
             self.runtime.disable_all_lasers()
@@ -2416,6 +3034,7 @@ class MainWindow(QMainWindow):
         self._save_window_layout()
 
         # Stop hardware workers
+        self.temperature_runtime.shutdown()
         self.runtime.shutdown()
 
         # Flush and close any remaining file/log resources.
@@ -2431,3 +3050,132 @@ class MainWindow(QMainWindow):
                 0,
                 lambda code=exit_code: app.exit(code),
             )
+
+    def _andor_requires_warmup(self) -> bool:
+        capabilities = self.spectrometer_capabilities
+        if (
+            capabilities is None
+            or capabilities.backend != "andor"
+            or not self._instrument_connected("spectrometer")
+        ):
+            return False
+        camera = capabilities.control_schema.get("camera", {})
+        cooler_on = bool(
+            camera.get("cooler_enabled", False)
+            if isinstance(camera, dict)
+            else False
+        )
+        temperature_c = float(self._last_spectrometer_temperature_c)
+        return (
+            cooler_on
+            or self._andor_cooler_requested_on
+            or not math.isfinite(temperature_c)
+            or temperature_c < ANDOR_SAFE_SHUTDOWN_TEMPERATURE_C
+        )
+
+    def _start_andor_cooler_shutdown(self) -> None:
+        if self._cooler_shutdown_active:
+            dialog = self._cooler_shutdown_dialog
+            if dialog is not None:
+                dialog.show()
+                dialog.raise_()
+            return
+
+        self._cooler_shutdown_active = True
+        self.parameter_scan.abort("Stopping for cooler warm-up")
+        self._set_andor_cooler_shutdown_marker(True)
+
+        self.acquisition_panel.set_live_enabled(False)
+        self.live_next_timer.stop()
+        self.power_timer.stop()
+        if self._instrument_connected("lasers"):
+            self.runtime.disable_all_lasers()
+
+        dialog = QProgressDialog(self)
+        dialog.setWindowTitle("Warming iDus before shutdown")
+        dialog.setLabelText(
+            "The iDus cooler is being turned off. Keep the camera powered while "
+            "it warms to at least 0 °C; the GUI will close automatically."
+        )
+        dialog.setRange(0, 1000)
+        dialog.setValue(0)
+        dialog.setCancelButtonText("Emergency Exit…")
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumDuration(0)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.canceled.connect(self._request_emergency_cooler_exit)
+        self._cooler_shutdown_dialog = dialog
+        dialog.show()
+
+        self.statusBar().showMessage(
+            "Safe shutdown: cooler OFF requested; waiting for iDus to reach 0 °C.",
+        )
+        self.tec_enabled_requested.emit(False)
+        self.spectrometer_temperature_requested.emit()
+        self.cooler_shutdown_timer.start()
+
+    def _update_cooler_shutdown_progress(self, temperature_c: float) -> None:
+        dialog = self._cooler_shutdown_dialog
+        if dialog is None:
+            return
+        camera = (
+            self.spectrometer_capabilities.control_schema.get("camera", {})
+            if self.spectrometer_capabilities is not None
+            else {}
+        )
+        minimum_c = float(
+            camera.get("temperature_min_c", -100.0)
+            if isinstance(camera, dict)
+            else -100.0
+        )
+        span = max(1.0, ANDOR_SAFE_SHUTDOWN_TEMPERATURE_C - minimum_c)
+        fraction = min(
+            1.0,
+            max(0.0, (temperature_c - minimum_c) / span),
+        )
+        dialog.setValue(int(round(999.0 * fraction)))
+        dialog.setLabelText(
+            f"iDus temperature: {temperature_c:.2f} °C\n\n"
+            "The cooler is off. Keep the camera powered until it reaches at "
+            "least 0 °C; the GUI will then close automatically."
+        )
+        self.statusBar().showMessage(
+            f"Safe shutdown: iDus at {temperature_c:.2f} °C; waiting for 0 °C.",
+        )
+        if temperature_c < ANDOR_SAFE_SHUTDOWN_TEMPERATURE_C:
+            return
+
+        self.cooler_shutdown_timer.stop()
+        self._cooler_shutdown_active = False
+        self._cooler_shutdown_complete = True
+        self._andor_cooler_requested_on = False
+        self._set_andor_cooler_shutdown_marker(False)
+        dialog.setValue(1000)
+        dialog.blockSignals(True)
+        dialog.close()
+        self._cooler_shutdown_dialog = None
+        self.statusBar().showMessage(
+            "iDus reached the safe shutdown threshold; closing GUI.",
+        )
+        QTimer.singleShot(0, self.close)
+
+    def _request_emergency_cooler_exit(self) -> None:
+        result = QMessageBox.warning(
+            self,
+            "Emergency exit before iDus warm-up",
+            "The iDus has not reached 0 °C. Closing now can leave the detector "
+            "at risk of condensation if power is removed. The incomplete "
+            "warm-up marker will remain for the next session. Exit anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if result != QMessageBox.StandardButton.Yes:
+            if self._cooler_shutdown_dialog is not None:
+                self._cooler_shutdown_dialog.show()
+            return
+        self.cooler_shutdown_timer.stop()
+        self._cooler_shutdown_active = False
+        self._cooler_shutdown_complete = True
+        self._cooler_shutdown_dialog = None
+        QTimer.singleShot(0, self.close)

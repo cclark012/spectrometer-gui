@@ -87,9 +87,14 @@ def build_monitor_point(
     return MonitorTracePoint(
         timestamp_utc=record.timestamp_utc,
         elapsed_s=float(record.timestamp_s - config.application_t0_s),
-        field_mT=float(record.field_value) if record.field_value is not None else 0.0,
-        power_ch1_W=float(record.mean_power_w(0)),
-        power_ch2_W=float(record.mean_power_w(1)),
+        # Preserve applicability: an unrecorded field is unknown, not 0 mT.
+        field_mT=(
+            float(record.field_value)
+            if record.field_value is not None
+            else float("nan")
+        ),
+        power_ch1_W=float(record.mean_power_w(0)) if 0 in record.power_channels else float("nan"),
+        power_ch2_W=float(record.mean_power_w(1)) if 1 in record.power_channels else float("nan"),
         intensity_target_counts=target_intensity,
         intensity_target_nm=target_nm,
         integrated_range_counts_nm=integrated_range,
@@ -103,9 +108,9 @@ def build_monitor_point(
     )
 
 
-def monitor_x(point: MonitorTracePoint, mode: str) -> tuple[float, str, str]:
+def monitor_x(point: MonitorTracePoint, mode: str, channel: int = 0) -> tuple[float, str, str]:
     if mode == "Power ch1":
-        return point.power_ch1_W, "Power ch1", "W"
+        return monitor_power(point, channel), f"Power ch{channel + 1}", "W"
     if mode == "Magnetic field":
         return point.field_mT, "Magnetic field", "mT"
     return point.elapsed_s, "Time", "s"
@@ -121,7 +126,8 @@ def safe_divide(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
-def monitor_y(point: MonitorTracePoint, mode: str) -> tuple[float, str, str]:
+def monitor_y(point: MonitorTracePoint, mode: str, channel: int = 0) -> tuple[float, str, str]:
+    power = monitor_power(point, channel)
     values: dict[str, tuple[float, str, str]] = {
         "Intensity at captured wavelength": (
             point.intensity_target_counts,
@@ -139,17 +145,17 @@ def monitor_y(point: MonitorTracePoint, mode: str) -> tuple[float, str, str]:
             "counts nm",
         ),
         "Intensity at captured wavelength / power ch1": (
-            safe_divide(point.intensity_target_counts, point.power_ch1_W),
+            safe_divide(point.intensity_target_counts, power),
             "Intensity at captured wavelength / power ch1",
             "counts/W",
         ),
         "Integrated captured range / power ch1": (
-            safe_divide(point.integrated_range_counts_nm, point.power_ch1_W),
+            safe_divide(point.integrated_range_counts_nm, power),
             "Integrated captured range / power ch1",
             "counts nm/W",
         ),
         "Total integrated intensity / power ch1": (
-            safe_divide(point.total_integrated_counts_nm, point.power_ch1_W),
+            safe_divide(point.total_integrated_counts_nm, power),
             "Total integrated intensity / power ch1",
             "counts nm/W",
         ),
@@ -157,6 +163,13 @@ def monitor_y(point: MonitorTracePoint, mode: str) -> tuple[float, str, str]:
         "Peak wavelength": (point.peak_wavelength_nm, "Peak wavelength", "nm"),
         "Signal max": (point.signal_max_counts, "Signal max", "counts"),
         "Signal mean": (point.signal_mean_counts, "Signal mean", "counts"),
-        "Power ch1": (point.power_ch1_W, "Power ch1", "W"),
+        "Power ch1": (power, "Power ch1", "W"),
     }
-    return values.get(mode, (float("nan"), "Tracked quantity", ""))
+    value, label, units = values.get(mode, (float("nan"), "Tracked quantity", ""))
+    return value, label.replace("ch1", f"ch{channel + 1}"), units
+
+
+def monitor_power(point: MonitorTracePoint, channel: int = 0) -> float:
+    if channel not in (0, 1):
+        raise ValueError("Power channel must be 0 or 1")
+    return point.power_ch1_W if channel == 0 else point.power_ch2_W

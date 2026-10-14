@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
+import json
+from core.units import sanitize_component
+from io_utils.atomic import atomic_text_writer
 from typing import TypeVar
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -17,6 +22,7 @@ from io_utils.file_naming import (
 from io_utils.gated_series_io import save_gated_series_csv
 from io_utils.power_logging import FullPowerLogger
 from io_utils.power_trace_io import save_power_trace_csv
+from io_utils.background_io import save_background
 from io_utils.spectrum_io import load_spectrum_record, save_spectrum_record
 
 _T = TypeVar("_T")
@@ -27,8 +33,11 @@ class FileIOController(QObject):
     """GUI-thread file operations and full-run power logging."""
 
     record_loaded = Signal(object)
+    autosave_failed = Signal(str)
     status_requested = Signal(str, int)
     power_log_state_changed = Signal(bool)
+    _async_save_completed = Signal(str, str)
+    _async_save_failed = Signal(str, str)
 
     def __init__(
         self,
@@ -47,6 +56,15 @@ class FileIOController(QObject):
         self.power_panel = power_panel
         self.current_record: SpectrumRecord | None = None
         self.full_power_logger: FullPowerLogger | None = None
+        # One writer preserves acquisition order and makes filename enumeration
+        # deterministic while keeping CSV formatting and slow disks off Qt's
+        # GUI thread.
+        self._save_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="spectrum-file-writer",
+        )
+        self._async_save_completed.connect(self._on_async_save_completed)
+        self._async_save_failed.connect(self._on_async_save_failed)
 
     def update_settings(
         self,
@@ -83,6 +101,15 @@ class FileIOController(QObject):
             self._show_error(title, exc)
             return _FAILED
 
+    def save_background(self, background) -> None:
+        if background is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self.parent_widget, "Save captured background", "background.csv", "CSV files (*.csv)")
+        if path:
+            result = self._run_file_operation("Save background failed", lambda: save_background(Path(path), background))
+            if result is not _FAILED:
+                self.status_requested.emit(f"Saved background: {path}", 10000)
+
     @Slot()
     def save_spectrum(self) -> None:
         if self.current_record is None:
@@ -116,33 +143,77 @@ class FileIOController(QObject):
 
     @Slot(object)
     def autosave_spectrum(self, record: SpectrumRecord) -> None:
+        settings = replace(self.file_settings)
+
         def operation() -> Path:
             path = build_spectrum_path(
-                self.file_settings,
+                settings,
                 record,
                 protect_existing=True,
             )
             save_spectrum_record(path, record)
             return path
 
-        path = self._run_file_operation("Autosave failed", operation)
-        if path is not _FAILED:
-            self.status_requested.emit(f"Autosaved {path}", 10_000)
+        self._submit_async_save("spectrum", operation)
+
+    def autosave_parameter_summary(self, summary) -> None:
+        settings = replace(self.file_settings)
+
+        def operation() -> Path:
+            stem = sanitize_component(settings.base_name) or "spectrum"
+            path = Path(settings.save_directory) / f"{stem}_scan_{summary['scan_id']}.json"
+            with atomic_text_writer(path) as stream:
+                json.dump(summary, stream, indent=2, allow_nan=False)
+                stream.write("\n")
+            return path
+
+        self._submit_async_save("scan summary", operation)
 
     @Slot(object)
     def autosave_gated_series(self, series) -> None:
+        settings = replace(self.file_settings)
+
         def operation() -> Path:
             path = build_gated_series_path(
-                self.file_settings,
+                settings,
                 series,
                 protect_existing=True,
             )
             save_gated_series_csv(path, series)
             return path
 
-        path = self._run_file_operation("Gated-series autosave failed", operation)
-        if path is not _FAILED:
-            self.status_requested.emit(f"Autosaved averaged gated series {path}", 15_000)
+        self._submit_async_save("gated series", operation)
+
+    def _submit_async_save(
+        self,
+        kind: str,
+        operation: Callable[[], Path],
+    ) -> None:
+        try:
+            future = self._save_executor.submit(operation)
+        except RuntimeError as exc:
+            self._async_save_failed.emit(str(kind), str(exc))
+            return
+
+        def completed(done: Future[Path]) -> None:
+            try:
+                path = done.result()
+            except Exception as exc:
+                self._async_save_failed.emit(str(kind), str(exc))
+            else:
+                self._async_save_completed.emit(str(kind), str(path))
+
+        future.add_done_callback(completed)
+
+    @Slot(str, str)
+    def _on_async_save_completed(self, kind: str, path: str) -> None:
+        label = "averaged gated series" if kind == "gated series" else kind
+        self.status_requested.emit(f"Autosaved {label}: {path}", 10_000)
+
+    @Slot(str, str)
+    def _on_async_save_failed(self, kind: str, message: str) -> None:
+        self.autosave_failed.emit(message)
+        self._show_error(f"{kind.title()} autosave failed", RuntimeError(message))
 
     @Slot()
     def open_spectrum(self) -> None:
@@ -295,4 +366,5 @@ class FileIOController(QObject):
         self.status_requested.emit("Spectrum data copied to clipboard.", 5000)
 
     def close(self) -> None:
+        self._save_executor.shutdown(wait=True, cancel_futures=False)
         self.stop_full_power_log()

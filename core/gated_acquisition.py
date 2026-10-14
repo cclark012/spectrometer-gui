@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,7 +11,8 @@ GatedMode = Literal[
     "interleaved_decay",
 ]
 GatedOutputMode = Literal["individual_frames", "averaged_series"]
-GatedTimingGuardMode = Literal["off", "flag", "discard"]
+GatedTimingGuardMode = Literal["auto", "off", "flag", "discard", "retain"]
+GatedTimingReference = Literal["exposure_midpoint", "exposure_start"]
 GatedActionKind = Literal[
     "set_laser",
     "wait",
@@ -28,6 +30,7 @@ class GatedAcquisitionSettings:
     off_settle_ms: int = 50
     excitation_duration_ms: int = 1000
     inter_frame_gap_ms: int = 0
+    inter_repeat_gap_ms: int = 0
 
     on_frames_per_cycle: int = 1
     off_frames_per_cycle: int = 1
@@ -53,11 +56,18 @@ class GatedAcquisitionSettings:
     autosave_frames: bool = True
     measure_power_per_frame: bool = False
     output_mode: GatedOutputMode = "individual_frames"
-    timing_guard_mode: GatedTimingGuardMode = "discard"
+    timing_guard_mode: GatedTimingGuardMode = "auto"
     timing_guard_sigma: float = 4.5
     timing_guard_warmup: int = 5
     timing_guard_max_rejected_fraction: float = 0.25
     timing_guard_min_evaluated: int = 10
+    # ``retain`` is an absolute, two-sided timing window intended for
+    # low-signal averaged measurements. ``cycles`` becomes the number of
+    # timing-valid spectra retained per trace; the attempt multiplier is a
+    # finite safety ceiling rather than an open-ended retry loop.
+    timing_guard_reference: GatedTimingReference = "exposure_midpoint"
+    timing_guard_tolerance_ms: float = 2.0
+    timing_guard_attempt_multiplier: int = 3
 
     def validate(self) -> None:
         if self.mode not in {
@@ -86,6 +96,7 @@ class GatedAcquisitionSettings:
             "off_settle_ms",
             "excitation_duration_ms",
             "inter_frame_gap_ms",
+            "inter_repeat_gap_ms",
             "delayed_start_ms",
             "delayed_step_ms",
         ):
@@ -106,7 +117,13 @@ class GatedAcquisitionSettings:
             )
         if self.output_mode not in {"individual_frames", "averaged_series"}:
             raise ValueError(f"Unknown gated output mode: {self.output_mode!r}")
-        if self.timing_guard_mode not in {"off", "flag", "discard"}:
+        if self.timing_guard_mode not in {
+            "auto",
+            "off",
+            "flag",
+            "discard",
+            "retain",
+        }:
             raise ValueError(
                 f"Unknown gated timing-guard mode: {self.timing_guard_mode!r}"
             )
@@ -122,6 +139,43 @@ class GatedAcquisitionSettings:
             raise ValueError(
                 "timing_guard_min_evaluated must be at least timing_guard_warmup"
             )
+        if self.timing_guard_reference not in {
+            "exposure_midpoint",
+            "exposure_start",
+        }:
+            raise ValueError(
+                "timing_guard_reference must be exposure_midpoint or exposure_start"
+            )
+        if not 0.0 < float(self.timing_guard_tolerance_ms) <= 86_400_000.0:
+            raise ValueError("timing_guard_tolerance_ms must be positive")
+        if not 1 <= int(self.timing_guard_attempt_multiplier) <= 100:
+            raise ValueError(
+                "timing_guard_attempt_multiplier must be between 1 and 100"
+            )
+        if self.timing_guard_mode == "retain":
+            if self.output_mode != "averaged_series":
+                raise ValueError(
+                    "Retain-until-valid timing requires one averaged series file."
+                )
+            if self.mode not in {"delayed_after_off", "interleaved_decay"}:
+                raise ValueError(
+                    "Retain-until-valid timing is supported for fixed-delay and "
+                    "interleaved-decay acquisitions."
+                )
+            if self.measure_power_per_frame:
+                raise ValueError(
+                    "Retain-until-valid timing cannot measure Newport power per "
+                    "frame because that queued I/O precedes the detector call."
+                )
+            if (
+                self.mode == "delayed_after_off"
+                and int(self.delayed_frame_count) > 1
+                and int(self.delayed_step_ms) == 0
+            ):
+                raise ValueError(
+                    "Retain-until-valid timing requires distinct delayed traces. "
+                    "Use one delayed frame when every spectrum has the same delay."
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,14 +197,20 @@ class GatedFrameMetadata:
     exposure_midpoint_estimate_elapsed_ms: float = float("nan")
     exposure_timing_uncertainty_ms: float = float("nan")
     exposure_timing_basis: str = ""
+    transition_timing_basis: str = ""
     exposure_sample_windows_elapsed_ms: tuple[tuple[float, float], ...] = ()
     timing_error_ms: float = float("nan")
     timing_quality: str = "not_evaluated"
+    timing_reference: str = "exposure_midpoint"
     timing_center_ms: float = float("nan")
     timing_robust_sigma_ms: float = float("nan")
     timing_threshold_ms: float = float("nan")
     phase_index: int = -1
     repeat_index: int = 0
+    repeat_count: int = 1
+    pump_duration_ms: int | None = None
+    inter_frame_gap_ms: int | None = None
+    inter_repeat_gap_ms: int | None = None
 
     @property
     def active(self) -> bool:
@@ -169,7 +229,26 @@ class GatedAction:
 
 
 @dataclass(frozen=True, slots=True)
+class GatedPreviewRow:
+    """One human-readable row in the compact, non-expanded plan preview."""
+
+    action: str
+    state: str = ""
+    timing: str = ""
+    spectra: str = ""
+    details: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class GatedPlan:
-    actions: tuple[GatedAction, ...]
+    # ``actions`` may be a lazy Sequence.  Iteration must be repeatable so the
+    # coordinator and diagnostics can each obtain an independent iterator.
+    actions: Sequence[GatedAction]
     frame_count: int
     warnings: tuple[str, ...] = ()
+    sequence_id: str = ""
+    action_count: int = 0
+    preview_rows: tuple[GatedPreviewRow, ...] = ()
+    estimated_peak_memory_bytes: int = 0
+    target_frame_count: int = 0
+    trace_count: int = 0

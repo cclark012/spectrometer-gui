@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import csv
 import math
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import pyqtgraph as pg
+from panels.plot_options import PaddedViewBox, apply_plot_options, color_with_alpha
 from PySide6.QtCore import QSettings, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -18,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.preferences import get_bool, get_float, get_str
+from core.preferences import get_bool, get_float, get_int, get_str
 from core.records import MonitorTracePoint, SpectrumRecord
 from core.time_utils import utc_now_iso
 from panels.monitor_views import HAS_GL_3D, FieldPowerMapView, Monitor3DView
@@ -66,7 +69,7 @@ class MonitorPanel(QWidget):
         root = QVBoxLayout(self)
         self.monitor_stack = QStackedWidget()
 
-        self.monitor_plot = pg.PlotWidget()
+        self.monitor_plot = pg.PlotWidget(viewBox=PaddedViewBox())
         self.monitor_plot.setLabel("bottom", "Time (s)")
         self.monitor_plot.setLabel("left", "Tracked quantity")
         self.monitor_curve = self.monitor_plot.plot()
@@ -130,16 +133,28 @@ class MonitorPanel(QWidget):
                 "Power ch1",
             ]
         )
+        for i in range(self.track_quantity.count()):
+            text = self.track_quantity.itemText(i)
+            self.track_quantity.setItemData(i, text)
+            self.track_quantity.setItemText(i, text.replace("power ch1", "selected power").replace("Power ch1", "Selected power"))
         self.track_quantity.currentTextChanged.connect(lambda _text: self.redraw())
 
         self.track_x_var = QComboBox()
         self.track_x_var.addItems(["Time", "Power ch1", "Magnetic field"])
+        for i in range(self.track_x_var.count()):
+            text = self.track_x_var.itemText(i)
+            self.track_x_var.setItemData(i, text)
+            self.track_x_var.setItemText(i, text.replace("Power ch1", "Selected power"))
         self.track_x_var.currentTextChanged.connect(lambda _text: self.redraw())
 
         self.track_wavelength = self._make_wavelength_spinbox(550.0)
         self.track_start_nm = self._make_wavelength_spinbox(450.0)
         self.track_stop_nm = self._make_wavelength_spinbox(750.0)
 
+        self.channel_combo = QComboBox()
+        self.channel_combo.addItems(["Channel 1", "Channel 2"])
+        self.channel_combo.currentIndexChanged.connect(lambda _index: self.redraw())
+        form.addRow("Power channel", self.channel_combo)
         form.addRow("Plot mode", self.plot_mode_combo)
         form.addRow("Track spectra", self.track_enable)
         form.addRow("Quantity", self.track_quantity)
@@ -156,6 +171,10 @@ class MonitorPanel(QWidget):
         self.save_button.clicked.connect(
             lambda _checked=False: self.save_requested.emit()
         )
+        self.reset_timer_button = QPushButton("Reset timer")
+        self.reset_timer_button.setToolTip("Set time zero to now; retain history at negative times.")
+        self.reset_timer_button.clicked.connect(self.reset_timer)
+        buttons.addWidget(self.reset_timer_button)
         buttons.addWidget(self.clear_button)
         buttons.addWidget(self.save_button)
         buttons.addStretch(1)
@@ -187,6 +206,13 @@ class MonitorPanel(QWidget):
     def set_redraw_interval_ms(self, interval_ms: int) -> None:
         self._redraw_timer.setInterval(max(20, int(interval_ms)))
 
+    def reset_timer(self) -> None:
+        now = time.perf_counter()
+        offset = now - self._application_t0
+        self.monitor_trace = [replace(p, elapsed_s=p.elapsed_s-offset) for p in self.monitor_trace]
+        self._application_t0 = now
+        self.redraw()
+
     def clear(self) -> None:
         self.monitor_trace.clear()
         self.memory_warning_issued = False
@@ -217,16 +243,16 @@ class MonitorPanel(QWidget):
 
     def redraw(self) -> None:
         mode = str(self.plot_mode_combo.currentData())
-        quantity_mode = self.track_quantity.currentText()
+        quantity_mode = self.track_quantity.currentData()
 
         if mode == "3d" and self.monitor_3d_view is not None:
             self.monitor_stack.setCurrentWidget(self.monitor_3d_view)
-            self.monitor_3d_view.set_data(self.monitor_trace, quantity_mode)
+            self.monitor_3d_view.set_data(self.monitor_trace, quantity_mode, self.channel_combo.currentIndex())
             return
 
         if mode == "map2d":
             self.monitor_stack.setCurrentWidget(self.monitor_map_view)
-            self.monitor_map_view.set_data(self.monitor_trace, quantity_mode)
+            self.monitor_map_view.set_data(self.monitor_trace, quantity_mode, self.channel_combo.currentIndex())
             return
 
         self.monitor_stack.setCurrentWidget(self.monitor_plot)
@@ -237,12 +263,12 @@ class MonitorPanel(QWidget):
         y_values: list[float] = []
         x_label, x_units = "X", ""
         y_label, y_units = "Y", ""
-        x_mode = self.track_x_var.currentText()
-        y_mode = self.track_quantity.currentText()
+        x_mode = self.track_x_var.currentData()
+        y_mode = self.track_quantity.currentData()
 
         for point in self.monitor_trace:
-            x, x_label, x_units = monitor_x(point, x_mode)
-            y, y_label, y_units = monitor_y(point, y_mode)
+            x, x_label, x_units = monitor_x(point, x_mode, self.channel_combo.currentIndex())
+            y, y_label, y_units = monitor_y(point, y_mode, self.channel_combo.currentIndex())
             if math.isfinite(x) and math.isfinite(y):
                 x_values.append(float(x))
                 y_values.append(float(y))
@@ -269,15 +295,17 @@ class MonitorPanel(QWidget):
 
     def save_csv(self, path: Path) -> None:
         path = Path(path)
-        x_mode = self.track_x_var.currentText()
-        y_mode = self.track_quantity.currentText()
+        x_mode = self.track_x_var.currentData()
+        y_mode = self.track_quantity.currentData()
 
         with path.open("w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow(["# file_type", "monitor_track"])
             writer.writerow(["# timestamp_utc", utc_now_iso()])
-            writer.writerow(["# x_variable", x_mode])
-            writer.writerow(["# y_quantity", y_mode])
+            writer.writerow(["# power_channel", self.channel_combo.currentIndex() + 1])
+            writer.writerow(["# timer_origin_monotonic_s", self._application_t0])
+            writer.writerow(["# x_variable", x_mode.replace("ch1", f"ch{self.channel_combo.currentIndex()+1}")])
+            writer.writerow(["# y_quantity", y_mode.replace("ch1", f"ch{self.channel_combo.currentIndex()+1}")])
             writer.writerow(
                 [
                     "# note",
@@ -307,13 +335,15 @@ class MonitorPanel(QWidget):
             )
 
             for point in self.monitor_trace:
-                x, _, _ = monitor_x(point, x_mode)
-                y, _, _ = monitor_y(point, y_mode)
+                x, _, _ = monitor_x(point, x_mode, self.channel_combo.currentIndex())
+                y, _, _ = monitor_y(point, y_mode, self.channel_combo.currentIndex())
                 writer.writerow(
                     [
                         point.timestamp_utc,
                         f"{point.elapsed_s:.9f}",
-                        f"{point.field_mT:.6g}",
+                        f"{point.field_mT:.6g}"
+                        if math.isfinite(point.field_mT)
+                        else "",
                         f"{point.power_ch1_W:.12e}",
                         f"{point.power_ch2_W:.12e}",
                         f"{point.intensity_target_counts:.12e}",
@@ -332,14 +362,18 @@ class MonitorPanel(QWidget):
                 )
 
     def apply_plot_style(self, settings) -> None:
+        apply_plot_options(self.monitor_plot, settings, "monitor")
+        color = color_with_alpha(settings.monitor_color, settings.monitor_alpha)
         pen = (
-            pg.mkPen(settings.monitor_color, width=settings.monitor_line_width)
+            pg.mkPen(color, width=settings.monitor_line_width)
             if settings.monitor_show_line and settings.monitor_line_width > 0
             else None
         )
         symbol = settings.symbol if settings.monitor_show_symbols else None
         self.monitor_curve.setPen(pen)
         self.monitor_curve.setSymbol(symbol)
+        self.monitor_curve.setSymbolPen(color)
+        self.monitor_curve.setSymbolBrush(color)
         self.monitor_curve.setSymbolSize(int(settings.symbol_size))
 
         font = self.font()
@@ -347,6 +381,7 @@ class MonitorPanel(QWidget):
         for axis_name in ("bottom", "left"):
             self.monitor_plot.getAxis(axis_name).setTickFont(font)
         self.monitor_map_view.apply_font(font)
+        apply_plot_options(self.monitor_map_view.plot, settings, "monitor")
 
         if settings.monitor_auto_range:
             self.monitor_plot.enableAutoRange()
@@ -357,7 +392,9 @@ class MonitorPanel(QWidget):
 
     @staticmethod
     def _set_combo_text(combo: QComboBox, text: str) -> None:
-        index = combo.findText(str(text))
+        index = combo.findData(str(text))
+        if index < 0:
+            index = combo.findText(str(text))
         if index >= 0:
             combo.setCurrentIndex(index)
 
@@ -368,16 +405,17 @@ class MonitorPanel(QWidget):
             combo.setCurrentIndex(index)
 
     def load_preferences(self, settings: QSettings) -> None:
+        self.channel_combo.setCurrentIndex(max(0, min(1, get_int(settings, "monitor/channel", 0))))
         self.track_enable.setChecked(
             get_bool(settings, "monitor/tracking_enabled", self.track_enable.isChecked())
         )
         self._set_combo_text(
             self.track_quantity,
-            get_str(settings, "monitor/quantity", self.track_quantity.currentText()),
+            get_str(settings, "monitor/quantity", self.track_quantity.currentData()),
         )
         self._set_combo_text(
             self.track_x_var,
-            get_str(settings, "monitor/x_variable", self.track_x_var.currentText()),
+            get_str(settings, "monitor/x_variable", self.track_x_var.currentData()),
         )
         self._set_combo_data(
             self.plot_mode_combo,
@@ -395,9 +433,10 @@ class MonitorPanel(QWidget):
         self.redraw()
 
     def save_preferences(self, settings: QSettings) -> None:
+        settings.setValue("monitor/channel", self.channel_combo.currentIndex())
         settings.setValue("monitor/tracking_enabled", self.track_enable.isChecked())
-        settings.setValue("monitor/quantity", self.track_quantity.currentText())
-        settings.setValue("monitor/x_variable", self.track_x_var.currentText())
+        settings.setValue("monitor/quantity", self.track_quantity.currentData())
+        settings.setValue("monitor/x_variable", self.track_x_var.currentData())
         settings.setValue("monitor/plot_mode", str(self.plot_mode_combo.currentData()))
         settings.setValue("monitor/target_wavelength_nm", self.track_wavelength.value())
         settings.setValue("monitor/start_nm", self.track_start_nm.value())
